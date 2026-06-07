@@ -1,0 +1,33 @@
+# eclipse
+bin
+*.launch
+.settings
+.metadata
+.classpath
+.project
+
+# idea
+out
+*.ipr
+*.iws
+*.iml
+.idea
+
+# gradle
+build
+.gradle
+
+# other
+eclipse
+run
+
+# Files from Forge MDK
+forge*changelog.txt
+
+# Native DLL build artifacts (CMake out-of-source build + staged jar)
+native/build/
+native/zen.jar
+
+# Generated at build time by ext.obfuscateJar (holds the obfuscated bridge FQCN)
+native/dll/src/generated_names.h
+changes/

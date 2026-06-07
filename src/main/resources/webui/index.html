@@ -1,0 +1,897 @@
+<!doctype html>
+<html lang="zh-cmn-Hans">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,shrink-to-fit=no">
+  <title>Zen WebPanel</title>
+  <script src="https://apps.bdimg.com/libs/jquery/2.1.4/jquery.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,700;1,300&family=Syne:wght@400;500;700;800&display=swap" rel="stylesheet">
+  <style>
+*,
+::after,
+::before {
+  box-sizing: border-box
+}
+
+:root {
+  --accent: #7c6af7;
+  --accent2: #c084fc;
+  --success: #34d399;
+  --danger: #f87171;
+  --bg: #07070d;
+  --surface: #0e0e18;
+  --panel: #13131e;
+  --card: #15151f;
+  --border: #1c1c2a;
+  --text: #d4d4e8;
+  --muted: #4a4a6a;
+  --faint: #252535
+}
+
+html {
+  scroll-behavior: smooth
+}
+
+body {
+  background: var(--bg);
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text);
+  overflow-x: hidden;
+  margin: 0
+}
+
+::-webkit-scrollbar {
+  width: 3px
+}
+
+::-webkit-scrollbar-track {
+  background: 0 0
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent)
+}
+
+#bg-canvas {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: .35
+}
+
+#topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 52px;
+  z-index: 40;
+  background: rgba(7, 7, 13, .88);
+  border-bottom: 1px solid rgba(124, 106, 247, .12);
+  backdrop-filter: blur(20px) saturate(1.4);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 12px;
+  animation: topbarIn .5s cubic-bezier(.22, 1, .36, 1) both
+}
+
+@keyframes topbarIn {
+  from {
+    transform: translateY(-100%);
+    opacity: 0
+  }
+
+  to {
+    transform: translateY(0);
+    opacity: 1
+  }
+}
+
+.logo-mark {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: Syne, sans-serif;
+  font-weight: 800;
+  font-size: 13px;
+  color: #fff;
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+  animation: logoPulse 3s ease-in-out infinite
+}
+
+@keyframes logoPulse {
+
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(124, 106, 247, 0)
+  }
+
+  50% {
+    box-shadow: 0 0 0 6px rgba(124, 106, 247, .15)
+  }
+}
+
+.logo-mark::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(255, 255, 255, .18) 0, transparent 60%)
+}
+
+#sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 100vh;
+  width: 220px;
+  z-index: 20;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  transform: translateX(-100%);
+  transition: transform .35s cubic-bezier(.22, 1, .36, 1);
+  display: flex;
+  flex-direction: column
+}
+
+#sidebar.open {
+  transform: translateX(0)
+}
+
+#sidebar-head {
+  height: 52px;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0
+}
+
+#category {
+  padding: 10px 8px;
+  flex: 1;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0
+}
+
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+  color: var(--muted);
+  font-size: 11px;
+  text-decoration: none;
+  position: relative;
+  overflow: hidden
+}
+
+.nav-link:hover {
+  background: var(--faint);
+  color: var(--text)
+}
+
+.nav-link.active {
+  background: rgba(124, 106, 247, .12);
+  color: #fff
+}
+
+.nav-link.active .nav-dot {
+  background: var(--accent);
+  box-shadow: 0 0 6px rgba(124, 106, 247, .6)
+}
+
+.nav-link .nav-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: background .2s, box-shadow .2s;
+  flex-shrink: 0
+}
+
+.nav-link .nav-ripple {
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+  background: radial-gradient(circle at var(--rx, 50%) var(--ry, 50%), rgba(124, 106, 247, .2) 0, transparent 60%);
+  opacity: 0;
+  transition: opacity .4s
+}
+
+.nav-link:hover .nav-ripple {
+  opacity: 1
+}
+
+#sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .55);
+  z-index: 19;
+  backdrop-filter: blur(2px)
+}
+
+#sidebar-overlay.open {
+  display: block;
+  animation: fadeIn .2s ease
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0
+  }
+
+  to {
+    opacity: 1
+  }
+}
+
+.toggle-wrap {
+  position: relative;
+  display: inline-flex
+}
+
+.toggle-input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0
+}
+
+.toggle-track {
+  width: 36px;
+  height: 20px;
+  background: var(--faint);
+  border-radius: 999px;
+  cursor: pointer;
+  position: relative;
+  border: 1px solid var(--border);
+  transition: background .25s, border-color .25s, box-shadow .25s
+}
+
+.toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform .25s cubic-bezier(.34, 1.56, .64, 1), background .25s
+}
+
+.toggle-input:checked~.toggle-track {
+  background: rgba(124, 106, 247, .2);
+  border-color: var(--accent);
+  box-shadow: 0 0 12px rgba(124, 106, 247, .3)
+}
+
+.toggle-input:checked~.toggle-track .toggle-thumb {
+  transform: translateX(16px);
+  background: var(--accent)
+}
+
+.module-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  cursor: default;
+  position: relative;
+  overflow: hidden;
+  transition: border-color .25s, transform .2s, box-shadow .25s;
+  opacity: 0;
+  transform: translateY(20px)
+}
+
+.module-card.entered {
+  opacity: 1;
+  transform: translateY(0)
+}
+
+.module-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(124, 106, 247, 0), transparent);
+  transition: background .3s
+}
+
+.module-card:hover {
+  border-color: rgba(124, 106, 247, .35);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, .4), 0 0 0 1px rgba(124, 106, 247, .08)
+}
+
+.module-card:hover::before {
+  background: linear-gradient(90deg, transparent, rgba(124, 106, 247, .5), transparent)
+}
+
+.module-card.enabled {
+  border-color: rgba(124, 106, 247, .2)
+}
+
+.module-card.enabled::before {
+  background: linear-gradient(90deg, transparent, rgba(124, 106, 247, .3), transparent)
+}
+
+.card-shimmer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent 40%, rgba(124, 106, 247, .06) 50%, transparent 60%);
+  background-size: 200% 100%;
+  opacity: 0;
+  transition: opacity .3s
+}
+
+.module-card.enabled .card-shimmer {
+  opacity: 1;
+  animation: shimmerMove 2.5s linear infinite
+}
+
+@keyframes shimmerMove {
+  from {
+    background-position: 200% 0
+  }
+
+  to {
+    background-position: -200% 0
+  }
+}
+
+input[type=range] {
+  -webkit-appearance: none;
+  width: 100%;
+  height: 3px;
+  background: var(--faint);
+  border-radius: 2px;
+  outline: 0;
+  cursor: pointer
+}
+
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  background: var(--accent);
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px rgba(124, 106, 247, .2);
+  transition: box-shadow .2s, transform .2s
+}
+
+input[type=range]:hover::-webkit-slider-thumb {
+  box-shadow: 0 0 0 5px rgba(124, 106, 247, .3);
+  transform: scale(1.15)
+}
+
+select {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  width: 100%;
+  outline: 0;
+  cursor: pointer;
+  transition: border-color .2s, box-shadow .2s;
+  -webkit-appearance: none
+}
+
+select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(124, 106, 247, .15)
+}
+
+#modal-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .6);
+  z-index: 50;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(6px)
+}
+
+#modal-backdrop.open {
+  display: flex
+}
+
+#modal-backdrop.open #modal {
+  animation: modalIn .3s cubic-bezier(.34, 1.4, .64, 1) both
+}
+
+@keyframes modalIn {
+  from {
+    opacity: 0;
+    transform: scale(.9) translateY(16px)
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0)
+  }
+}
+
+#modal {
+  background: var(--panel);
+  border: 1px solid rgba(124, 106, 247, .2);
+  border-radius: 18px;
+  width: 100%;
+  max-width: 360px;
+  margin: 16px;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, .6), 0 0 0 1px rgba(124, 106, 247, .08)
+}
+
+#toast {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 100;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 16px;
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(8px);
+  transition: opacity .25s, transform .25s;
+  max-width: 260px
+}
+
+#toast.show {
+  opacity: 1;
+  transform: translateY(0)
+}
+
+#cat-header {
+  opacity: 0;
+  transform: translateX(-10px);
+  transition: opacity .3s, transform .3s
+}
+
+#cat-header.show {
+  opacity: 1;
+  transform: translateX(0)
+}
+
+.icon-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color .15s, background .15s, transform .15s;
+  background: 0 0;
+  border: none
+}
+
+.icon-btn:hover {
+  color: var(--text);
+  background: var(--faint)
+}
+
+.icon-btn:active {
+  transform: scale(.9)
+}
+
+.spinning {
+  animation: spin .6s linear
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg)
+  }
+}
+
+@keyframes wiggle {
+
+  0%,
+  100% {
+    transform: rotate(0)
+  }
+
+  25% {
+    transform: rotate(20deg)
+  }
+
+  75% {
+    transform: rotate(-20deg)
+  }
+}
+
+.module-card:hover .gear-icon {
+  animation: wiggle .5s ease
+}
+
+.status-pill {
+  font-size: 9px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 500;
+  transition: background .3s, color .3s, box-shadow .3s
+}
+
+.status-pill.on {
+  background: rgba(124, 106, 247, .15);
+  color: var(--accent);
+  box-shadow: 0 0 8px rgba(124, 106, 247, .15)
+}
+
+.status-pill.off {
+  background: rgba(255, 255, 255, .04);
+  color: var(--muted)
+}
+
+#module-count {
+  font-size: 9px;
+  letter-spacing: .08em;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--muted);
+  padding: 2px 7px;
+  background: var(--faint);
+  border-radius: 999px
+}
+
+#conn-dot {
+  transition: background .4s
+}
+
+#conn-text {
+  transition: color .4s
+}
+  </style>
+</head>
+
+<body><canvas id="bg-canvas"></canvas>
+  <div id="topbar"><button id="sidebar-toggle" class="icon-btn" style="flex-shrink:0"><svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+        <line x1="1" y1="4" x2="14" y2="4" />
+        <line x1="1" y1="7.5" x2="11" y2="7.5" />
+        <line x1="1" y1="11" x2="14" y2="11" />
+      </svg></button>
+    <div style="display:flex;align-items:center;gap:9px;flex-shrink:0">
+      <div class="logo-mark">Z</div>
+      <div>
+        <div style="font-family:Syne,sans-serif;font-weight:800;font-size:14px;color:#fff;letter-spacing:.05em;line-height:1">Zen</div>
+        <div style="font-size:9px;color:var(--muted);letter-spacing:.15em;line-height:1;margin-top:2px">WEBPANEL</div>
+      </div>
+    </div>
+    <div style="flex:1"></div>
+    <div style="display:flex;align-items:center;gap:6px;margin-right:4px">
+      <div id="conn-dot" style="width:6px;height:6px;border-radius:50%;background:var(--muted)"></div><span id="conn-text" style="font-size:10px;color:var(--muted);letter-spacing:.05em">connecting</span>
+    </div><button class="icon-btn" onclick="onRefresh()"><svg id="refresh-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+        <path d="M3 3v5h5" />
+      </svg></button>
+  </div>
+  <div id="sidebar-overlay" onclick="closeSidebar()"></div>
+  <nav id="sidebar">
+    <div id="sidebar-head"><span style="font-family:Syne,sans-serif;font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.2em;text-transform:uppercase">Categories</span></div>
+    <ul id="category"></ul>
+    <div style="padding:12px 16px;border-top:1px solid var(--border);flex-shrink:0"><span style="font-size:9px;color:var(--muted);letter-spacing:.1em">ZEN v3.0 · WEBPANEL</span></div>
+  </nav>
+  <main style="padding:68px 20px 40px;max-width:1200px;margin:0 auto;position:relative;z-index:1">
+    <div id="cat-header" style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
+      <div style="width:2px;height:20px;background:linear-gradient(180deg,var(--accent),var(--accent2));border-radius:2px;flex-shrink:0"></div>
+      <h2 id="cat-title" style="font-family:Syne,sans-serif;font-weight:700;font-size:16px;color:#fff;margin:0;letter-spacing:.03em"></h2><span id="module-count"></span>
+    </div>
+    <div id="point" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px"></div>
+  </main>
+  <div id="modal-backdrop">
+    <div id="modal">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid var(--border)">
+        <div>
+          <div style="font-size:9px;color:var(--muted);letter-spacing:.15em;text-transform:uppercase;margin-bottom:3px">Module Settings</div>
+          <div id="modal-title" style="font-family:Syne,sans-serif;font-weight:700;font-size:15px;color:#fff"></div>
+        </div><button class="icon-btn" onclick="closeModal()"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+            <line x1="1" y1="1" x2="13" y2="13" />
+            <line x1="13" y1="1" x2="1" y2="13" />
+          </svg></button>
+      </div>
+      <div id="modal-body" style="padding:16px 18px;display:flex;flex-direction:column;gap:16px;max-height:55vh;overflow-y:auto"></div>
+      <div style="padding:12px 18px;border-top:1px solid var(--border);display:flex;justify-content:flex-end"><button onclick="closeModal()" style="background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border:none;border-radius:8px;padding:7px 18px;font-family:'JetBrains Mono',monospace;font-size:11px;cursor:pointer;font-weight:500" onmouseenter='this.style.opacity=".85"' onmouseleave='this.style.opacity="1"'>Done</button></div>
+    </div>
+  </div>
+  <div id="toast"></div>
+  <script>
+function openSidebar() {
+  document.getElementById("sidebar").classList.add("open");
+  document.getElementById("sidebar-overlay").classList.add("open");
+}
+function closeSidebar() {
+  document.getElementById("sidebar").classList.remove("open");
+  document.getElementById("sidebar-overlay").classList.remove("open");
+}
+function onRefresh() {
+  let o = document.getElementById("refresh-icon");
+  o.classList.add("spinning");
+  o.addEventListener("animationend", () => {
+    o.classList.remove("spinning");
+    location.reload();
+  }, {
+    once: true
+  });
+}
+(() => {
+  let e = document.getElementById("bg-canvas"), l = e.getContext("2d"), d, p, f = [];
+  function o() {
+    d = e.width = window.innerWidth;
+    p = e.height = window.innerHeight;
+  }
+  function a() {
+    f = [];
+    for (let t = 0; t < 55; t++) f.push({
+      x: Math.random() * d,
+      y: Math.random() * p,
+      vx: (Math.random() - .5) * .3,
+      vy: (Math.random() - .5) * .3,
+      r: Math.random() * 1.5 + .5
+    });
+  }
+  o();
+  a();
+  (function t() {
+    l.clearRect(0, 0, d, p);
+    f.forEach(t => {
+      t.x += t.vx;
+      t.y += t.vy;
+      t.x < 0 && (t.x = d);
+      d < t.x && (t.x = 0);
+      t.y < 0 && (t.y = p);
+      p < t.y && (t.y = 0);
+      l.beginPath();
+      l.arc(t.x, t.y, t.r, 0, Math.PI * 2);
+      l.fillStyle = "rgba(124,106,247,0.6)";
+      l.fill();
+    });
+    for (let n = 0; n < f.length; n++) for (let e = n + 1; e < f.length; e++) {
+      var o = f[n].x - f[e].x, c = f[n].y - f[e].y, i = Math.sqrt(o * o + c * c);
+      if (i < 120) {
+        l.beginPath();
+        l.moveTo(f[n].x, f[n].y);
+        l.lineTo(f[e].x, f[e].y);
+        l.strokeStyle = "rgba(124,106,247," + .12 * (1 - i / 120) + ")";
+        l.lineWidth = .5;
+        l.stroke();
+      }
+    }
+    requestAnimationFrame(t);
+  })();
+  window.addEventListener("resize", () => {
+    o();
+    a();
+  });
+})();
+document.getElementById("sidebar-toggle").onclick = () => (document.getElementById("sidebar").classList.contains("open") ? closeSidebar : openSidebar)();
+let toastTimer;
+function toast(t, e = false) {
+  let a = document.getElementById("toast");
+  a.textContent = t;
+  a.style.borderColor = e ? "rgba(248,113,113,0.35)" : "var(--border)";
+  a.style.color = e ? "var(--danger)" : "var(--text)";
+  a.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => a.classList.remove("show"), 3e3);
+}
+function setConnected(t) {
+  document.getElementById("conn-dot").style.background = t ? "var(--success)" : "var(--danger)";
+  document.getElementById("conn-text").style.color = t ? "var(--success)" : "var(--danger)";
+  document.getElementById("conn-text").textContent = t ? "connected" : "disconnected";
+}
+let category = "Combat", allCategories = [];
+function addCategory(t) {
+  let e = document.createElement("li");
+  e.style.marginBottom = "2px";
+  e.innerHTML = "<a href=\"#" + t + "\" class=\"nav-link\" data-cat=\"" + t + "\"><span class=\"nav-dot\"></span><span style=\"flex:1;letter-spacing:.03em\">" + t + "</span><span class=\"nav-ripple\"></span></a>";
+  document.getElementById("category").appendChild(e);
+  let r = e.querySelector(".nav-link");
+  r.addEventListener("mousemove", t => {
+    var n = r.getBoundingClientRect();
+    r.style.setProperty("--rx", (t.clientX - n.left) / n.width * 100 + "%");
+    r.style.setProperty("--ry", (t.clientY - n.top) / n.height * 100 + "%");
+  });
+}
+function updateActiveNav(e) {
+  document.querySelectorAll("#category .nav-link").forEach(t => t.classList.toggle("active", t.dataset.cat === e));
+  let a = document.getElementById("cat-header");
+  a.classList.remove("show");
+  setTimeout(() => {
+    document.getElementById("cat-title").textContent = e;
+    a.classList.add("show");
+  }, 80);
+}
+let moduleCache = {};
+function buildCard(t, e, n, o) {
+  let c = document.createElement("div");
+  c.className = "module-card" + (n ? " enabled" : "");
+  c.setAttribute("data-name", t);
+  c.innerHTML = "\n    <div class=\"card-shimmer\"></div>\n    <div style=\"display:flex;align-items:flex-start;justify-content:space-between;gap:8px\">\n      <div style=\"flex:1;min-width:0\">\n        <div style=\"font-family:'Syne',sans-serif;font-weight:700;font-size:13px;color:#fff;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\">" + t + "</div>\n        <div style=\"font-size:10px;color:var(--muted);line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden\">" + (e || "—") + "</div>\n      </div>\n      " + (o ? "<button class=\"icon-btn\" data-module=\"" + t + "\" style=\"flex-shrink:0;opacity:0;margin-top:-2px;transition:opacity .2s\"><svg class=\"gear-icon\" width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\"><circle cx=\"12\" cy=\"12\" r=\"3\"/><path d=\"M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z\"/></svg></button>" : "") + "\n    </div>\n    <div style=\"display:flex;align-items:center;justify-content:space-between\">\n      <span class=\"status-pill " + (n ? "on" : "off") + '">' + (n ? "enabled" : "disabled") + "</span>\n      <label class=\"toggle-wrap\" onclick=\"event.stopPropagation()\">\n        <input type=\"checkbox\" class=\"toggle-input\" id" + '="' + t + "-checkbox\"" + " " + (n ? "checked" : "") + " onchange=\"onswitch(this)\"/>\n        <span class=\"toggle-track\"><span class=\"toggle-thumb\"></span></span>\n      </label>\n    </div" + ">";
+  c.addEventListener("mouseenter", () => {
+    var e = c.querySelector("[data-module]");
+    e && (e.style.opacity = "1");
+  });
+  c.addEventListener("mouseleave", () => {
+    var e = c.querySelector("[data-module]");
+    e && (e.style.opacity = "0");
+  });
+  let i = c.querySelector("[data-module]");
+  return (i && i.addEventListener("click", () => opensetting(i)), c);
+}
+function renderModules(o) {
+  let a = document.getElementById("point");
+  a.innerHTML = "";
+  moduleCache = {};
+  var t = Object.keys(o);
+  document.getElementById("module-count").textContent = t.length + " modules";
+  t.forEach(t => {
+    var n = o[t];
+    moduleCache[t] = {
+      state: n.state
+    };
+    var t = buildCard(t, n.desc, n.state, n.settings);
+    a.appendChild(t);
+  });
+  requestAnimationFrame(() => {
+    document.querySelectorAll(".module-card").forEach((e, t) => {
+      setTimeout(() => {
+        e.style.transition = "opacity .35s ease, transform .35s cubic-bezier(.22,1,.36,1), border-color .25s, box-shadow .25s";
+        e.classList.add("entered");
+      }, t * 45);
+    });
+  });
+}
+function patchModules(r) {
+  let t = Object.keys(r), e = Object.keys(moduleCache);
+  t.length !== e.length || t.some(t => !moduleCache[t]) ? renderModules(r) : t.forEach(t => {
+    var e, o = r[t].state, a = moduleCache[t];
+    a && a.state !== o && (a.state = o, a = document.querySelector(".module-card[data-name=\"" + t + '"]')) && (t = a.querySelector("#" + t + "-checkbox"), e = a.querySelector(".status-pill"), t && (t.checked = o), e && (e.textContent = o ? "enabled" : "disabled", e.className = "status-pill " + (o ? "on" : "off")), a.classList.toggle("enabled", !!o));
+  });
+}
+function onswitch(a) {
+  let i = a.id.replace(/-checkbox$/, "");
+  $.ajax({
+    url: "/api/setStatus?module=" + i + "&state=" + a.checked,
+    type: "GET",
+    dataType: "json",
+    success: t => {
+      var e, n;
+      t.success ? (a.checked = t.result, moduleCache[i] && (moduleCache[i].state = t.result), (n = (e = a.closest(".module-card")).querySelector(".status-pill")).textContent = t.result ? "enabled" : "disabled", n.className = "status-pill " + (t.result ? "on" : "off"), e.classList.toggle("enabled", !!t.result)) : (toast(t.reason, true), a.checked = !a.checked);
+    },
+    error: () => {
+      toast("Failed to connect.", true);
+      a.checked = !a.checked;
+    }
+  });
+}
+function closeModal() {
+  document.getElementById("modal-backdrop").classList.remove("open");
+}
+function opensetting(t) {
+  let c = t.dataset.module;
+  $.ajax({
+    url: "/api/getModuleSetting?module=" + c,
+    type: "GET",
+    dataType: "json",
+    success: t => {
+      if (t.success) {
+        document.getElementById("modal-title").textContent = c;
+        let o = document.getElementById("modal-body");
+        o.innerHTML = "";
+        t.result.forEach(e => {
+          let t = document.createElement("div");
+          switch (e.type) {
+            case "checkbox":
+              t.innerHTML = "<div style=\"display:flex;align-items:center;justify-content:space-between;gap:12px\"><span style=\"font-size:11px;color:var(--text)\">" + e.displayName + "</span><label class=\"toggle-wrap\"><input type=\"checkbox\" class=\"toggle-input\" id" + '="' + c + "-" + e.name + '" ' + (e.value ? "checked" : "") + " onchange=\"valuechange(this)\"/><span class=\"toggle-track\"><span class=\"toggle-thumb\"></span></span></label></div>";
+              break;
+            case "slider":
+              t.innerHTML = "<div style=\"display:flex;justify-content:space-between;align-items:center;margin-bottom:8px\"><span style=\"font-size:11px;color:var(--text)\">" + e.displayName + "</span><span style=\"font-size:10px;color:var(--accent);font-family:'JetBrains Mono',monospace\" id=\"" + c + "-" + e.name + "-val\">" + e.value + "</span></div><input type=\"range\" id=\"" + c + "-" + e.name + "\" value=\"" + e.value + "\" max=\"" + e.max + "\" min=\"" + e.min + "\" step=\"" + e.step + "\" oninput=\"document.getElementById('" + c + "-" + e.name + "-val').textContent=this.value\" onchange=\"valuechange(this)\"/" + ">";
+              break;
+            case "selection":
+              t.innerHTML = "<div style=\"margin-bottom:6px;font-size:11px;color:var(--text)\">" + e.displayName + "</div><select id=\"" + c + "-" + e.name + "\" onchange=\"valuechange(this)\"" + ">" + e.values.map(t => "<option" + (t == e.value ? " selected" : "") + ">" + t + "</option>").join("") + "</select>";
+          }
+          o.appendChild(t);
+        });
+        document.getElementById("modal-backdrop").classList.add("open");
+      } else toast(t.reason, true);
+    },
+    error: () => toast("Failed to connect.", true)
+  });
+}
+function valuechange(n) {
+  let t = n.id.split("-"), e = t[0], r = t[1], c = n.type === "checkbox" ? n.checked : n.value;
+  $.ajax({
+    url: "/api/setModuleSettingValue?module=" + e + "&name=" + r + "&value=" + c,
+    type: "GET",
+    dataType: "json",
+    success: t => {
+      t.success ? n.type === "checkbox" ? n.checked = t.result : n.value = t.result : toast(t.reason, true);
+    },
+    error: () => toast("Failed to connect.", true)
+  });
+}
+document.getElementById("modal-backdrop").addEventListener("click", t => {
+  t.target === t.currentTarget && closeModal();
+});
+let currentCat = null;
+function loadCategory(n) {
+  let t = location.hash.substr(1);
+  t.indexOf("?") !== -1 && (t = t.substr(0, t.indexOf("?")));
+  allCategories.includes(t) || (location.hash = "#" + (t = allCategories[0] || ""));
+  let r = t !== currentCat;
+  r && (currentCat = t, category = t, updateActiveNav(t));
+  $.ajax({
+    url: "/api/modulesList?category=" + t,
+    type: "GET",
+    dataType: "json",
+    success: t => {
+      t.success ? r || !n ? renderModules(t.result) : patchModules(t.result) : toast(t.reason, true);
+    }
+  });
+}
+$.ajax({
+  url: "/api/categoriesList",
+  type: "GET",
+  dataType: "json",
+  success: t => {
+    setConnected(true);
+    __case_1: {
+      if (t.success) break __case_1;
+      return void toast(t.reason, true);
+    }
+    allCategories = t.result;
+    t.result.forEach(addCategory);
+    location.hash && (category = location.hash.substr(1), category.indexOf("?") !== -1) && (category = category.substr(0, category.indexOf("?")));
+    t.result.includes(category) || (location.hash = "#" + (category = t.result[0]));
+    window.onhashchange = () => loadCategory(false);
+    loadCategory(false);
+    setInterval(() => loadCategory(true), 5e3);
+  },
+  error: () => {
+    setConnected(false);
+    toast("Failed to connect to client.", true);
+  }
+});
+  </script>
+</body>
+
+</html>

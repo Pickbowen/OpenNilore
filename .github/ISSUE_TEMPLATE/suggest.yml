@@ -1,0 +1,18 @@
+name: 建议 (Suggest)
+description: 提出一个新功能、改进或想法
+title: "[Suggest] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你的建议!请尽量清晰地描述你希望看到的改动以及它的价值。
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: 建议内容
+      description: 你希望增加 / 修改什么功能?它解决了什么问题?
+      placeholder: 例如:希望 ClickGUI 支持配置面板宽度,目前在 1080p 下默认宽度过窄。
+    validations:
+      required: true

@@ -1,0 +1,38 @@
+name: 崩溃 (Crash)
+description: 提交一个导致客户端 / 游戏崩溃的问题
+title: "[Crash] "
+labels: ["crash"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你反馈崩溃问题。**请务必附上完整的崩溃日志**,缺失日志的崩溃 issue 几乎无法被定位。
+
+  - type: textarea
+    id: log
+    attributes:
+      label: 日志
+      description: |
+        请粘贴完整的崩溃日志 (crash-report) 或 `logs/latest.log` 中的相关片段。
+        若日志过长,推荐使用 GitHub Gist / [mclo.gs](https://mclo.gs) 上传后贴出链接。
+      placeholder: |
+        ```
+        ---- Minecraft Crash Report ----
+        // ...
+        ```
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 触发崩溃所需的操作步骤。越具体越好,包括是否是必现、概率多大。
+      placeholder: |
+        1. 进入单人世界
+        2. 启用 Scaffold 模块
+        3. 持续向前移动约 5 秒
+        4. 客户端崩溃 (100% 复现)
+    validations:
+      required: true

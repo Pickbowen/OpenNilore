@@ -1,0 +1,272 @@
+name: Build Loader
+
+on:
+  push:
+    branches: [master]
+    # Only build when something that actually affects the output changed.
+    # README / docs / issue templates / .gitignore / .claude/ get to skip.
+    # Use workflow_dispatch (below) to force a run for anything else.
+    paths:
+      - 'src/**'
+      - 'native/**'
+      - 'build.gradle'
+      - 'settings.gradle'
+      - 'gradle.properties'
+      - 'gradle/wrapper/**'
+      - 'gradlew'
+      - 'gradlew.bat'
+      - '.github/workflows/build-loader.yml'
+  workflow_dispatch: {}
+
+# contents: write so the [Release] commit-marker path can create a
+# GitHub Release and upload the built artifacts.
+# actions: write needed for vcpkg's GitHub Actions binary cache (x-gha backend).
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 180
+
+    # Honour a [SKIP CI] marker (case-insensitive — GitHub's contains() is
+    # case-insensitive for string operands) anywhere in the head commit
+    # message. workflow_dispatch always runs since head_commit is null
+    # there and the !contains() short-circuits to true.
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[SKIP CI]') }}
+
+    env:
+      # NOTE: do not declare VCPKG_ROOT here. The windows-2022 runner
+      # ships VS Enterprise which pre-sets a system-wide VCPKG_ROOT
+      # pointing at its own (empty) vcpkg dir, and that pre-set value
+      # wins over a job-level env in PowerShell expansions. We export
+      # the right VCPKG_ROOT into $GITHUB_ENV inside the clone step
+      # so every later step sees our copy.
+      #
+      # We rely on actions/cache for the installed Qt artifacts; the
+      # vcpkg x-gha backend depends on the v1 GitHub Actions cache API
+      # which has been deprecated, and a fresh runner image often does
+      # not have ACTIONS_RESULTS_URL set for non-Node actions yet.
+      # Setting "files" as the binary source means vcpkg will still
+      # populate ${VCPKG_ROOT}/archives, which actions/cache then
+      # snapshots along with installed/.
+      VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}\\vcpkg-archives,readwrite"
+      # Opt every JavaScript action into the Node.js 24 runtime ahead of the
+      # 2026-06-02 forced switchover. The v4 / v1 pins below all still ship
+      # a Node 20 binary in their action.yml, and GitHub deprecated Node 20
+      # on 2025-09-19; setting this flag makes the runner execute them under
+      # Node 24 regardless, which silences the deprecation warning and
+      # de-risks the upcoming default flip.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Resolve git revision
+        id: rev
+        shell: pwsh
+        run: |
+          $sha = git rev-parse --short=7 HEAD
+          "sha=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Build revision: $sha"
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup MSVC (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Clone & bootstrap vcpkg
+        shell: pwsh
+        run: |
+          # Pin vcpkg to the SAME commit as native/vcpkg.json's
+          # "builtin-baseline". A floating HEAD clone made the qtbase port
+          # (and thus its package ABI) drift every time upstream vcpkg moved,
+          # so the restored Qt cache never matched and qtbase was rebuilt
+          # from source (~31 min) on every run. Tag 2026.04.27 ==
+          # 56bb2411609227288b70117ead2c47585ba07713 and ships qtbase 6.10.2.
+          # We pin 6.10.2 (not the newer 6.11.0 from 2026.05.25) because MSVC
+          # 14.44.x crashes with an internal compiler error (C1001) building
+          # Qt 6.11.0 from source; 6.10.2 builds cleanly on every toolset we use.
+          # Keep this tag and the builtin-baseline in vcpkg.json in lockstep.
+          $vcpkgTag = '2026.04.27'
+          $vcpkg = Join-Path $env:GITHUB_WORKSPACE 'vcpkg'
+          if (Test-Path $vcpkg) {
+              Write-Host "Reusing existing $vcpkg"
+          } else {
+              git clone --depth=1 --branch $vcpkgTag https://github.com/microsoft/vcpkg.git $vcpkg
+          }
+          & "$vcpkg\bootstrap-vcpkg.bat" -disableMetrics
+          & "$vcpkg\vcpkg.exe" version
+          "VCPKG_ROOT=$vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Exported VCPKG_ROOT=$vcpkg to GITHUB_ENV"
+
+      # Cache the resolved Qt install + the file-backed binary archive.
+      # Key is keyed on vcpkg.json so any dependency change invalidates;
+      # restore-keys lets a vcpkg.json bump still warm-start from the
+      # previous build's archives. installed/ alone makes CMake's manifest
+      # mode skip rebuilding qtbase; archives/ also fills back transitive
+      # deps if a partial rebuild is needed.
+      - name: Cache vcpkg installed + archives
+        uses: actions/cache@v4
+        with:
+          path: |
+            vcpkg\installed
+            vcpkg-archives
+          key: vcpkg-qt-${{ runner.os }}-${{ hashFiles('native/vcpkg.json') }}
+          restore-keys: |
+            vcpkg-qt-${{ runner.os }}-
+
+      - name: Install UPX
+        shell: pwsh
+        run: choco install upx -y --no-progress
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Build (clean dll upxCompress)
+        shell: pwsh
+        env:
+          OPENZEN_BUILD_REVISION: ${{ steps.rev.outputs.sha }}
+        run: |
+          Write-Host "VCPKG_ROOT       = $env:VCPKG_ROOT"
+          Write-Host "JAVA_HOME        = $env:JAVA_HOME"
+          Write-Host "OPENZEN_BUILD_REV = $env:OPENZEN_BUILD_REVISION"
+          .\gradlew.bat --no-daemon clean dll upxCompress
+
+      # Rename the two distributable artifacts so their final filenames carry
+      # the build sha. We rename rather than re-publish at build time so the
+      # local `./gradlew dll` workflow keeps producing stable filenames.
+      - name: Stage release artifacts
+        shell: pwsh
+        run: |
+          $sha = "${{ steps.rev.outputs.sha }}"
+          $exeSrc = "build\dist\OpenZenLoader.exe"
+          $jarSrc = "build\libs\hey-1.0.jar"
+          # The class-name obfuscator emits a fresh, random old->new mapping on every
+          # build; rename-mapping.txt is the ONLY way to de-obfuscate a stack trace, so
+          # ship it with the artifacts/release.
+          $mapSrc = "build\rename-mapping.txt"
+          if (-not (Test-Path $exeSrc)) { throw "missing $exeSrc" }
+          if (-not (Test-Path $jarSrc)) { throw "missing $jarSrc" }
+          if (-not (Test-Path $mapSrc)) { throw "missing $mapSrc" }
+
+          $release = "build\release"
+          New-Item -ItemType Directory -Force -Path $release | Out-Null
+          $exeDst = Join-Path $release "OpenZenLoader-$sha.exe"
+          $jarDst = Join-Path $release "OpenZen-$sha.jar"
+          $mapDst = Join-Path $release "OpenZen-$sha-mapping.txt"
+          Copy-Item -Force $exeSrc $exeDst
+          Copy-Item -Force $jarSrc $jarDst
+          Copy-Item -Force $mapSrc $mapDst
+
+          $exeSz = (Get-Item $exeDst).Length
+          $jarSz = (Get-Item $jarDst).Length
+          Write-Host ("OpenZenLoader-{0}.exe : {1:N0} bytes ({2:N2} MB)" -f $sha, $exeSz, ($exeSz/1MB))
+          Write-Host ("OpenZen-{0}.jar       : {1:N0} bytes ({2:N2} MB)" -f $sha, $jarSz, ($jarSz/1MB))
+          Write-Host ("OpenZen-{0}-mapping.txt : {1:N0} bytes" -f $sha, (Get-Item $mapDst).Length)
+
+      # NOTE: actions/upload-artifact always wraps its content in a zip; that
+      # is a platform limitation we cannot disable. By giving each artifact a
+      # single file whose name already encodes the sha, the download is
+      # OpenZenLoader-<sha>.exe.zip / OpenZen-<sha>.jar.zip, each containing
+      # just the named file (no nested directory). For raw exe/jar downloads
+      # without the zip wrapper, attach to a GitHub Release instead.
+      - name: Upload OpenZenLoader exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenZenLoader-${{ steps.rev.outputs.sha }}.exe
+          path: build/release/OpenZenLoader-${{ steps.rev.outputs.sha }}.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload OpenZen jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenZen-${{ steps.rev.outputs.sha }}.jar
+          path: build/release/OpenZen-${{ steps.rev.outputs.sha }}.jar
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload de-obfuscation mapping
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenZen-${{ steps.rev.outputs.sha }}-mapping.txt
+          path: build/release/OpenZen-${{ steps.rev.outputs.sha }}-mapping.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      # ===== Optional GitHub Release publish =====
+      # If the HEAD commit message contains the literal marker "[Release]",
+      # cut a GitHub Release tagged build-<sha> and attach the exe + jar.
+      # Without the marker, this step is skipped — every push still produces
+      # the Actions artifacts above, only tagged releases are gated.
+      - name: Detect [Release] marker
+        id: relmark
+        shell: pwsh
+        run: |
+          $msg = (git log -1 --pretty=%B HEAD | Out-String)
+          # Case-insensitive match so [release], [Release], [RELEASE] all
+          # qualify; .Contains in .NET is case-sensitive by default.
+          $isRelease = $msg.IndexOf("[Release]", [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+          "is_release=$($isRelease.ToString().ToLower())" |
+              Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "HEAD commit message:"
+          Write-Host $msg
+          Write-Host "[Release] marker present: $isRelease"
+
+      - name: Publish GitHub Release
+        if: steps.relmark.outputs.is_release == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ steps.rev.outputs.sha }}
+        run: |
+          $tag   = "build-$env:SHA"
+          $title = "Build $env:SHA"
+          # Write notes via a file so quoting / [brackets] / newlines in the
+          # commit message can't corrupt the gh command line.
+          $notes = "release-notes.md"
+          # Prepend a PRE-BUILT warning to the release body: these artifacts all share
+          # one fixed obfuscation mapping, so an anti-cheat class-name blacklist can
+          # target them. Tell users to self-compile for unique, per-build random names.
+          # Build the banner as a string array (one line each) to avoid PowerShell
+          # here-string column-0 terminator issues inside a YAML block scalar.
+          $warn = @(
+            '> ⚠️ **这是预构建版本（PRE-BUILT）**'
+            '>'
+            '> 本 Release 里的 `OpenZenLoader.exe` / `OpenZen-*.jar` 是 GitHub Actions 编译的成品，**所有人下载到的是同一套混淆类名**。这套固定的名字随时可能被反作弊（如布吉岛）收录进**类名黑名单**而失效。'
+            '>'
+            '> 想要一套**独一无二、别人都不知道**的类名，请**自己编译**（每次构建都会生成全新随机类名）：'
+            '> - **Fork 本仓库**，在你自己的 GitHub Actions 里跑 `Build Loader` 工作流，下载你自己的 artifact；**或**'
+            '> - **clone 到本地**自己 `gradlew jar` / `gradlew dll`。'
+            '>'
+            '> 详见仓库 README 的「编译时类名混淆」。`OpenZen-*-mapping.txt` 是本次构建的反混淆映射（每次构建都不同）。'
+            ''
+            '---'
+            ''
+          )
+          $warn | Out-File -FilePath $notes -Encoding utf8
+          git log -1 --pretty=%B HEAD | Out-File -FilePath $notes -Encoding utf8 -Append
+          gh release create $tag `
+              --title $title `
+              --notes-file $notes `
+              "build/release/OpenZenLoader-$env:SHA.exe" `
+              "build/release/OpenZen-$env:SHA.jar" `
+              "build/release/OpenZen-$env:SHA-mapping.txt"

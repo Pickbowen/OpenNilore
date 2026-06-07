@@ -1,0 +1,3 @@
+#include "resource.h"
+
+IDR_LIZZ_JAR RCDATA "lizz.jar"

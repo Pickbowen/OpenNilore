@@ -1,0 +1,719 @@
+import org.objectweb.asm.ClassReader
+import org.objectweb.asm.ClassWriter
+import org.objectweb.asm.ClassVisitor
+import org.objectweb.asm.Opcodes
+import org.objectweb.asm.commons.ClassRemapper
+import org.objectweb.asm.commons.Remapper
+
+buildscript {
+    repositories {
+        mavenCentral()
+    }
+    dependencies {
+        // ASM is used by the build-time class-name obfuscation step (ext.obfuscateJar).
+        // It runs on the already-built jar, so it lives on the buildscript classpath
+        // rather than the project compile/runtime classpath.
+        //
+        // NOTE: the buildscript-classpath ASM also backs Groovy's build-script type
+        // resolution, so it must be able to read the class files of the JDK that runs
+        // Gradle. ASM 9.6 supports up to Java 21 (major version 65) — run Gradle on the
+        // project's JDK 17 (not a newer JDK like 25/major 69, which 9.6 cannot read).
+        classpath 'org.ow2.asm:asm-commons:9.6'
+    }
+}
+
+plugins {
+    id 'eclipse'
+    id 'idea'
+    id 'maven-publish'
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+}
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = mod_id
+}
+
+// Mojang ships Java 17 to end users in 1.18+, so your mod should target Java 17.
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+println "Java: ${System.getProperty 'java.version'}, JVM: ${System.getProperty 'java.vm.version'} (${System.getProperty 'java.vendor'}), Arch: ${System.getProperty 'os.arch'}"
+minecraft {
+    // The mappings can be changed at any time and must be in the following format.
+    // Channel:   Version:
+    // official   MCVersion             Official field/method names from Mojang mapping files
+    // parchment  YYYY.MM.DD-MCVersion  Open community-sourced parameter names and javadocs layered on top of official
+    //
+    // You must be aware of the Mojang license when using the 'official' or 'parchment' mappings.
+    // See more information here: https://github.com/MinecraftForge/MCPConfig/blob/master/Mojang.md
+    //
+    // Parchment is an unofficial project maintained by ParchmentMC, separate from MinecraftForge
+    // Additional setup is needed to use their mappings: https://parchmentmc.org/docs/getting-started
+    //
+    // Use non-default mappings at your own risk. They may not always work.
+    // Simply re-run your setup task after changing the mappings to update your workspace.
+    mappings channel: mapping_channel, version: mapping_version
+
+    // When true, this property will have all Eclipse/IntelliJ IDEA run configurations run the "prepareX" task for the given run configuration before launching the game.
+    // In most cases, it is not necessary to enable.
+    // enableEclipsePrepareRuns = true
+    // enableIdeaPrepareRuns = true
+
+    // This property allows configuring Gradle's ProcessResources task(s) to run on IDE output locations before launching the game.
+    // It is REQUIRED to be set to true for this template to function.
+    // See https://docs.gradle.org/current/dsl/org.gradle.language.jvm.tasks.ProcessResources.html
+    copyIdeResources = true
+
+    // When true, this property will add the folder name of all declared run configurations to generated IDE run configurations.
+    // The folder name can be set on a run configuration using the "folderName" property.
+    // By default, the folder name of a run configuration is the name of the Gradle project containing it.
+    // generateRunFolders = true
+
+    // This property enables access transformers for use in development.
+    // They will be applied to the Minecraft artifact.
+    // The access transformer file can be anywhere in the project.
+    // However, it must be at "META-INF/accesstransformer.cfg" in the final mod jar to be loaded by Forge.
+    // This default location is a best practice to automatically put the file in the right place in the final jar.
+    // See https://docs.minecraftforge.net/en/latest/advanced/accesstransformers/ for more information.
+    // accessTransformer = file('src/main/resources/META-INF/accesstransformer.cfg')
+
+    // Default run configurations.
+    // These can be tweaked, removed, or duplicated as needed.
+    runs {
+        // applies to all the run configs below
+        configureEach {
+            workingDirectory project.file('run')
+
+            // Recommended logging data for a userdev environment
+            // The markers can be added/remove as needed separated by commas.
+            // "SCAN": For mods scan.
+            // "REGISTRIES": For firing of registry events.
+            // "REGISTRYDUMP": For getting the contents of all registries.
+            property 'forge.logging.markers', 'REGISTRIES'
+
+            // Recommended logging level for the console
+            // You can set various levels here.
+            // Please read: https://stackoverflow.com/questions/2031163/when-to-use-the-different-log-levels
+            property 'forge.logging.console.level', 'debug'
+
+            mods {
+                "${mod_id}" {
+                    source sourceSets.main
+                }
+            }
+        }
+
+        client {
+            // Comma-separated list of namespaces to load gametests from. Empty = all namespaces.
+            property 'forge.enabledGameTestNamespaces', mod_id
+            // Inject the built mod jar as a Java agent so PatchAgent.premain() runs before
+            // Minecraft classes are loaded. Use runClient0 (defined below) to ensure the jar is
+            // built first.
+            jvmArgs.add "-javaagent:${tasks.jar.archiveFile.get().asFile.absolutePath}".toString()
+            // Allow the agent to attach to itself if PatchAgent.installPatchesAndRetransform
+            // needs to fall back to the Attach API.
+            jvmArgs.add "-Djdk.attach.allowAttachSelf=true".toString()
+        }
+
+        server {
+            property 'forge.enabledGameTestNamespaces', mod_id
+            args '--nogui'
+        }
+
+        // This run config launches GameTestServer and runs all registered gametests, then exits.
+        // By default, the server will crash when no gametests are provided.
+        // The gametest system is also enabled by default for other run configs under the /test command.
+        gameTestServer {
+            property 'forge.enabledGameTestNamespaces', mod_id
+        }
+
+        data {
+            // example of overriding the workingDirectory set in configureEach above
+            workingDirectory project.file('run-data')
+
+            // Specify the modid for data generation, where to output the resulting resource, and where to look for existing resources.
+            args '--mod', mod_id, '--all', '--output', file('src/generated/resources/'), '--existing', file('src/main/resources/')
+        }
+    }
+}
+
+// Include resources generated by data generators.
+sourceSets.main.resources { srcDir 'src/generated/resources' }
+
+repositories {
+    // Put repositories for dependencies here
+    // ForgeGradle automatically adds the Forge maven and Maven Central for you
+
+    // If you have mod jar dependencies in ./libs, you can declare them as a repository like so.
+    // See https://docs.gradle.org/current/userguide/declaring_repositories.html#sub:flat_dir_resolver
+    // flatDir {
+    //     dir 'libs'
+    // }
+
+    maven { url = "https://pkgs.dev.azure.com/djtheredstoner/DevAuth/_packaging/public/maven/v1" }
+}
+
+dependencies {
+    // Specify the version of Minecraft to use.
+    // Any artifact can be supplied so long as it has a "userdev" classifier artifact and is a compatible patcher artifact.
+    // The "userdev" classifier will be requested and setup by ForgeGradle.
+    // If the group id is "net.minecraft" and the artifact id is one of ["client", "server", "joined"],
+    // then special handling is done to allow a setup of a vanilla dependency without the use of an external repository.
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+
+    compileOnly 'org.projectlombok:lombok:1.18.34'
+    annotationProcessor 'org.projectlombok:lombok:1.18.34'
+
+    // ASM (already on Forge classpath at runtime via Mojang deps, but declare for IDE/compile)
+    implementation 'org.ow2.asm:asm:9.6'
+    implementation 'org.ow2.asm:asm-tree:9.6'
+    implementation 'org.ow2.asm:asm-commons:9.6'
+    implementation 'org.ow2.asm:asm-util:9.6'
+
+    // Dev Auth
+    runtimeOnly("me.djtheredstoner:DevAuth-forge-latest:1.2.2")
+
+    // Example mod dependency with JEI - using fg.deobf() ensures the dependency is remapped to your development mappings
+    // The JEI API is declared for compile time use, while the full JEI artifact is used at runtime
+    // compileOnly fg.deobf("mezz.jei:jei-${mc_version}-common-api:${jei_version}")
+    // compileOnly fg.deobf("mezz.jei:jei-${mc_version}-forge-api:${jei_version}")
+    // runtimeOnly fg.deobf("mezz.jei:jei-${mc_version}-forge:${jei_version}")
+
+    // Example mod dependency using a mod jar from ./libs with a flat dir repository
+    // This maps to ./libs/coolmod-${mc_version}-${coolmod_version}.jar
+    // The group id is ignored when searching -- in this case, it is "blank"
+    // implementation fg.deobf("blank:coolmod-${mc_version}:${coolmod_version}")
+
+    // For more info:
+    // http://www.gradle.org/docs/current/userguide/artifact_dependencies_tutorial.html
+    // http://www.gradle.org/docs/current/userguide/dependency_management.html
+}
+
+// This block of code expands all declared replace properties in the specified resource targets.
+// A missing property will result in an error. Properties are expanded using ${} Groovy notation.
+// When "copyIdeResources" is enabled, this will also run before the game launches in IDE environments.
+// See https://docs.gradle.org/current/dsl/org.gradle.language.jvm.tasks.ProcessResources.html
+tasks.named('processResources', ProcessResources).configure {
+    var replaceProperties = [
+            minecraft_version: minecraft_version, minecraft_version_range: minecraft_version_range,
+            forge_version: forge_version, forge_version_range: forge_version_range,
+            loader_version_range: loader_version_range,
+            mod_id: mod_id, mod_name: mod_name, mod_license: mod_license, mod_version: mod_version,
+            mod_authors: mod_authors, mod_description: mod_description,
+    ]
+    inputs.properties replaceProperties
+
+    filesMatching(['META-INF/mods.toml', 'pack.mcmeta']) {
+        expand replaceProperties + [project: project]
+    }
+}
+
+// Example for how to get properties into the manifest for reading at runtime.
+tasks.named('jar', Jar).configure {
+    manifest {
+        attributes([
+                'Specification-Title'     : mod_id,
+                'Specification-Vendor'    : mod_authors,
+                'Specification-Version'   : '1', // We are version 1 of ourselves
+                'Implementation-Title'    : project.name,
+                'Implementation-Version'  : project.jar.archiveVersion,
+                'Implementation-Vendor'   : mod_authors,
+                'Implementation-Timestamp': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ"),
+                // Java-agent entry points so the jar can be passed via -javaagent:
+                'Premain-Class'           : 'asm.patchify.loader.PatchAgent',
+                'Agent-Class'             : 'asm.patchify.loader.PatchAgent',
+                'Can-Retransform-Classes' : 'true',
+                'Can-Redefine-Classes'    : 'true'
+        ])
+    }
+
+    // This is the preferred method to reobfuscate your jar file
+    finalizedBy 'reobfJar'
+}
+
+// ===== Build-time class-name obfuscation =====
+//
+// Renames EVERY OpenZen class (shit.zen.** and asm.patchify.**) to an opaque
+// generated name, so no original class name survives in the distributed jar.
+// It runs on the reobf'd jar and only touches our two package trees —
+// net.minecraft.** / net.minecraftforge.** references are left exactly as
+// ForgeGradle's mojmap->SRG reobf produced them, so reobf and runtime
+// remapping are unaffected.
+//
+// CLASS NAMES ONLY: method/field names are preserved, so the JNI method lookups
+// (GameLoaderBridge.load, DllBootstrap.start), reflection, GSON @SerializedName
+// wire keys and the manifest member contracts all keep working.
+//
+// NOTHING IS HARD-CODED. The three bootstrap classes referenced by string
+// OUTSIDE the bytecode the remapper rewrites are kept in lockstep by
+// propagating their freshly generated names:
+//   asm.patchify.loader.PatchAgent -> jar manifest Premain/Agent-Class (rewritten below)
+//   shit.zen.dll.DllBootstrap      -> Class.forName(...) string literal (rewritten via Remapper.mapValue)
+//   shit.zen.dll.GameLoaderBridge  -> native DLL loader, via a generated C++ header
+//                                     (native/dll/src/generated_names.h) emitted below.
+ext.obfuscateJar = { File jarFile, File mappingOut ->
+    def owned = { String internal -> internal.startsWith('shit/zen/') || internal.startsWith('asm/patchify/') }
+
+    // Pass 1: enumerate the classes we own (every shit.zen.* / asm.patchify.* class).
+    def ownedNames = []
+    new java.util.zip.ZipFile(jarFile).withCloseable { zf ->
+        for (entry in Collections.list(zf.entries())) {
+            if (!entry.directory && entry.name.endsWith('.class')) {
+                def internal = entry.name.substring(0, entry.name.length() - 6)
+                if (owned(internal)) ownedNames << internal
+            }
+        }
+    }
+    if (ownedNames.isEmpty()) {
+        logger.lifecycle("obfuscateJar: no original class names in ${jarFile.name} (already obfuscated) — skipping")
+        return
+    }
+    // Pass 2: assign each owned class a FRESH RANDOM 16-char name, so the obfuscated
+    // names differ on every build and encode nothing. Uniqueness is enforced. The
+    // names are unpredictable, so build/rename-mapping.txt (written below) is the only
+    // way to de-obfuscate a stack trace — each build's mapping is different; keep it.
+    //
+    // ALL classes go into ONE shared (also random, 16-char) package. They must share a
+    // single package so that package-private (default-access) members originally used
+    // between same-package classes still resolve — flattening into one package only
+    // widens access, never breaks it. Per-class packages would turn those into illegal
+    // cross-package accesses (IllegalAccessError) unless every member were made public.
+    def typeMap = [:]
+    def usedNames = new HashSet()
+    def secureRandom = new java.security.SecureRandom()
+    def leadAlphabet = (('a'..'z') + ('A'..'Z')).join('')                 // first char: a letter
+    def nameAlphabet = (('a'..'z') + ('A'..'Z') + ('0'..'9')).join('')    // rest: alphanumeric
+    def randomName = {
+        def sb = new StringBuilder(16)
+        sb.append(leadAlphabet.charAt(secureRandom.nextInt(leadAlphabet.length())))
+        15.times { sb.append(nameAlphabet.charAt(secureRandom.nextInt(nameAlphabet.length()))) }
+        sb.toString()
+    }
+    def obfPackage = randomName()   // one random package for every class (see note above)
+    ownedNames.each { internal ->
+        def newName
+        while (true) { newName = randomName(); if (usedNames.add(newName)) break }
+        typeMap[internal] = obfPackage + '/' + newName
+    }
+    // String-constant remap table — catches class names embedded as String
+    // literals (e.g. Class.forName("shit.zen.dll.DllBootstrap")). Both the
+    // dotted (Class.forName) and slash (internal) spellings are covered.
+    def stringMap = [:]
+    typeMap.each { o, n ->
+        stringMap[o.replace('/', '.')] = n.replace('/', '.')
+        stringMap[o] = n
+    }
+
+    def remapper = new Remapper() {
+        String map(String internalName) {
+            def n = typeMap[internalName]
+            return n != null ? n : internalName
+        }
+
+        Object mapValue(Object value) {
+            if (value instanceof String) {
+                def repl = stringMap[value]
+                if (repl != null) return repl
+            }
+            return super.mapValue(value)
+        }
+    }
+
+    // Pass 2: rewrite into a temp jar, then atomically swap it in.
+    def tmp = new File(jarFile.parentFile, jarFile.name + '.obf')
+    tmp.delete()
+    new java.util.zip.ZipFile(jarFile).withCloseable { zf ->
+        new java.util.zip.ZipOutputStream(new FileOutputStream(tmp)).withCloseable { zos ->
+            for (entry in Collections.list(zf.entries())) {
+                if (entry.directory) continue
+                def name = entry.name
+                byte[] bytes = zf.getInputStream(entry).bytes
+                if (name.endsWith('.class')) {
+                    def internal = name.substring(0, name.length() - 6)
+                    if (owned(internal)) {
+                        def cr = new ClassReader(bytes)
+                        def cw = new ClassWriter(0)
+                        // Drop the original SourceFile name ("ZenClient.java" etc.) but keep
+                        // line numbers so stack traces still carry positions.
+                        def stripSource = new ClassVisitor(Opcodes.ASM9, cw) {
+                            void visitSource(String source, String debug) { super.visitSource(null, null) }
+                        }
+                        cr.accept(new ClassRemapper(stripSource, remapper), 0)
+                        bytes = cw.toByteArray()
+                        name = typeMap[internal] + '.class'
+                    }
+                    zos.putNextEntry(new java.util.zip.ZipEntry(name)); zos.write(bytes); zos.closeEntry()
+                } else if (name == 'META-INF/MANIFEST.MF') {
+                    def mf = new java.util.jar.Manifest(new ByteArrayInputStream(bytes))
+                    def attrs = mf.getMainAttributes()
+                    ['Premain-Class', 'Agent-Class'].each { key ->
+                        def v = attrs.getValue(key)
+                        if (v != null) {
+                            def internal = v.replace('.', '/')
+                            if (typeMap.containsKey(internal)) attrs.putValue(key, typeMap[internal].replace('/', '.'))
+                        }
+                    }
+                    def bos = new ByteArrayOutputStream(); mf.write(bos)
+                    zos.putNextEntry(new java.util.zip.ZipEntry(name)); zos.write(bos.toByteArray()); zos.closeEntry()
+                } else if (name.startsWith('META-INF/') &&
+                        (name.endsWith('.SF') || name.endsWith('.RSA') || name.endsWith('.DSA') || name.endsWith('.EC'))) {
+                    // Drop signature files — renaming class entries invalidates their digests.
+                } else {
+                    // Resources verbatim: mapping.srg, webui/**, assets/**, fonts, mods.toml, pack.mcmeta.
+                    zos.putNextEntry(new java.util.zip.ZipEntry(name)); zos.write(bytes); zos.closeEntry()
+                }
+            }
+        }
+    }
+    if (!jarFile.delete()) throw new GradleException("obfuscateJar: could not delete ${jarFile}")
+    if (!tmp.renameTo(jarFile)) throw new GradleException("obfuscateJar: could not move ${tmp} -> ${jarFile}")
+
+    mappingOut.parentFile.mkdirs()
+    mappingOut.withWriter('UTF-8') { w ->
+        typeMap.sort { it.key }.each { o, n -> w.writeLine("${o.replace('/', '.')} -> ${n.replace('/', '.')}") }
+    }
+
+    // Propagate the GameLoaderBridge name to the native DLL loader. class_loader.cpp
+    // #includes this generated header and loads the class by OZ_BRIDGE_FQCN, so the
+    // native side always matches whatever opaque name the bridge received — no
+    // hard-coded class name. Generated, never committed (see .gitignore).
+    def bridgeFqcn = typeMap['shit/zen/dll/GameLoaderBridge'].replace('/', '.')
+    def header = file('native/dll/src/generated_names.h')
+    header.parentFile.mkdirs()
+    header.text = """\
+// AUTO-GENERATED by build.gradle (ext.obfuscateJar). DO NOT EDIT, DO NOT COMMIT.
+// The build renames every OpenZen class to an opaque name; this captures the
+// generated FQCN of the DLL bootstrap bridge (originally shit.zen.dll.GameLoaderBridge)
+// so the native loader can request it by name. The bridge's load(String, ClassLoader)
+// method name is preserved by the rename, so main.cpp's GetStaticMethodID still works.
+#pragma once
+#define OZ_BRIDGE_FQCN "${bridgeFqcn}"
+"""
+
+    logger.lifecycle("obfuscateJar: renamed ${typeMap.size()} classes in ${jarFile.name}; " +
+            "bridge=${bridgeFqcn}; mapping -> ${mappingOut}")
+}
+
+tasks.register('obfuscateClasses') {
+    group = 'openzen'
+    description = 'Rename every OpenZen class to an opaque name in the built jar (class names only).'
+    dependsOn 'reobfJar'
+    doLast {
+        obfuscateJar(tasks.jar.archiveFile.get().asFile, file("$buildDir/rename-mapping.txt"))
+    }
+}
+
+// Auto-run after every reobf so `gradlew jar` / `build` / `dll` all emit obfuscated
+// names. reobfJar is created lazily by ForgeGradle, so wire via matching/configureEach.
+tasks.matching { it.name == 'reobfJar' }.configureEach { finalizedBy 'obfuscateClasses' }
+
+// However if you are in a multi-project build, dev time needs unobfed jar files, so you can delay the obfuscation until publishing by doing:
+// tasks.named('publish').configure {
+//     dependsOn 'reobfJar'
+// }
+
+// IZMK-style entry point: build the jar first (so the -javaagent path exists) and then launch
+// the client. The client run config above already references tasks.jar via archiveFile.
+tasks.register('runClient0') {
+    group = 'forgegradle runs'
+    description = 'Build the mod jar (used as -javaagent) and start the client.'
+    dependsOn tasks.jar
+    finalizedBy tasks.runClient
+}
+
+// Example configuration to allow publishing using the maven-publish plugin
+publishing {
+    publications {
+        register('mavenJava', MavenPublication) {
+            artifact jar
+        }
+    }
+    repositories {
+        maven {
+            url "file://${project.projectDir}/mcmodsrepo"
+        }
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8' // Use the UTF-8 charset for Java compilation
+}
+
+// ===== Native build (DLL injection path) =====
+//
+// Produces:
+//   build/dist/OpenZen.dll        - injectable DLL with embedded zen.jar
+//   build/dist/OpenZenLoader.exe  - GUI injector
+//
+// Requires:
+//   - JAVA_HOME pointing at a JDK 17 install (for jni.h / jvmti.h)
+//   - CMake either on PATH, bundled with Visual Studio 2019/2022
+//     ("C++ CMake tools for Windows" workload), or installed standalone.
+//   - MSVC build tools (Visual Studio 2019+).
+//
+// Usage:
+//   ./gradlew dll
+//
+def nativeDir = file('native')
+def nativeBuildDir = file("$nativeDir/build")
+
+ext.findCmake = {
+    // 1. cmake already on PATH?
+    try {
+        def p = ['cmd', '/c', 'where', 'cmake'].execute()
+        def out = new StringBuilder()
+        p.consumeProcessOutput(out, new StringBuilder())
+        p.waitForOrKill(2000)
+        if (p.exitValue() == 0) {
+            def first = out.toString().readLines().find { it?.trim() }
+            if (first) return first.trim()
+        }
+    } catch (Exception ignored) {}
+
+    // 2. Visual Studio bundled cmake via vswhere.
+    def pf86 = System.getenv('ProgramFiles(x86)') ?: 'C:/Program Files (x86)'
+    def vswhere = "${pf86}/Microsoft Visual Studio/Installer/vswhere.exe"
+    if (file(vswhere).exists()) {
+        try {
+            def out = new StringBuilder()
+            def p = [vswhere, '-latest', '-products', '*',
+                     '-requires', 'Microsoft.VisualStudio.Component.VC.CMake.Project',
+                     '-property', 'installationPath'].execute()
+            p.consumeProcessOutput(out, new StringBuilder())
+            p.waitForOrKill(5000)
+            def vsPath = out.toString().trim()
+            if (vsPath) {
+                def cmakeExe = "${vsPath}/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe"
+                if (file(cmakeExe).exists()) return cmakeExe
+            }
+        } catch (Exception ignored) {}
+    }
+
+    // 3. Standalone CMake installations.
+    def pf = System.getenv('ProgramFiles') ?: 'C:/Program Files'
+    def lad = System.getenv('LOCALAPPDATA') ?: ''
+    def candidates = [
+            "${pf}/CMake/bin/cmake.exe",
+            "${pf86}/CMake/bin/cmake.exe",
+            "${lad}/Programs/CMake/bin/cmake.exe",
+    ]
+    for (path in candidates) {
+        if (path && file(path).exists()) return path
+    }
+    return null
+}
+
+def cmakeMissingMessage =
+        'CMake not found. Install one of:\n' +
+        '  - Standalone CMake: https://cmake.org/download/ (add to PATH)\n' +
+        '  - Visual Studio 2022 with "C++ CMake tools for Windows" workload\n' +
+        'After installing, re-run ./gradlew dll'
+
+ext.findVcpkg = {
+    def envRoot = System.getenv('VCPKG_ROOT')
+    def candidates = []
+    if (envRoot) candidates << envRoot
+    candidates += ['C:/vcpkg', 'D:/vcpkg', "${System.getProperty('user.home')}/vcpkg"]
+    // Also accept versioned install dirs like C:/vcpkg-2026.03.18.
+    ['C:/', 'D:/'].each { drive ->
+        def root = file(drive)
+        if (root.isDirectory()) {
+            root.listFiles().each { f ->
+                if (f.isDirectory() && f.name ==~ /^vcpkg(-.*)?$/) {
+                    candidates << f.absolutePath.replace('\\', '/')
+                }
+            }
+        }
+    }
+    for (root in candidates) {
+        if (root && file("$root/scripts/buildsystems/vcpkg.cmake").exists()) {
+            return root
+        }
+    }
+    return null
+}
+
+def vcpkgMissingMessage =
+        'vcpkg not found. The Qt-based loader needs vcpkg for static Qt6.\n' +
+        'One-time setup:\n' +
+        '  git clone https://github.com/microsoft/vcpkg.git C:/vcpkg\n' +
+        '  C:/vcpkg/bootstrap-vcpkg.bat\n' +
+        'Optionally set VCPKG_ROOT, or put it at C:/vcpkg or D:/vcpkg.\n' +
+        'Then re-run ./gradlew dll - the first run will build static Qt\n' +
+        '(can take 30 min to 2 h); subsequent builds are fast.'
+
+ext.gitShortRevision = {
+    // CI passes the resolved sha in OPENZEN_BUILD_REVISION so we don't have
+    // to assume git is on PATH inside the runner image.
+    def envRev = System.getenv('OPENZEN_BUILD_REVISION')
+    if (envRev && !envRev.allWhitespace) return envRev.trim().take(7)
+    try {
+        def p = ['git', 'rev-parse', '--short=7', 'HEAD'].execute(null, project.rootDir)
+        def out = new StringBuilder()
+        p.consumeProcessOutput(out, new StringBuilder())
+        p.waitForOrKill(2000)
+        if (p.exitValue() == 0) {
+            def v = out.toString().trim()
+            if (v) return v
+        }
+    } catch (Exception ignored) {}
+    return null
+}
+
+tasks.register('stageNativeJar', Copy) {
+    group = 'openzen'
+    description = 'Stage the freshly built mod jar at native/zen.jar so the DLL ' +
+                  'resource compiler can embed it.'
+    // obfuscateClasses (which dependsOn reobfJar, which dependsOn jar) rewrites
+    // the jar in place, so depend on it to guarantee the DLL embeds the
+    // obfuscated jar rather than racing the rename.
+    dependsOn 'obfuscateClasses'
+    from { tasks.jar.archiveFile }
+    into nativeDir
+    rename { 'zen.jar' }
+}
+
+tasks.register('configureNative', Exec) {
+    group = 'openzen'
+    description = 'Run CMake configure on the native sub-projects (DLL + Loader).'
+    dependsOn 'stageNativeJar'
+    workingDir nativeDir
+    commandLine 'cmake', '-S', '.', '-B', 'build', '-A', 'x64'
+    // Local builds compile Qt single-threaded (vcpkg honours VCPKG_MAX_CONCURRENCY,
+    // which sets ninja -j for the qtbase port). This rules out parallel-compilation
+    // instability on the dev toolchain. CI is left parallel (fast) — it builds Qt
+    // fine, so we only serialise locally (off GitHub Actions).
+    if (System.getenv('GITHUB_ACTIONS') == null) {
+        environment 'VCPKG_MAX_CONCURRENCY', '1'
+    }
+    doFirst {
+        def cmake = findCmake()
+        if (!cmake) throw new GradleException(cmakeMissingMessage)
+        def vcpkg = findVcpkg()
+        if (!vcpkg) throw new GradleException(vcpkgMissingMessage)
+        def rev = gitShortRevision()
+        logger.lifecycle("Using CMake : ${cmake}")
+        logger.lifecycle("Using vcpkg : ${vcpkg}")
+        logger.lifecycle("Build rev   : ${rev ?: '(unknown)'}")
+        def args = [cmake, '-S', '.', '-B', 'build', '-A', 'x64',
+                "-DCMAKE_TOOLCHAIN_FILE=${vcpkg}/scripts/buildsystems/vcpkg.cmake",
+                '-DVCPKG_TARGET_TRIPLET=x64-windows-static',
+                '-DVCPKG_HOST_TRIPLET=x64-windows-static']
+        if (rev) args << "-DOPENZEN_BUILD_REVISION=${rev}"
+        commandLine args
+    }
+}
+
+tasks.register('buildNative', Exec) {
+    group = 'openzen'
+    description = 'Compile OpenZen.dll and OpenZenLoader.exe with CMake.'
+    dependsOn 'configureNative'
+    workingDir nativeDir
+    commandLine 'cmake', '--build', 'build', '--config', 'Release'
+    doFirst {
+        def cmake = findCmake()
+        if (!cmake) throw new GradleException(cmakeMissingMessage)
+        // --parallel forwards a job count to the generator (MSBuild gets /m,
+        // Ninja gets -j). MSBuild defaults to a single process otherwise.
+        // Local builds use 1 job (single-threaded) to match the serialised Qt
+        // build above and rule out parallel-compilation instability; CI keeps
+        // full parallelism for speed.
+        def jobs = (System.getenv('GITHUB_ACTIONS') == null) ? 1 : Runtime.runtime.availableProcessors()
+        logger.lifecycle("Parallel jobs: ${jobs}")
+        commandLine cmake, '--build', 'build', '--config', 'Release',
+                '--parallel', jobs.toString()
+    }
+}
+
+tasks.register('packageDist') {
+    group = 'openzen'
+    description = 'Collect the Loader EXE into build/dist for distribution. ' +
+                  'OpenZen.dll is embedded inside the EXE, so we only ship one file.'
+    dependsOn 'buildNative'
+    // Use an inline copy { } block inside doLast rather than the Copy task
+    // type. Copy snapshots its source set at configuration time and reports
+    // NO-SOURCE on a first clean build because the EXE that buildNative is
+    // about to produce does not exist yet. doLast runs after buildNative,
+    // by which point the file is definitely on disk.
+    doLast {
+        def src = file("$nativeBuildDir/loader/Release/OpenZenLoader.exe")
+        if (!src.isFile()) {
+            throw new GradleException(
+                "Expected OpenZenLoader.exe at ${src} after buildNative; missing")
+        }
+        copy {
+            from src
+            into "$buildDir/dist"
+        }
+        logger.lifecycle("Packaged ${src.length()} bytes -> ${buildDir}/dist/${src.name}")
+    }
+}
+
+ext.findUpx = {
+    try {
+        def p = ['cmd', '/c', 'where', 'upx'].execute()
+        def out = new StringBuilder()
+        p.consumeProcessOutput(out, new StringBuilder())
+        p.waitForOrKill(2000)
+        if (p.exitValue() == 0) {
+            def first = out.toString().readLines().find { it?.trim() }
+            if (first) return first.trim()
+        }
+    } catch (Exception ignored) {}
+    return null
+}
+
+tasks.register('upxCompress') {
+    group = 'openzen'
+    description = 'Run UPX --best --lzma on the packaged OpenZenLoader.exe. ' +
+                  'No-op (warning only) when upx is not on PATH so local builds ' +
+                  'do not need it installed.'
+    dependsOn 'packageDist'
+    doLast {
+        def exe = file("$buildDir/dist/OpenZenLoader.exe")
+        if (!exe.isFile()) {
+            throw new GradleException("packageDist did not produce ${exe}")
+        }
+        def upx = findUpx()
+        if (!upx) {
+            logger.warn("upx not on PATH; skipping compression. Install from " +
+                    "https://upx.github.io/ to enable.")
+            return
+        }
+        def before = exe.length()
+        exec {
+            commandLine upx, '--best', '--lzma', exe.absolutePath
+        }
+        def after = exe.length()
+        logger.lifecycle(String.format(
+                "UPX: %,d -> %,d bytes (%.1f%% of original)",
+                before, after, after * 100.0 / before))
+    }
+}
+
+tasks.register('dll') {
+    group = 'openzen'
+    description = 'Build the injectable DLL and GUI Loader (final dist artifacts).'
+    dependsOn 'packageDist'
+}
+
+// Gradle's stock 'clean' only wipes the project build/ directory, so the
+// CMake out-of-source build dir and the staged jar would survive a clean
+// and silently feed stale bits into the next dll build. Wire a dedicated
+// Delete task into 'clean' so ./gradlew clean really wipes everything.
+tasks.register('cleanNative', Delete) {
+    group = 'openzen'
+    description = 'Remove native/build/ and the staged native/zen.jar.'
+    delete nativeBuildDir
+    delete file("$nativeDir/zen.jar")
+}
+
+tasks.named('clean').configure {
+    dependsOn 'cleanNative'
+}
+
+// Release builds are cut by .github/workflows/build-loader.yml when the head commit
+// message contains [Release]. Every build emits fresh random class names — see
+// ext.obfuscateJar above and the "编译时类名混淆" section in the README.

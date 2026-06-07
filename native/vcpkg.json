@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "openzen-loader",
+  "version-string": "1.0.0",
+  "description": "Native loader + DLL for the OpenZen Minecraft client",
+  "dependencies": [
+    {
+      "name": "qtbase",
+      "default-features": false,
+      "features": [ "widgets" ]
+    }
+  ],
+  "builtin-baseline": "56bb2411609227288b70117ead2c47585ba07713"
+}

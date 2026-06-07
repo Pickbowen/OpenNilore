@@ -1,0 +1,58 @@
+name: 功能异常 (Bug)
+description: 提交一个功能不按预期工作的问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你抽出时间反馈 Bug。请尽量详细地填写以下内容,以便我们快速定位与修复。
+
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Bug 表现
+      description: 实际发生了什么?与预期有何不同?
+      placeholder: 例如:点击 ClickGUI 中的 KillAura 按钮后,模块未被启用,且控制台无任何输出。
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 说明
+      description: 关于该问题的补充说明、上下文、你认为可能的原因等。
+      placeholder: 例如:仅在切换世界后第一次启用模块时出现,重启游戏后正常。
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: 截图
+      description: 请粘贴或拖入相关截图 / 录屏。若涉及 UI 错位,务必附图。
+      placeholder: 直接将图片拖到此处即可上传。
+    validations:
+      required: false
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 请提供清晰、可被他人按步骤复现的操作流程。
+      placeholder: |
+        1. 启动客户端并进入任意服务器
+        2. 打开 ClickGUI (默认 RShift)
+        3. 点击 Combat -> KillAura
+        4. 观察到 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-fix
+    attributes:
+      label: 应当被如何修复
+      description: 你认为这个问题应该怎样被修复?如果有相关代码位置 / 思路也请一并写出。
+      placeholder: 例如:`ModuleManager#toggle` 中似乎未触发 `onEnable` 回调,应在切换状态后调用对应的生命周期方法。
+    validations:
+      required: true
