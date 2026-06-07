@@ -40,6 +40,9 @@ public final class PatchAgent {
             return;
         }
         System.getProperties().put(INSTRUMENTATION_KEY, inst);
+        // Also store under ClassAgent's key so ClassAgent.getInstrumentation()
+        // works in all code paths (DLL injection, runClient0, etc.).
+        System.getProperties().put(ClassAgent.INSTRUMENTATION_KEY, inst);
         LOGGER.info("agent attached, retransform supported = {}", inst.isRetransformClassesSupported());
     }
 
