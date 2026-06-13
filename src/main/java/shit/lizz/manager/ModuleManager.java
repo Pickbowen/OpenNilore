@@ -26,6 +26,7 @@ import shit.lizz.modules.impl.exploit.FastPlace;
 import shit.lizz.modules.impl.misc.AimAssist;
 import shit.lizz.modules.impl.misc.AutoClicker;
 import shit.lizz.modules.impl.misc.AutoRod;
+import shit.lizz.modules.impl.misc.AI;
 import shit.lizz.modules.impl.misc.SafeWalk;
 import shit.lizz.modules.impl.movement.CollisionSpeed;
 import shit.lizz.modules.impl.movement.NoSlow;
@@ -101,6 +102,7 @@ public class ModuleManager extends ClientBase {
         this.register(new AutoClicker());
         this.register(new AutoRod());
         this.register(new SafeWalk());
+        this.register(new AI());
 
         this.register(new CollisionSpeed());
         this.register(new NoSlow());
