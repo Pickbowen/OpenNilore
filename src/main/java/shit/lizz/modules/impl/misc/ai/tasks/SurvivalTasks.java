@@ -1,9 +1,12 @@
 package shit.lizz.modules.impl.misc.ai.tasks;
 
+import net.minecraft.network.chat.Component;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.item.ItemStack;
 import shit.lizz.ClientBase;
 import shit.lizz.modules.impl.misc.ai.Blackboard;
+import shit.lizz.modules.impl.misc.ai.BaritoneBridge;
 import shit.lizz.modules.impl.misc.ai.btree.*;
 import shit.lizz.utils.game.ItemUtil;
 
@@ -15,9 +18,10 @@ public class SurvivalTasks {
     public static BTNode eatFood() {
         return new Sequence(
                 new Condition(bb -> bb.autoEat && bb.isHealthLow() && bb.hasFood),
-                new Condition(bb -> bb.nearestEnemy == null || bb.nearestEnemyDist > 8),
                 new Condition(bb -> !bb.isContainerOpen()),
                 new Action(bb -> {
+                    boolean enemyNearby = bb.nearestEnemy != null && bb.nearestEnemyDist <= 6;
+
                     if (eatingSlot != -1) {
                         // Currently eating — wait for completion
                         if (!ClientBase.mc.player.isUsingItem()) {
@@ -32,7 +36,7 @@ public class SurvivalTasks {
                         return BTNode.Status.RUNNING;
                     }
 
-                    int slot = findFoodSlot();
+                    int slot = findFoodSlot(enemyNearby);
                     if (slot == -1) return BTNode.Status.FAILURE;
 
                     prevSlot = ClientBase.mc.player.getInventory().selected;
@@ -50,6 +54,8 @@ public class SurvivalTasks {
                 new Condition(bb -> bb.autoEat && bb.isHealthCritical() && bb.hasFood),
                 new Condition(bb -> !bb.isContainerOpen()),
                 new Action(bb -> {
+                    boolean enemyNearby = bb.nearestEnemy != null && bb.nearestEnemyDist <= 6;
+
                     if (eatingSlot != -1) {
                         if (!ClientBase.mc.player.isUsingItem()) {
                             ClientBase.mc.options.keyUse.setDown(false);
@@ -63,7 +69,7 @@ public class SurvivalTasks {
                         return BTNode.Status.RUNNING;
                     }
 
-                    int slot = findFoodSlot();
+                    int slot = findFoodSlot(enemyNearby);
                     if (slot == -1) return BTNode.Status.FAILURE;
 
                     prevSlot = ClientBase.mc.player.getInventory().selected;
@@ -88,6 +94,28 @@ public class SurvivalTasks {
     }
 
     private static int findFoodSlot() {
+        return findFoodSlot(false);
+    }
+
+    /**
+     * Void self-rescue: when in void with no blocks to bridge.
+     * Stops all movement and disconnects to save the player.
+     */
+    public static BTNode voidRescue() {
+        return new Sequence(
+                new Condition(bb -> bb.isVoidRescue),
+                new Action(bb -> {
+                    Blackboard.clearMovement();
+                    BaritoneBridge.cancel();
+                    bb.log("VOID! No blocks to bridge — disconnecting");
+                    ClientBase.mc.player.connection.getConnection().disconnect(
+                            Component.literal("§c[AI] Void rescue — disconnected to save"));
+                    return BTNode.Status.SUCCESS;
+                })
+        );
+    }
+
+    private static int findFoodSlot(boolean enemyNearby) {
         Item[] foodPriority = {
                 Items.GOLDEN_APPLE, Items.ENCHANTED_GOLDEN_APPLE,
                 Items.COOKED_BEEF, Items.COOKED_PORKCHOP, Items.COOKED_CHICKEN, Items.COOKED_MUTTON,
@@ -97,6 +125,8 @@ public class SurvivalTasks {
                 Items.COD, Items.SALMON, Items.RABBIT, Items.POTATO, Items.CARROT
         };
         for (Item food : foodPriority) {
+            // When enemy is nearby, only allow enchanted golden apple
+            if (enemyNearby && food != Items.ENCHANTED_GOLDEN_APPLE) continue;
             int slot = ItemUtil.getSlot(food);
             if (slot != -1) return slot;
         }

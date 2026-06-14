@@ -44,7 +44,7 @@ public class AStarPathFinder {
             nodesExpanded++;
 
             if (goal.isInGoal(current.x, current.y, current.z)) {
-                return reconstructPath(current);
+                return reconstructPath(level, current);
             }
 
             double h = current.estimatedCostToGoal;
@@ -84,7 +84,7 @@ public class AStarPathFinder {
 
         // Return best partial path if goal not reached
         if (bestNode != startNode) {
-            return reconstructPath(bestNode);
+            return reconstructPath(level, bestNode);
         }
         return null;
     }
@@ -124,7 +124,7 @@ public class AStarPathFinder {
         return ActionCosts.COST_INF;
     }
 
-    private static Path reconstructPath(PathNode end) {
+    private static Path reconstructPath(ClientLevel level, PathNode end) {
         List<BetterBlockPos> positions = new ArrayList<>();
         PathNode current = end;
         while (current != null) {
@@ -132,6 +132,14 @@ public class AStarPathFinder {
             current = current.previous;
         }
         Collections.reverse(positions);
-        return new Path(positions, end.cost);
+
+        // Mark bridge segments: positions where the block below is not solid
+        boolean[] bridgeFlags = new boolean[positions.size()];
+        for (int i = 0; i < positions.size(); i++) {
+            BetterBlockPos pos = positions.get(i);
+            bridgeFlags[i] = !MovementHelper.canWalkOn(level, pos.x, pos.y - 1, pos.z);
+        }
+
+        return new Path(positions, end.cost, bridgeFlags);
     }
 }

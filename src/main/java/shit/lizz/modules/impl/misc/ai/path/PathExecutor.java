@@ -2,6 +2,8 @@ package shit.lizz.modules.impl.misc.ai.path;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.entity.player.Player;
+import shit.lizz.modules.impl.misc.ai.Blackboard;
+import shit.lizz.modules.impl.movement.Scaffold;
 
 public class PathExecutor {
     private static final Minecraft mc = Minecraft.getInstance();
@@ -68,7 +70,11 @@ public class PathExecutor {
         }
 
         movementYaw = (float) (-Math.toDegrees(Math.atan2(dx, dz)));
-        mc.player.setYRot(movementYaw);
+
+        // Don't override rotation when Scaffold is active (it controls its own rotation for block placement)
+        if (Scaffold.INSTANCE == null || !Scaffold.INSTANCE.isEnabled()) {
+            Blackboard.smoothYaw(movementYaw, 30f);
+        }
 
         mc.options.keyUp.setDown(true);
         mc.options.keyDown.setDown(false);

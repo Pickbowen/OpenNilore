@@ -39,6 +39,14 @@ import shit.lizz.utils.game.BlockUtil;
 
 public final class ItemUtil
 extends ClientBase {
+    // When true, functional blocks (TNT, cobweb) are excluded from block counts
+    public static boolean excludeFunctionalBlocks = true;
+
+    public static boolean isFunctionalBlock(ItemStack itemStack) {
+        if (itemStack.isEmpty()) return false;
+        Item item = itemStack.getItem();
+        return item == Items.TNT || item == Items.COBWEB;
+    }
     public static boolean hasServerItem() {
         return ItemUtil.getAllItems().stream().anyMatch(itemStack -> {
             if (!itemStack.isEmpty()) {
@@ -427,7 +435,7 @@ extends ClientBase {
     }
 
     public static int countBlocks() {
-        return ItemUtil.getAllItems().stream().filter(itemStack -> !itemStack.isEmpty() && itemStack.getItem() instanceof BlockItem && BlockUtil.isPlaceable(itemStack) && ItemUtil.isUsable(itemStack)).mapToInt(ItemStack::getCount).sum();
+        return ItemUtil.getAllItems().stream().filter(itemStack -> !itemStack.isEmpty() && itemStack.getItem() instanceof BlockItem && BlockUtil.isPlaceable(itemStack) && ItemUtil.isUsable(itemStack) && !(excludeFunctionalBlocks && isFunctionalBlock(itemStack))).mapToInt(ItemStack::getCount).sum();
     }
 
     public static ItemStack getWorstProjectile() {
@@ -439,11 +447,11 @@ extends ClientBase {
     }
 
     public static ItemStack getWorstBlock() {
-        return ItemUtil.getAllItems().stream().filter(itemStack -> !itemStack.isEmpty() && itemStack.getItem() instanceof BlockItem && BlockUtil.isPlaceable(itemStack) && ItemUtil.isUsable(itemStack)).min(Comparator.comparingInt(ItemStack::getCount)).orElse(null);
+        return ItemUtil.getAllItems().stream().filter(itemStack -> !itemStack.isEmpty() && itemStack.getItem() instanceof BlockItem && BlockUtil.isPlaceable(itemStack) && ItemUtil.isUsable(itemStack) && !(excludeFunctionalBlocks && isFunctionalBlock(itemStack))).min(Comparator.comparingInt(ItemStack::getCount)).orElse(null);
     }
 
     public static ItemStack getBestBlock() {
-        return ItemUtil.getAllItems().stream().filter(itemStack -> !itemStack.isEmpty() && itemStack.getItem() instanceof BlockItem && BlockUtil.isPlaceable(itemStack) && ItemUtil.isUsable(itemStack)).max(Comparator.comparingInt(ItemStack::getCount)).orElse(null);
+        return ItemUtil.getAllItems().stream().filter(itemStack -> !itemStack.isEmpty() && itemStack.getItem() instanceof BlockItem && BlockUtil.isPlaceable(itemStack) && ItemUtil.isUsable(itemStack) && !(excludeFunctionalBlocks && isFunctionalBlock(itemStack))).max(Comparator.comparingInt(ItemStack::getCount)).orElse(null);
     }
 
     public static float getBestPickaxeScore() {

@@ -171,7 +171,7 @@ public class AI extends Module {
 
         // Scaffold auto: enable when pathing, disable when not
         if (Scaffold.INSTANCE != null) {
-            boolean shouldScaffold = BaritoneBridge.isPathing() && blackboard.hasBlocks();
+            boolean shouldScaffold = BaritoneBridge.needsBridgeNearby() && blackboard.hasBlocks();
             if (Scaffold.INSTANCE.isEnabled() != shouldScaffold) {
                 Scaffold.INSTANCE.setEnabled(shouldScaffold);
             }
@@ -201,7 +201,9 @@ public class AI extends Module {
 
     private BTNode buildTree() {
         return new Selector(
-                // [1] 自救 — 最高优先级
+                // [0] 虚空自救 — 绝对最高优先级
+                SurvivalTasks.voidRescue(),
+                // [1] 自救 — 吃食物
                 new Selector(
                         SurvivalTasks.criticalEat(),
                         SurvivalTasks.eatFood()

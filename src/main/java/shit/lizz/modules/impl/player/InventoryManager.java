@@ -74,6 +74,7 @@ extends Module {
     private final BooleanSetting fastThrowSetting = new BooleanSetting("Fast Throw", false);
     private final NumberSetting maxEggsSnowballsSetting = new NumberSetting("Max Eggs & Snowballs Size", 64, 16, 256, 16);
     public final NumberSetting maxBlockSizeSetting = new NumberSetting("Max Block Size", 256, 64, 512, 64);
+    public final BooleanSetting functionalBlocksFix = new BooleanSetting("Functional Blocks Fix", true);
     private final NumberSetting maxFoodSizeSetting = new NumberSetting("Max Food Size", 128, 32, 256, 32);
     private final NumberSetting maxRodSizeSetting = new NumberSetting("Max Rod Size", 1, 1, 16, 1);
     private final NumberSetting swordSlotSetting = new NumberSetting("Sword Slot", 0, 0, 9, 1);
@@ -251,6 +252,8 @@ extends Module {
     @EventTarget
     public void onMotionManage(MotionEvent motionEvent) {
         if (motionEvent.isPost() && mc.player != null && mc.getConnection() != null && mc.gameMode != null) {
+            // Sync functional blocks flag to ItemUtil
+            ItemUtil.excludeFunctionalBlocks = this.functionalBlocksFix.getValue();
             ContainerScreen containerScreen;
             if (!this.validateSlotConfig()) {
                 isPerformingAction = false;
@@ -679,6 +682,10 @@ extends Module {
             return true;
         }
         if (itemStack.getItem() == Items.COBWEB) {
+            return true;
+        }
+        // Functional blocks fix: always keep TNT (not counted as regular block)
+        if (this.functionalBlocksFix.getValue() && itemStack.getItem() == Items.TNT) {
             return true;
         }
         Item item = itemStack.getItem();

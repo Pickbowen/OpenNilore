@@ -8,6 +8,7 @@ import shit.lizz.modules.impl.combat.AntiKB;
 import shit.lizz.modules.impl.misc.ai.BaritoneBridge;
 import shit.lizz.modules.impl.misc.ai.Blackboard;
 import shit.lizz.modules.impl.misc.ai.btree.*;
+import shit.lizz.modules.impl.movement.Scaffold;
 
 public class CombatTasks {
 
@@ -56,7 +57,7 @@ public class CombatTasks {
                         double tdz = targetZ - ClientBase.mc.player.getZ();
                         float yaw = (float) (-Math.toDegrees(Math.atan2(tdx, tdz)));
 
-                        ClientBase.mc.player.setYRot(yaw);
+                        Blackboard.smoothYaw(yaw, 30f);
                         ClientBase.mc.options.keyUp.setDown(true);
                         ClientBase.mc.options.keySprint.setDown(true);
                         ClientBase.mc.options.keyJump.setDown(bb.nearestEnemyDist < 1.5);

@@ -81,6 +81,21 @@ public class BaritoneBridge {
         return currentExecutor != null && currentExecutor.isFailed();
     }
 
+    /**
+     * Check if the current path has bridge segments near the player's current position.
+     * Returns true if any path node within LOOKAHEAD steps of the current position needs bridging.
+     */
+    public static boolean needsBridgeNearby() {
+        if (currentExecutor == null || currentPath == null) return false;
+        if (currentExecutor.isComplete() || currentExecutor.isFailed()) return false;
+        int pos = currentExecutor.getPathPosition();
+        int lookahead = 3;
+        for (int i = pos; i < Math.min(pos + lookahead, currentPath.length()); i++) {
+            if (currentPath.needsBridgeAt(i)) return true;
+        }
+        return false;
+    }
+
     public static List<BlockPos> getCurrentPathPositions() {
         if (currentPath == null) return new ArrayList<>();
         List<BlockPos> result = new ArrayList<>(currentPath.length());

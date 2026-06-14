@@ -2,6 +2,7 @@ package shit.lizz.modules.impl.misc.ai;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
+import net.minecraft.util.Mth;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.block.ChestBlock;
@@ -33,6 +34,7 @@ public class Blackboard extends ClientBase {
     public boolean isAboveVoid;
     public boolean isOnGround;
     public boolean isNearEdge;
+    public boolean isVoidRescue;
     public BlockPos playerPos;
 
     // Environment
@@ -86,6 +88,9 @@ public class Blackboard extends ClientBase {
         playerPos = mc.player.blockPosition();
         isAboveVoid = MovementUtil.isAboveVoid(playerPos.getX(), playerPos.getY(), playerPos.getZ());
         isNearEdge = isOnNearEdge(0.3f);
+
+        // Void rescue: in void with no blocks or unable to bridge to safety
+        isVoidRescue = isAboveVoid && (blockCount <= 0 || isSurroundedByHigherBlocks());
 
         blockCount = ItemUtil.countBlocks();
         hasSword = ItemUtil.getBestSword() != null;
@@ -168,6 +173,29 @@ public class Blackboard extends ClientBase {
         return blockCount > 0;
     }
 
+    /**
+     * Check if surrounding blocks are higher than the player (can't bridge to reach them).
+     * Scans a 5-block horizontal radius for solid blocks above player Y.
+     */
+    private boolean isSurroundedByHigherBlocks() {
+        if (mc.level == null || mc.player == null) return false;
+        int px = playerPos.getX();
+        int py = playerPos.getY();
+        int pz = playerPos.getZ();
+        int radius = 5;
+        for (int x = -radius; x <= radius; x++) {
+            for (int z = -radius; z <= radius; z++) {
+                if (x == 0 && z == 0) continue;
+                // Check blocks above player level (2-5 blocks up)
+                for (int dy = 2; dy <= 5; dy++) {
+                    BlockState state = mc.level.getBlockState(new BlockPos(px + x, py + dy, pz + z));
+                    if (state.isSolid()) return true;
+                }
+            }
+        }
+        return false;
+    }
+
     public void log(String msg) {
         if (log && mc.player != null) {
             mc.player.displayClientMessage(Component.literal("§e[AI] §r" + msg), true);
@@ -185,11 +213,54 @@ public class Blackboard extends ClientBase {
             return;
         }
         float yaw = (float) (-Math.toDegrees(Math.atan2(dx, dz)));
-        mc.player.setYRot(yaw);
+        smoothYaw(yaw, 30f);
         mc.options.keyUp.setDown(true);
         mc.options.keyDown.setDown(false);
         mc.options.keyLeft.setDown(false);
         mc.options.keyRight.setDown(false);
+    }
+
+    /**
+     * Smoothly rotate yaw toward target. Sensitivity-aware, ~0.1s to complete.
+     * Reference: baritone's calculateMouseMove approach.
+     */
+    public static void smoothYaw(float targetYaw, float maxStep) {
+        float current = mc.player.getYRot();
+        float diff = Mth.wrapDegrees(targetYaw - current);
+        if (Math.abs(diff) < 0.5f) {
+            mc.player.setYRot(targetYaw);
+            return;
+        }
+        float step = Math.max(-maxStep, Math.min(diff, maxStep));
+        float result = current + step;
+        float sens = mc.options.sensitivity().get().floatValue();
+        float scaled = sens * 0.6f + 0.2f;
+        float gcd = scaled * scaled * scaled * 1.2f;
+        if (gcd > 0) {
+            result = result - result % gcd;
+        }
+        mc.player.setYRot(result);
+    }
+
+    /**
+     * Smoothly rotate pitch toward target. Sensitivity-aware.
+     */
+    public static void smoothPitch(float targetPitch, float maxStep) {
+        float current = mc.player.getXRot();
+        float diff = Mth.clamp(targetPitch - current, -90f, 90f);
+        if (Math.abs(diff) < 0.5f) {
+            mc.player.setXRot(targetPitch);
+            return;
+        }
+        float step = Math.max(-maxStep, Math.min(diff, maxStep));
+        float result = current + step;
+        float sens = mc.options.sensitivity().get().floatValue();
+        float scaled = sens * 0.6f + 0.2f;
+        float gcd = scaled * scaled * scaled * 1.2f;
+        if (gcd > 0) {
+            result = result - result % gcd;
+        }
+        mc.player.setXRot(Mth.clamp(result, -90f, 90f));
     }
 
     public static void clearMovement() {

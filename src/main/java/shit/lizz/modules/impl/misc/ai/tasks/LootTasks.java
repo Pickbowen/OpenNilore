@@ -63,8 +63,8 @@ public class LootTasks {
                     Vec3 chestCenter = new Vec3(chest.getX() + 0.5, chest.getY() + 0.5, chest.getZ() + 0.5);
                     Vec3 eyePos = ClientBase.mc.player.position().add(0, ClientBase.mc.player.getEyeHeight(), 0);
                     Rotation rot = RotationUtil.rotationTo(eyePos, chestCenter);
-                    ClientBase.mc.player.setYRot(rot.getYaw());
-                    ClientBase.mc.player.setXRot(rot.getPitch());
+                    Blackboard.smoothYaw(rot.getYaw(), 30f);
+                    Blackboard.smoothPitch(rot.getPitch(), 30f);
 
                     if (!chest.equals(lootingChest)) {
                         lootingChest = chest;
