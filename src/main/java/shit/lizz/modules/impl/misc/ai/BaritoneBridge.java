@@ -89,8 +89,9 @@ public class BaritoneBridge {
         if (currentExecutor == null || currentPath == null) return false;
         if (currentExecutor.isComplete() || currentExecutor.isFailed()) return false;
         int pos = currentExecutor.getPathPosition();
-        int lookahead = 3;
-        for (int i = pos; i < Math.min(pos + lookahead, currentPath.length()); i++) {
+        int start = Math.max(0, pos - 1);
+        int end = Math.min(pos + 5, currentPath.length());
+        for (int i = start; i < end; i++) {
             if (currentPath.needsBridgeAt(i)) return true;
         }
         return false;

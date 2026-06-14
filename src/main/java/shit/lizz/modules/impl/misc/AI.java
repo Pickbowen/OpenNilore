@@ -162,9 +162,9 @@ public class AI extends Module {
         // Tick path executor every tick for smooth movement
         BaritoneBridge.tick();
 
-        // Scaffold auto: enable when pathing with blocks (shouldBuild checks air below)
+        // Scaffold auto: only enable when path has bridge segments nearby (void crossing)
         if (Scaffold.INSTANCE != null) {
-            boolean shouldScaffold = BaritoneBridge.isPathing() && blackboard.hasBlocks();
+            boolean shouldScaffold = BaritoneBridge.needsBridgeNearby() && blackboard.hasBlocks();
             if (Scaffold.INSTANCE.isEnabled() != shouldScaffold) {
                 Scaffold.INSTANCE.setEnabled(shouldScaffold);
             }

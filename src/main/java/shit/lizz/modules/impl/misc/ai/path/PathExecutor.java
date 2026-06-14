@@ -71,20 +71,29 @@ public class PathExecutor {
 
         movementYaw = (float) (-Math.toDegrees(Math.atan2(dx, dz)));
 
-        // Always rotate toward path direction — Scaffold handles its own placement rotation via RotationHandler
+        // Rotate toward path direction
         Blackboard.smoothYaw(movementYaw, 30f);
 
-        mc.options.keyUp.setDown(true);
-        mc.options.keyDown.setDown(false);
-        mc.options.keyLeft.setDown(false);
-        mc.options.keyRight.setDown(false);
-        mc.options.keySprint.setDown(true);
+        // Calculate movement relative to player facing
+        float yawRad = (float) Math.toRadians(mc.player.getYRot());
+        float forwardX = (float) -Math.sin(yawRad);
+        float forwardZ = (float) Math.cos(yawRad);
+        float strafeX = forwardZ;
+        float strafeZ = -forwardX;
 
-        // Don't fight Scaffold over jump — it manages jump for its bridge modes
-        boolean scaffoldActive = Scaffold.INSTANCE != null && Scaffold.INSTANCE.isEnabled();
-        if (!scaffoldActive) {
-            mc.options.keyJump.setDown(needJump);
-        }
+        double normDx = dx / len;
+        double normDz = dz / len;
+        double forward = normDx * forwardX + normDz * forwardZ;
+        double strafe = normDx * strafeX + normDz * strafeZ;
+
+        mc.options.keyUp.setDown(forward > 0.15);
+        mc.options.keyDown.setDown(forward < -0.15);
+        mc.options.keyRight.setDown(strafe > 0.15);
+        mc.options.keyLeft.setDown(strafe < -0.15);
+        mc.options.keySprint.setDown(forward > 0.5);
+
+        // Always set jump — Scaffold can override in its own tick if needed
+        mc.options.keyJump.setDown(needJump);
     }
 
     private void clearMovement() {
