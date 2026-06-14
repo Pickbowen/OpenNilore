@@ -34,9 +34,6 @@ public class AI extends Module {
 
     private Blackboard blackboard;
     private BTNode behaviorTree;
-    private int tickCounter;
-    private int nextRunTick;
-    private int runCount;
     private BlockPos gotoTarget = null;
 
     public AI() {
@@ -47,9 +44,6 @@ public class AI extends Module {
     protected void onEnable() {
         blackboard = new Blackboard();
         behaviorTree = buildTree();
-        tickCounter = 0;
-        nextRunTick = 0;
-        runCount = 0;
 
         sendMsg("§aEnabled - SkyWars Bot");
     }
@@ -165,12 +159,6 @@ public class AI extends Module {
         syncSettings();
         blackboard.update();
 
-        // Interrupt path immediately when enemy appears — don't wait for behavior tree
-        if (blackboard.nearestEnemy != null && blackboard.nearestEnemyDist <= enemyRange.getValue().doubleValue()
-                && BaritoneBridge.isPathing()) {
-            BaritoneBridge.cancel();
-        }
-
         // Tick path executor every tick for smooth movement
         BaritoneBridge.tick();
 
@@ -182,13 +170,7 @@ public class AI extends Module {
             }
         }
 
-        // Tick behavior tree at intervals (every 2-3 ticks)
-        tickCounter++;
-        if (tickCounter < nextRunTick) return;
-        int interval = (runCount % 2 == 0) ? 2 : 3;
-        nextRunTick = tickCounter + interval;
-        runCount++;
-
+        // Tick behavior tree every tick for responsive combat
         behaviorTree.tick(blackboard);
     }
 

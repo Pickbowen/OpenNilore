@@ -79,9 +79,10 @@ public class CombatTasks {
                     KillAura.INSTANCE.setEnabled(false);
                     Player enemy = bb.nearestEnemy;
 
-                    // Re-path every 12 ticks (0.6s) to track moving enemies
-                    if (!BaritoneBridge.isPathing() || bb.tickCount % 12 == 0) {
-                        BaritoneBridge.cancel();
+                    // No path yet: create one. Otherwise re-path every 20 ticks (1s)
+                    if (!BaritoneBridge.isPathing()) {
+                        BaritoneBridge.setGoalAndPath("near", enemy.blockPosition(), 2);
+                    } else if (bb.tickCount % 20 == 0) {
                         BaritoneBridge.setGoalAndPath("near", enemy.blockPosition(), 2);
                     }
 
