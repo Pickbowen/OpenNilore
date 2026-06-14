@@ -205,14 +205,15 @@ public class Blackboard extends ClientBase {
             return;
         }
         float step = Math.max(-maxStep, Math.min(diff, maxStep));
-        float result = current + step;
         float sens = mc.options.sensitivity().get().floatValue();
         float scaled = sens * 0.6f + 0.2f;
         float gcd = scaled * scaled * scaled * 1.2f;
-        if (gcd > 0 && Math.abs(diff) > gcd) {
-            result = result - result % gcd;
+        float result;
+        if (Math.abs(step) >= Math.abs(diff) - 0.5f) {
+            // Close enough — snap to GCD-aligned target
+            result = targetYaw - targetYaw % gcd;
         } else {
-            result = targetYaw;
+            result = current + step - (current + step) % gcd;
         }
         mc.player.setYRot(result);
     }

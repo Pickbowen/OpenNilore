@@ -73,6 +73,18 @@ public class PathExecutor {
         if (mc.player == null) return;
 
         double len = Math.sqrt(dx * dx + dz * dz);
+
+        // Ascending + very close in XZ: use path direction instead of dx/dz
+        // (dx/dz is nearly zero when standing right below the target block)
+        if (needJump && len < 0.5) {
+            float pathYaw = getPathDirectionYaw();
+            if (!Float.isNaN(pathYaw)) {
+                dx = -Math.sin(Math.toRadians(pathYaw));
+                dz = Math.cos(Math.toRadians(pathYaw));
+                len = Math.sqrt(dx * dx + dz * dz);
+            }
+        }
+
         if (len < 0.01) {
             clearMovement();
             return;
@@ -80,10 +92,26 @@ public class PathExecutor {
 
         movementYaw = (float) (-Math.toDegrees(Math.atan2(dx, dz)));
 
-        // Rotate toward path direction
+        if (needJump) {
+            // Ascending: directly set player yaw and force forward + jump
+            // Don't use smoothYaw + strafe calculation — it causes 180° oscillation
+            // when player hasn't rotated yet and forward component is negative
+            mc.player.setYRot(movementYaw);
+            mc.options.keyUp.setDown(true);
+            mc.options.keyDown.setDown(false);
+            mc.options.keyRight.setDown(false);
+            mc.options.keyLeft.setDown(false);
+            mc.options.keySprint.setDown(true);
+            mc.options.keyJump.setDown(true);
+            if (mc.player.onGround()) {
+                mc.player.jumpFromGround();
+            }
+            return;
+        }
+
+        // Flat movement: smooth rotation + strafe-based movement
         Blackboard.smoothYaw(movementYaw, 30f);
 
-        // Calculate movement relative to player facing
         float yawRad = (float) Math.toRadians(mc.player.getYRot());
         float forwardX = (float) -Math.sin(yawRad);
         float forwardZ = (float) Math.cos(yawRad);
@@ -100,13 +128,21 @@ public class PathExecutor {
         mc.options.keyRight.setDown(strafe > 0.15);
         mc.options.keyLeft.setDown(strafe < -0.15);
         mc.options.keySprint.setDown(forward > 0.5);
+        mc.options.keyJump.setDown(false);
+    }
 
-        // Always set keyJump when ascending
-        mc.options.keyJump.setDown(needJump);
-        // Direct jump call as backup when on ground
-        if (needJump && mc.player.onGround()) {
-            mc.player.jumpFromGround();
-        }
+    /**
+     * Get path direction yaw from the previous node to the current target.
+     */
+    private float getPathDirectionYaw() {
+        if (pathPosition <= 0 || pathPosition >= path.length()) return Float.NaN;
+        BetterBlockPos prev = path.get(pathPosition - 1);
+        BetterBlockPos curr = path.get(pathPosition);
+        double pdx = curr.x - prev.x;
+        double pdz = curr.z - prev.z;
+        double pdLen = Math.sqrt(pdx * pdx + pdz * pdz);
+        if (pdLen < 0.01) return Float.NaN;
+        return (float) (-Math.toDegrees(Math.atan2(pdx, pdz)));
     }
 
     private void clearMovement() {
