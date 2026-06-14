@@ -79,12 +79,12 @@ public class CombatTasks {
                     KillAura.INSTANCE.setEnabled(false);
                     Player enemy = bb.nearestEnemy;
 
-                    // 每 10 tick 更新目标位置（跟踪移动中的敌人）
-                    if (!BaritoneBridge.isPathing() || bb.tickCount % 10 == 0) {
+                    // Re-path every 12 ticks (0.6s) to track moving enemies
+                    if (!BaritoneBridge.isPathing() || bb.tickCount % 12 == 0) {
+                        BaritoneBridge.cancel();
                         BaritoneBridge.setGoalAndPath("near", enemy.blockPosition(), 2);
                     }
 
-                    // Always return RUNNING while tracking — don't let Selector fall through to loot
                     return BaritoneBridge.isPathing() ? BTNode.Status.RUNNING : BTNode.Status.FAILURE;
                 })
         );

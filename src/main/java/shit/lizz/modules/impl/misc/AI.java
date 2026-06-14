@@ -165,6 +165,12 @@ public class AI extends Module {
         syncSettings();
         blackboard.update();
 
+        // Interrupt path immediately when enemy appears — don't wait for behavior tree
+        if (blackboard.nearestEnemy != null && blackboard.nearestEnemyDist <= enemyRange.getValue().doubleValue()
+                && BaritoneBridge.isPathing()) {
+            BaritoneBridge.cancel();
+        }
+
         // Tick path executor every tick for smooth movement
         BaritoneBridge.tick();
 
