@@ -35,10 +35,20 @@ public class PathExecutor {
         double dx = target.x + 0.5 - player.getX();
         double dz = target.z + 0.5 - player.getZ();
         double distXZ = Math.sqrt(dx * dx + dz * dz);
-        double distY = Math.abs(target.y - (int) Math.floor(player.getY()));
+        int playerY = (int) Math.floor(player.getY());
+        boolean ascending = target.y > playerY;
 
-        // Reached this position
-        if (distXZ < 0.4 && distY <= 1) {
+        // Reached this position:
+        // - Flat: close in XZ and same Y
+        // - Ascending: close in XZ AND player is at or above target Y
+        boolean reached;
+        if (ascending) {
+            reached = distXZ < 0.6 && playerY >= target.y;
+        } else {
+            reached = distXZ < 0.6 && Math.abs(target.y - playerY) <= 1;
+        }
+
+        if (reached) {
             pathPosition++;
             ticksOnCurrent = 0;
             if (pathPosition >= path.length()) {
@@ -56,7 +66,7 @@ public class PathExecutor {
             return true;
         }
 
-        moveToward(dx, dz, target.y > (int) Math.floor(player.getY()));
+        moveToward(dx, dz, ascending);
         return false;
     }
 
@@ -92,8 +102,13 @@ public class PathExecutor {
         mc.options.keyLeft.setDown(strafe < -0.15);
         mc.options.keySprint.setDown(forward > 0.5);
 
-        // Always set jump — Scaffold can override in its own tick if needed
-        mc.options.keyJump.setDown(needJump);
+        // Direct jump call — bypass keyJump which Scaffold may override
+        if (needJump && mc.player.onGround()) {
+            mc.options.keyJump.setDown(true);
+            mc.player.jump();
+        } else {
+            mc.options.keyJump.setDown(false);
+        }
     }
 
     private void clearMovement() {
