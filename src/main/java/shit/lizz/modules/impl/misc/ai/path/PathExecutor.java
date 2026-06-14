@@ -30,8 +30,9 @@ public class PathExecutor {
             return true;
         }
 
-        // Skip ahead: if player already passed multiple waypoints, catch up
-        // (prevents 180° turning when jumping overshoots a waypoint)
+        // Skip ahead: if player already passed waypoints (e.g. jumped over them),
+        // advance to the first unvisited one. Prevents 180° turning.
+        // Baritone approach: check destination reached = player is AT the block.
         int playerY = (int) Math.floor(player.getY());
         while (pathPosition < path.length()) {
             BetterBlockPos wp = path.get(pathPosition);
@@ -40,11 +41,12 @@ public class PathExecutor {
             double wpDist = Math.sqrt(wpDx * wpDx + wpDz * wpDz);
             boolean wpAscending = wp.y > playerY;
 
-            // Reached: close in XZ and matching Y
-            // Ascending overshoot: player already at or above target Y
             boolean reached;
             if (wpAscending) {
-                reached = (wpDist < 0.6 && playerY >= wp.y) || playerY > wp.y;
+                // Ascending: player at/above target Y AND close in XZ
+                // OR player above target Y AND very close (overshot jump landing nearby)
+                reached = (playerY >= wp.y && wpDist < 0.6)
+                       || (playerY > wp.y && wpDist < 1.5);
             } else {
                 reached = wpDist < 0.6 && Math.abs(wp.y - playerY) <= 1;
             }
