@@ -18,6 +18,7 @@ import shit.nilore.modules.impl.combat.AutoOffHand;
 import shit.nilore.modules.impl.combat.AutoSoup;
 import shit.nilore.modules.impl.combat.AutoThrow;
 import shit.nilore.modules.impl.combat.Backtrack;
+import shit.nilore.modules.impl.combat.Blocking;
 import shit.nilore.modules.impl.combat.Critical;
 import shit.nilore.modules.impl.combat.CrystalAura;
 import shit.nilore.modules.impl.combat.KillAura;
@@ -94,6 +95,7 @@ public class ModuleManager extends ClientBase {
         this.register(new Critical());
         this.register(new CrystalAura());
         this.register(new KillAura());
+        this.register(new Blocking());
 
         this.register(new Disabler());
         this.register(new FastPlace());

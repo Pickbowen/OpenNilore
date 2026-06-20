@@ -1,19 +1,24 @@
 package shit.nilore.modules.impl.misc.ai.tasks;
 
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.player.Player;
 import shit.nilore.ClientBase;
-import shit.nilore.modules.impl.combat.KillAura;
 import shit.nilore.modules.impl.misc.ai.BaritoneBridge;
 import shit.nilore.modules.impl.misc.ai.Blackboard;
 import shit.nilore.modules.impl.misc.ai.btree.*;
+import shit.nilore.utils.game.RotationUtil;
+import shit.nilore.utils.rotation.Rotation;
 
 public class CombatTasks {
 
     private static int strafeDir = 1;
     private static int strafeSwitchTick = 0;
+    private static int attackTick = 0;
+    private static boolean inCombat = false;
 
     /**
-     * 近战：距离 <= 4 时绕着敌人打
+     * 近战：距离 <= 4 时直接砍 + 绕着敌人走
+     * 不依赖 KillAura，自己处理旋转和攻击
      */
     public static BTNode meleeCombat() {
         return new Sequence(
@@ -23,12 +28,28 @@ public class CombatTasks {
                     BaritoneBridge.pause();
                     Player enemy = bb.nearestEnemy;
 
-                    if (!KillAura.INSTANCE.isEnabled()) {
+                    if (!inCombat) {
                         bb.log("Fighting: " + enemy.getName().getString());
+                        inCombat = true;
+                        attackTick = 0;
                     }
-                    KillAura.INSTANCE.setEnabled(true);
 
-                    // 绕着敌人走
+                    // === 旋转面向敌人 ===
+                    Rotation rot = RotationUtil.entityRotation(enemy);
+                    if (rot != null) {
+                        Blackboard.smoothYaw(rot.getYaw(), 40f);
+                        Blackboard.smoothPitch(rot.getPitch(), 40f);
+                    }
+
+                    // === 攻击（每 2 tick 一次，模拟 ~10 CPS） ===
+                    attackTick++;
+                    if (attackTick >= 2) {
+                        attackTick = 0;
+                        ClientBase.mc.gameMode.attack(ClientBase.mc.player, enemy);
+                        ClientBase.mc.player.swing(InteractionHand.MAIN_HAND);
+                    }
+
+                    // === 绕着敌人走 ===
                     strafeSwitchTick++;
                     if (strafeSwitchTick > 20 + (int) (Math.random() * 15)) {
                         strafeDir = -strafeDir;
@@ -72,7 +93,7 @@ public class CombatTasks {
                 new Condition(bb -> bb.nearestEnemy != null && bb.nearestEnemyDist > 4 && bb.nearestEnemyDist <= 50),
                 new Condition(bb -> !bb.isContainerOpen()),
                 new Action(bb -> {
-                    KillAura.INSTANCE.setEnabled(false);
+                    inCombat = false;
                     BaritoneBridge.resume();
                     Player enemy = bb.nearestEnemy;
 
@@ -88,12 +109,13 @@ public class CombatTasks {
     }
 
     /**
-     * 战斗结束后关闭战斗模块
+     * 战斗结束后清理状态
      */
     public static BTNode disableCombatModules() {
         return new Action(bb -> {
-            if (!KillAura.INSTANCE.isEnabled()) return BTNode.Status.FAILURE;
-            KillAura.INSTANCE.setEnabled(false);
+            if (!inCombat) return BTNode.Status.FAILURE;
+            inCombat = false;
+            attackTick = 0;
             BaritoneBridge.resume();
             return BTNode.Status.SUCCESS;
         });
@@ -102,5 +124,7 @@ public class CombatTasks {
     public static void reset() {
         strafeDir = 1;
         strafeSwitchTick = 0;
+        attackTick = 0;
+        inCombat = false;
     }
 }
