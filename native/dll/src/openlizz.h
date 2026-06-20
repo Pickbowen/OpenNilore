@@ -5,7 +5,7 @@
 #include <jvmti.h>
 #include <string>
 
-namespace openlizz {
+namespace opennilore {
 
 extern HMODULE g_self_module;
 
@@ -16,7 +16,7 @@ namespace log {
 }
 
 namespace jar {
-    // Extract the IDR_LIZZ_JAR resource embedded in runtime.dll into a temporary
+    // Extract the IDR_NILORE_JAR resource embedded in runtime.dll into a temporary
     // file under %TEMP%. Returns the absolute path on success.
     bool extract_embedded(std::wstring& out_path);
 }
@@ -45,4 +45,4 @@ namespace classes {
                               const std::wstring& jar_path);
 }
 
-} // namespace openlizz
+} // namespace opennilore

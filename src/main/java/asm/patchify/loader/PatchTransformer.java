@@ -35,13 +35,13 @@ import org.objectweb.asm.tree.LdcInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.VarInsnNode;
-import shit.lizz.asm.Bootstrap;
-import shit.lizz.asm.ILocals;
-import shit.lizz.asm.Invocation;
-import shit.lizz.asm.InvocationImpl;
-import shit.lizz.asm.Locals;
-import shit.lizz.asm.MethodWrapper;
-import shit.lizz.patch.CallbackInfo;
+import shit.nilore.asm.Bootstrap;
+import shit.nilore.asm.ILocals;
+import shit.nilore.asm.Invocation;
+import shit.nilore.asm.InvocationImpl;
+import shit.nilore.asm.Locals;
+import shit.nilore.asm.MethodWrapper;
+import shit.nilore.patch.CallbackInfo;
 
 /**
  * Applies all {@link Patch}-annotated handlers from a patch class to a target {@link ClassNode}.

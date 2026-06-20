@@ -1,3 +1,3 @@
 #pragma once
 
-#define IDR_ZEN_JAR 101
+#define IDR_NILORE_JAR 101

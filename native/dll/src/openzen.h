@@ -16,7 +16,7 @@ namespace log {
 }
 
 namespace jar {
-    // Extract the IDR_ZEN_JAR resource embedded in OpenZen.dll into a temporary
+    // Extract the IDR_NILORE_JAR resource embedded in OpenNilore.dll into a temporary
     // file under %TEMP%. Returns the absolute path on success.
     bool extract_embedded(std::wstring& out_path);
 }

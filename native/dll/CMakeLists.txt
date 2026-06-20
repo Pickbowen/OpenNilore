@@ -1,9 +1,9 @@
-set(JAR_SOURCE "${CMAKE_SOURCE_DIR}/zen.jar")
-set(JAR_STAGED "${CMAKE_CURRENT_BINARY_DIR}/zen.jar")
+set(JAR_SOURCE "${CMAKE_SOURCE_DIR}/nilore.jar")
+set(JAR_STAGED "${CMAKE_CURRENT_BINARY_DIR}/nilore.jar")
 
 if(NOT EXISTS ${JAR_SOURCE})
     message(WARNING
-        "zen.jar not found at ${JAR_SOURCE}; "
+        "nilore.jar not found at ${JAR_SOURCE}; "
         "did you run the Gradle 'stageNativeJar' task first? "
         "The DLL will be built but the embedded jar resource will be empty.")
     file(WRITE ${JAR_STAGED} "")
@@ -25,7 +25,7 @@ target_include_directories(OpenZen PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/res
 )
 
-# rc.exe needs to find zen.jar (staged into CMAKE_CURRENT_BINARY_DIR by the
+# rc.exe needs to find nilore.jar (staged into CMAKE_CURRENT_BINARY_DIR by the
 # configure_file above) when assembling RCDATA from openzen.rc.
 set_source_files_properties(res/openzen.rc PROPERTIES
     COMPILE_FLAGS "/I\"${CMAKE_CURRENT_BINARY_DIR}\""

@@ -1,3 +1,3 @@
 #include "resource.h"
 
-IDR_ZEN_JAR RCDATA "zen.jar"
+IDR_NILORE_JAR RCDATA "nilore.jar"

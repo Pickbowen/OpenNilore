@@ -63,9 +63,9 @@ const void* find_rcdata(HMODULE module_base, WORD id, DWORD& out_size) {
 
 bool extract_embedded(std::wstring& out_path) {
     DWORD size = 0;
-    const void* data = find_rcdata(g_self_module, IDR_ZEN_JAR, size);
+    const void* data = find_rcdata(g_self_module, IDR_NILORE_JAR, size);
     if (!data || size == 0) {
-        log::error("PE resource lookup for IDR_ZEN_JAR (RT_RCDATA) failed");
+        log::error("PE resource lookup for IDR_NILORE_JAR (RT_RCDATA) failed");
         return false;
     }
 
@@ -94,7 +94,7 @@ bool extract_embedded(std::wstring& out_path) {
     }
 
     out_path.assign(path);
-    log::info("Extracted zen.jar (%lu bytes) to %ls", (unsigned long)size, path);
+    log::info("Extracted nilore.jar (%lu bytes) to %ls", (unsigned long)size, path);
     return true;
 }
 
