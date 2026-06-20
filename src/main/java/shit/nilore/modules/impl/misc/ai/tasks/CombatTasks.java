@@ -22,7 +22,8 @@ public class CombatTasks {
                 new Condition(bb -> bb.nearestEnemy != null && bb.nearestEnemyDist <= 4),
                 new Condition(bb -> !bb.isContainerOpen()),
                 new Action(bb -> {
-                    BaritoneBridge.pause();
+                    // cancel 彻底清除寻路状态和运动键，避免残留输入覆盖走位
+                    BaritoneBridge.cancel();
 
                     if (!KillAura.INSTANCE.isEnabled()) {
                         bb.log("Fighting: " + bb.nearestEnemy.getName().getString());
