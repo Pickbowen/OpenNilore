@@ -247,12 +247,17 @@ public class AI extends Module {
                         LootTasks.disableChestStealer()
                 ),
 
-                // [3] 战斗（战斗结束时关闭 KillAura）
-                new Sequence(
-                        new Selector(
-                                CombatTasks.meleeCombat(),
-                                CombatTasks.trackEnemy()
+                // [3] 战斗
+                new Selector(
+                        // 有敌人 → 追踪/近战 → 战斗结束时清理
+                        new Sequence(
+                                new Selector(
+                                        CombatTasks.meleeCombat(),
+                                        CombatTasks.trackEnemy()
+                                ),
+                                CombatTasks.disableKillAura()
                         ),
+                        // 无敌人 → 仅清理残留战斗状态
                         CombatTasks.disableKillAura()
                 ),
 

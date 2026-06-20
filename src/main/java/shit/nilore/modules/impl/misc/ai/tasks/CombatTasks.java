@@ -10,19 +10,17 @@ import shit.nilore.modules.impl.misc.ai.btree.*;
 
 public class CombatTasks {
 
-    private static int strafeDir = 1;
-    private static int strafeSwitchTick = 0;
+    private static int trackStuckTick = 0;
 
     /**
-     * 近战：开启 KillAura（自动旋转+攻击），AI 只负责贴身走位。
-     * 不控制 yaw — KillAura 自己处理旋转。
+     * 近战：开启 KillAura，AI 只负责向前靠近。
+     * KillAura 处理旋转和攻击。
      */
     public static BTNode meleeCombat() {
         return new Sequence(
                 new Condition(bb -> bb.nearestEnemy != null && bb.nearestEnemyDist <= 4),
                 new Condition(bb -> !bb.isContainerOpen()),
                 new Action(bb -> {
-                    // cancel 彻底清除寻路状态和运动键，避免残留输入覆盖走位
                     BaritoneBridge.cancel();
 
                     if (!KillAura.INSTANCE.isEnabled()) {
@@ -30,60 +28,75 @@ public class CombatTasks {
                     }
                     KillAura.INSTANCE.setEnabled(true);
 
-                    // 随机切换左右走位方向
-                    strafeSwitchTick++;
-                    if (strafeSwitchTick > 20 + (int) (Math.random() * 15)) {
-                        strafeDir = -strafeDir;
-                        strafeSwitchTick = 0;
-                    }
-
-                    // KillAura 会自动转向敌人，W 向前靠近，A/D 左右走位
+                    // W 向前靠近，KillAura 负责旋转和攻击
                     ClientBase.mc.options.keyUp.setDown(true);
                     ClientBase.mc.options.keyDown.setDown(false);
-                    ClientBase.mc.options.keyLeft.setDown(strafeDir == -1);
-                    ClientBase.mc.options.keyRight.setDown(strafeDir == 1);
+                    ClientBase.mc.options.keyLeft.setDown(false);
+                    ClientBase.mc.options.keyRight.setDown(false);
                     ClientBase.mc.options.keySprint.setDown(true);
-                    ClientBase.mc.options.keyJump.setDown(bb.nearestEnemyDist < 1.5);
+                    ClientBase.mc.options.keyJump.setDown(false);
 
                     return BTNode.Status.RUNNING;
                 })
         );
     }
 
+    /**
+     * 追踪远处敌人。用 Baritone 寻路靠近。
+     * 寻路卡住超过 40 tick 或寻路失败则返回 FAILURE。
+     */
     public static BTNode trackEnemy() {
         return new Sequence(
                 new Condition(bb -> bb.hasSword),
                 new Condition(bb -> bb.nearestEnemy != null && bb.nearestEnemyDist > 4 && bb.nearestEnemyDist <= 50),
                 new Condition(bb -> !bb.isContainerOpen()),
                 new Action(bb -> {
-                    BaritoneBridge.resume();
                     Player enemy = bb.nearestEnemy;
 
-                    if (!BaritoneBridge.isPathing()) {
-                        BaritoneBridge.setGoalAndPath("near", enemy.blockPosition(), 2);
-                    } else if (bb.tickCount % 20 == 0) {
-                        BaritoneBridge.setGoalAndPath("near", enemy.blockPosition(), 2);
+                    if (BaritoneBridge.isPathFailed()) {
+                        BaritoneBridge.cancel();
+                        MovementHelper.clearMovement();
+                        return BTNode.Status.FAILURE;
                     }
 
-                    return BaritoneBridge.isPathing() ? BTNode.Status.RUNNING : BTNode.Status.FAILURE;
+                    if (!BaritoneBridge.isPathing()) {
+                        trackStuckTick = 0;
+                        boolean ok = BaritoneBridge.setGoalAndPath("near", enemy.blockPosition(), 2);
+                        if (!ok) return BTNode.Status.FAILURE;
+                    } else {
+                        trackStuckTick++;
+                        if (trackStuckTick > 40) {
+                            BaritoneBridge.cancel();
+                            trackStuckTick = 0;
+                            return BTNode.Status.FAILURE;
+                        }
+                        if (bb.tickCount % 15 == 0) {
+                            BaritoneBridge.setGoalAndPath("near", enemy.blockPosition(), 2);
+                            trackStuckTick = 0;
+                        }
+                    }
+
+                    return BTNode.Status.RUNNING;
                 })
         );
     }
 
+    /**
+     * 关闭 KillAura，清理战斗状态。
+     */
     public static BTNode disableKillAura() {
         return new Action(bb -> {
             if (KillAura.INSTANCE != null && KillAura.INSTANCE.isEnabled()) {
                 KillAura.INSTANCE.setEnabled(false);
             }
-            BaritoneBridge.resume();
+            BaritoneBridge.cancel();
             MovementHelper.clearMovement();
-            strafeSwitchTick = 0;
+            trackStuckTick = 0;
             return BTNode.Status.SUCCESS;
         });
     }
 
     public static void reset() {
-        strafeDir = 1;
-        strafeSwitchTick = 0;
+        trackStuckTick = 0;
     }
 }

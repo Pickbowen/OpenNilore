@@ -39,8 +39,8 @@ extends HudElement {
         }
         FontRenderer fontRenderer = FontPresets.pingfang(16.0f);
         List<Module> visibleModules = this.getVisibleModules();
-        GlHelper.drawTextShadowLegacy("L", 4.0f, 4.0f, fontRenderer, ColorUtil.getRainbowColor(10, 1).getRGB());
-        GlHelper.drawTextShadowLegacy("izz (" + mc.getFps() + "FPS)", 4.0f + GlHelper.getStringWidth("Z", fontRenderer), 4.0f, fontRenderer, -1);
+        GlHelper.drawTextShadowLegacy("N", 4.0f, 4.0f, fontRenderer, ColorUtil.getRainbowColor(10, 1).getRGB());
+        GlHelper.drawTextShadowLegacy("ilore (" + mc.getFps() + "FPS)", 4.0f + GlHelper.getStringWidth("Z", fontRenderer), 4.0f, fontRenderer, -1);
         if (!visibleModules.isEmpty()) {
             float offsetY = 0.0f;
             for (Module module : visibleModules) {
