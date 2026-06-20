@@ -199,9 +199,9 @@ public class AI extends Module {
      *
      * [1] 自救 — 吃食物（最高优先级）
      * [2] 搜刮 — 找箱子（核心循环：装备 > 打架）
-     * [3] 打人 — 主动出击（有装备了再打）
-     * [4] goto 命令导航
-     * [5] 背包整理
+     * [3] 背包整理 — 开完箱子后立刻整理
+     * [4] 打人 — 主动出击（有装备了再打）
+     * [5] goto 命令导航
      * [6] 空闲 — 随便逛
      */
     private BTNode buildTree() {
@@ -220,19 +220,19 @@ public class AI extends Module {
                         LootTasks.pickupItems()
                 ),
                 LootTasks.ensureChestStealer(),
-                // [3] 打人
-                new Selector(
-                        CombatTasks.meleeCombat(),
-                        CombatTasks.trackEnemy()
-                ),
-                // [4] goto 命令
-                BridgeTasks.gotoCommand(),
-                // [5] 背包整理
+                // [3] 背包整理（开完箱子后立刻整理）
                 InventoryTasks.ensureInvManager(),
                 new Selector(
                         InventoryTasks.openInventory(),
                         InventoryTasks.waitForSorting()
                 ),
+                // [4] 打人
+                new Selector(
+                        CombatTasks.meleeCombat(),
+                        CombatTasks.trackEnemy()
+                ),
+                // [5] goto 命令
+                BridgeTasks.gotoCommand(),
                 // [6] 空闲
                 ExploreTasks.wander(),
                 ExploreTasks.stopMovement()

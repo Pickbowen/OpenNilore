@@ -25,8 +25,9 @@ public class InventoryTasks {
                 new Condition(bb -> bb.nearestEnemy == null || bb.nearestEnemyDist > 10),
                 new Condition(bb -> !bb.isContainerOpen()),
                 new Condition(bb -> !(ClientBase.mc.screen instanceof InventoryScreen)),
-                new Condition(bb -> bb.tickCount - lastSortTick >= 100),
+                new Condition(bb -> LootTasks.needsSort || bb.tickCount - lastSortTick >= 100),
                 new Action(bb -> {
+                    LootTasks.needsSort = false;
                     ClientBase.mc.setScreen(new InventoryScreen(ClientBase.mc.player));
                     lastSortTick = bb.tickCount;
                     waitTicks = 0;
