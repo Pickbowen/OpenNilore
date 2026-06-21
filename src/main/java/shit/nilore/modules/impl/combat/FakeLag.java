@@ -5,7 +5,6 @@ import com.mojang.blaze3d.vertex.*;
 import java.util.ArrayList;
 import java.util.List;
 import net.minecraft.client.renderer.GameRenderer;
-import net.minecraft.core.BlockPos;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ClientGamePacketListener;
 import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket;
@@ -17,7 +16,6 @@ import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
 import net.minecraft.network.protocol.game.ServerboundSwingPacket;
 import net.minecraft.network.protocol.game.ServerboundUseItemOnPacket;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 import shit.nilore.event.EventTarget;
@@ -31,7 +29,6 @@ import shit.nilore.settings.impl.BooleanSetting;
 import shit.nilore.settings.impl.ModeSetting;
 import shit.nilore.settings.impl.NumberSetting;
 import shit.nilore.utils.misc.PacketUtil;
-import shit.nilore.utils.render.RenderUtil;
 
 /**
  * FakeLag — 缓存出站位置数据包，模拟高延迟
@@ -43,7 +40,7 @@ import shit.nilore.utils.render.RenderUtil;
  * Constant 模式: 始终缓存
  *
  * 自动释放: 攻击、交互、受伤、击退、服务端传送
- * 渲染: 缓存期间显示位置轨迹线 + 首位置方块
+ * 渲染: 缓存期间显示位置轨迹线
  */
 public class FakeLag extends Module {
 
@@ -56,6 +53,7 @@ public class FakeLag extends Module {
     private final BooleanSetting flushOnAttack = new BooleanSetting("Flush On Attack", true);
     private final BooleanSetting flushOnInteract = new BooleanSetting("Flush On Interact", true);
     private final BooleanSetting flushOnDamage = new BooleanSetting("Flush On Damage", true);
+    private final BooleanSetting render = new BooleanSetting("Render", true);
 
     private final List<Packet<?>> packetQueue = new ArrayList<>();
     private long lastFlushTime = 0;
@@ -163,85 +161,70 @@ public class FakeLag extends Module {
         packetQueue.add(packet);
     }
 
-    // --- 渲染: 轨迹线 + 首位置方块 ---
+    // --- 渲染: 轨迹线 ---
     @EventTarget
     public void onRender(RenderEvent event) {
+        if (!render.getValue()) return;
         if (packetQueue.isEmpty() || mc.player == null || mc.gameRenderer == null) return;
 
         List<Vec3> positions = getQueuedPositions();
-        if (positions.size() < 1) return;
+        if (positions.size() < 2) return;
 
         Vec3 cam = mc.gameRenderer.getMainCamera().getPosition();
         PoseStack poseStack = event.poseStack();
         poseStack.pushPose();
         poseStack.translate(-cam.x, -cam.y, -cam.z);
 
-        // 首位置方块 (cyan ghost)
-        Vec3 first = positions.get(0);
-        AABB box = new AABB(
-                first.x - 0.3, first.y, first.z - 0.3,
-                first.x + 0.3, first.y + 1.8, first.z + 0.3
-        );
         RenderSystem.enableBlend();
         RenderSystem.defaultBlendFunc();
         RenderSystem.disableDepthTest();
         RenderSystem.depthMask(false);
+        RenderSystem.setShader(GameRenderer::getRendertypeLinesShader);
+        RenderSystem.lineWidth(2.5f);
+        RenderSystem.disableCull();
 
-        RenderSystem.setShaderColor(0.0f, 0.9f, 1.0f, 0.15f);
-        RenderUtil.drawSolidBox(box, poseStack);
-        RenderSystem.setShaderColor(0.0f, 0.9f, 1.0f, 0.6f);
-        RenderUtil.drawOutlineBox(box, poseStack);
+        Matrix4f matrix = poseStack.last().pose();
+        org.joml.Matrix3f normalMat = poseStack.last().normal();
+        BufferBuilder builder = Tesselator.getInstance().getBuilder();
+        builder.begin(VertexFormat.Mode.LINES, DefaultVertexFormat.POSITION_COLOR_NORMAL);
 
-        // 轨迹线 (line strip through all queued positions)
-        if (positions.size() >= 2) {
-            RenderSystem.setShader(GameRenderer::getRendertypeLinesShader);
-            RenderSystem.lineWidth(2.5f);
-            RenderSystem.disableCull();
+        float r = 0.0f, g = 0.9f, b = 1.0f, a = 0.8f;
+        double offset = 0.5;
 
-            Matrix4f matrix = poseStack.last().pose();
-            org.joml.Matrix3f normalMat = poseStack.last().normal();
-            BufferBuilder builder = Tesselator.getInstance().getBuilder();
-            builder.begin(VertexFormat.Mode.LINES, DefaultVertexFormat.POSITION_COLOR_NORMAL);
+        for (int i = 0; i < positions.size() - 1; i++) {
+            Vec3 start = positions.get(i);
+            Vec3 end = positions.get(i + 1);
 
-            float r = 0.0f, g = 0.9f, b = 1.0f, a = 0.8f;
-            double offset = 0.5; // block center Y offset
-
-            for (int i = 0; i < positions.size() - 1; i++) {
-                Vec3 start = positions.get(i);
-                Vec3 end = positions.get(i + 1);
-
-                // Coalesce collinear segments
-                int next = i + 1;
-                while (next + 1 < positions.size()) {
-                    Vec3 nextEnd = positions.get(next + 1);
-                    double dx1 = end.x - start.x, dy1 = end.y - start.y, dz1 = end.z - start.z;
-                    double dx2 = nextEnd.x - end.x, dy2 = nextEnd.y - end.y, dz2 = nextEnd.z - end.z;
-                    if (Math.abs(dx1 - dx2) < 0.01 && Math.abs(dy1 - dy2) < 0.01 && Math.abs(dz1 - dz2) < 0.01) {
-                        end = nextEnd;
-                        next++;
-                    } else {
-                        break;
-                    }
+            // Coalesce collinear segments
+            int next = i + 1;
+            while (next + 1 < positions.size()) {
+                Vec3 nextEnd = positions.get(next + 1);
+                double dx1 = end.x - start.x, dy1 = end.y - start.y, dz1 = end.z - start.z;
+                double dx2 = nextEnd.x - end.x, dy2 = nextEnd.y - end.y, dz2 = nextEnd.z - end.z;
+                if (Math.abs(dx1 - dx2) < 0.01 && Math.abs(dy1 - dy2) < 0.01 && Math.abs(dz1 - dz2) < 0.01) {
+                    end = nextEnd;
+                    next++;
+                } else {
+                    break;
                 }
-                i = next - 1;
-
-                float x1 = (float) start.x, y1 = (float) (start.y + offset), z1 = (float) start.z;
-                float x2 = (float) end.x, y2 = (float) (end.y + offset), z2 = (float) end.z;
-
-                float dx = x2 - x1, dy = y2 - y1, dz = z2 - z1;
-                float len = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
-                float nx = len > 0 ? dx / len : 0f;
-                float ny = len > 0 ? dy / len : 0f;
-                float nz = len > 0 ? dz / len : 0f;
-
-                builder.vertex(matrix, x1, y1, z1).color(r, g, b, a).normal(normalMat, nx, ny, nz).endVertex();
-                builder.vertex(matrix, x2, y2, z2).color(r, g, b, a).normal(normalMat, nx, ny, nz).endVertex();
             }
+            i = next - 1;
 
-            Tesselator.getInstance().end();
-            RenderSystem.enableCull();
+            float x1 = (float) start.x, y1 = (float) (start.y + offset), z1 = (float) start.z;
+            float x2 = (float) end.x, y2 = (float) (end.y + offset), z2 = (float) end.z;
+
+            float dx = x2 - x1, dy = y2 - y1, dz = z2 - z1;
+            float len = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
+            float nx = len > 0 ? dx / len : 0f;
+            float ny = len > 0 ? dy / len : 0f;
+            float nz = len > 0 ? dz / len : 0f;
+
+            builder.vertex(matrix, x1, y1, z1).color(r, g, b, a).normal(normalMat, nx, ny, nz).endVertex();
+            builder.vertex(matrix, x2, y2, z2).color(r, g, b, a).normal(normalMat, nx, ny, nz).endVertex();
         }
 
+        Tesselator.getInstance().end();
+        RenderSystem.enableCull();
         RenderSystem.setShaderColor(1f, 1f, 1f, 1f);
         RenderSystem.enableDepthTest();
         RenderSystem.depthMask(true);

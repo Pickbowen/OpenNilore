@@ -28,7 +28,6 @@ import shit.nilore.modules.impl.misc.AimAssist;
 import shit.nilore.modules.impl.misc.AutoClicker;
 import shit.nilore.modules.impl.misc.AutoRod;
 import shit.nilore.modules.impl.misc.Blockin;
-import shit.nilore.modules.impl.misc.AI;
 import shit.nilore.modules.impl.misc.SafeWalk;
 import shit.nilore.modules.impl.movement.CollisionSpeed;
 import shit.nilore.modules.impl.movement.NoSlow;
@@ -106,7 +105,6 @@ public class ModuleManager extends ClientBase {
         this.register(new AutoRod());
         this.register(new SafeWalk());
         this.register(new Blockin());
-        this.register(new AI());
 
         this.register(new CollisionSpeed());
         this.register(new NoSlow());
