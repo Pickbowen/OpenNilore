@@ -11,6 +11,13 @@ public class InventoryTasks {
     private static int lastSortTick = -100;
     private static int waitTicks = 0;
 
+    /**
+     * 强制下次 tick 整理背包 (箱子搜刮后调用)
+     */
+    public static void forceSort() {
+        lastSortTick = -100;
+    }
+
     public static BTNode ensureInvManager() {
         return new Action(bb -> {
             if (InventoryManager.INSTANCE != null && !InventoryManager.INSTANCE.isEnabled()) {

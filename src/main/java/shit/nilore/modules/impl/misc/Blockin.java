@@ -1,7 +1,11 @@
 package shit.nilore.modules.impl.misc;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
@@ -12,21 +16,30 @@ import shit.nilore.event.impl.MotionEvent;
 import shit.nilore.modules.Category;
 import shit.nilore.modules.Module;
 import shit.nilore.settings.impl.BooleanSetting;
+import shit.nilore.settings.impl.ModeSetting;
 import shit.nilore.settings.impl.NumberSetting;
 import shit.nilore.utils.game.BlockUtil;
 
 /**
- * Blockin: 在玩家周围放置方块形成保护壳 (surround)
- * 用于 SkyWars/BedWars 等场景下快速围住自己防止被水晶炸或被近战
+ * Blockin — 在玩家周围放置方块形成保护壳 (surround)
+ *
+ * 基于 LiquidBounce NextGen ModuleBlockIn 逻辑移植
+ * 核心机制: 记录起始位置，按顺序在周围放置方块，放满自动关闭
+ *
+ * 支持放置顺序: Normal, Random, BottomTop, TopBottom
+ * 自动检测玩家移动，移出范围自动禁用
  */
 public class Blockin extends Module {
 
-    private static final Direction[] HORIZONTALS = {Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST};
-
+    private final ModeSetting placeOrder = new ModeSetting("Place Order", "Normal", "Normal", "Random", "BottomTop", "TopBottom").withDefault("Normal");
     public final NumberSetting delay = new NumberSetting("Delay", 0, 0, 4, 1);
     public final BooleanSetting head = new BooleanSetting("Head Level", true);
     public final BooleanSetting rotate = new BooleanSetting("Rotate", true);
+    private final BooleanSetting autoDisable = new BooleanSetting("Auto Disable", true);
 
+    private BlockPos startPos = BlockPos.ZERO;
+    private boolean rotateClockwise = false;
+    private List<BlockPos> blockList = Collections.emptyList();
     private int tickCounter = 0;
 
     public Blockin() {
@@ -35,11 +48,17 @@ public class Blockin extends Module {
 
     @Override
     protected void onEnable() {
+        if (mc.player == null) return;
+        startPos = mc.player.blockPosition();
+        rotateClockwise = Math.random() < 0.5;
+        blockList = getPositions();
         tickCounter = 0;
     }
 
     @Override
     protected void onDisable() {
+        startPos = BlockPos.ZERO;
+        blockList = Collections.emptyList();
         tickCounter = 0;
     }
 
@@ -48,49 +67,36 @@ public class Blockin extends Module {
         if (!event.isPre()) return;
         if (mc.player == null || mc.level == null) return;
 
+        // 检测玩家是否移动了位置
+        BlockPos currentPos = mc.player.blockPosition();
+        if (!currentPos.equals(startPos) && !currentPos.equals(startPos.above())) {
+            if (autoDisable.getValue()) {
+                this.setEnabled(false);
+            }
+            return;
+        }
+
         if (tickCounter > 0) {
             tickCounter--;
             return;
         }
 
-        BlockPos playerPos = mc.player.blockPosition();
         int blockSlot = findBlockSlot();
         if (blockSlot == -1) return;
 
-        int prevSlot = mc.player.getInventory().selected;
-        boolean placed = false;
+        boolean allFilled = true;
+        for (BlockPos pos : blockList) {
+            if (!BlockUtil.isEmpty(pos)) continue;
 
-        // 先放脚下的四个方向
-        for (Direction dir : HORIZONTALS) {
-            BlockPos placePos = playerPos.relative(dir);
-            if (tryPlace(placePos, blockSlot)) {
-                placed = true;
+            allFilled = false;
+            if (tryPlace(pos, blockSlot)) {
+                tickCounter = (int) delay.getValue();
+                return;
             }
         }
 
-        // 放头部位置
-        if (head.getValue()) {
-            BlockPos headPos = playerPos.above();
-            for (Direction dir : HORIZONTALS) {
-                BlockPos placePos = headPos.relative(dir);
-                if (tryPlace(placePos, blockSlot)) {
-                    placed = true;
-                }
-            }
-        }
-
-        // 放脚下 (可选, 防止被从下面打)
-        BlockPos belowPos = playerPos.below();
-        for (Direction dir : HORIZONTALS) {
-            BlockPos placePos = belowPos.relative(dir);
-            if (tryPlace(placePos, blockSlot)) {
-                placed = true;
-            }
-        }
-
-        if (placed) {
-            mc.player.getInventory().selected = prevSlot;
-            tickCounter = (int) delay.getValue();
+        if (allFilled && autoDisable.getValue()) {
+            this.setEnabled(false);
         }
     }
 
@@ -152,5 +158,50 @@ public class Blockin extends Module {
         float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
         float pitch = (float) Math.toDegrees(-Math.atan2(dy, dist));
         return new float[]{yaw, pitch};
+    }
+
+    // --- 位置生成 (基于 LiquidBounce Order 逻辑) ---
+
+    private List<BlockPos> getPositions() {
+        String order = placeOrder.getValue();
+        switch (order) {
+            case "Random":
+                List<BlockPos> shuffled = getNormalPositions();
+                Collections.shuffle(shuffled);
+                return shuffled;
+            case "BottomTop":
+                List<BlockPos> bottomTop = getNormalPositions();
+                bottomTop.sort((a, b) -> Integer.compare(a.getY(), b.getY()));
+                return bottomTop;
+            case "TopBottom":
+                List<BlockPos> topBottom = getNormalPositions();
+                topBottom.sort((a, b) -> Integer.compare(b.getY(), a.getY()));
+                return topBottom;
+            default:
+                return getNormalPositions();
+        }
+    }
+
+    private List<BlockPos> getNormalPositions() {
+        int playerHeight = Mth.ceil(mc.player.getBbHeight());
+        List<BlockPos> result = new ArrayList<>();
+
+        // 脚下
+        result.add(startPos.below());
+
+        // 四个水平方向 × 玩家高度
+        Direction direction = mc.player.getDirection();
+        for (int i = 0; i < 4; i++) {
+            BlockPos sidePos = startPos.relative(direction);
+            for (int h = 0; h < playerHeight; h++) {
+                result.add(sidePos.above(h));
+            }
+            direction = rotateClockwise ? direction.getClockWise() : direction.getCounterClockWise();
+        }
+
+        // 头顶
+        result.add(startPos.above(playerHeight));
+
+        return result;
     }
 }

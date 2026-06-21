@@ -72,6 +72,7 @@ public class Blackboard extends ClientBase {
     public float lowHealthThreshold = 8;
     public boolean autoEat = true;
     public boolean autoLoot = true;
+    public boolean noChest = false;
     public boolean autoInv = true;
     public boolean wander = true;
 

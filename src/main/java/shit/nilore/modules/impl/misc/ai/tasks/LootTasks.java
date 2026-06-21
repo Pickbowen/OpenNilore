@@ -52,7 +52,7 @@ public class LootTasks {
 
     public static BTNode openChest() {
         return new Sequence(
-                new Condition(bb -> bb.autoLoot && bb.nearestChest != null),
+                new Condition(bb -> bb.autoLoot && !bb.noChest && bb.nearestChest != null),
                 new Condition(bb -> bb.nearestChestDist <= Blackboard.CHEST_INTERACT_RANGE),
                 new Condition(bb -> !bb.isContainerOpen()),
                 new Action(bb -> {
@@ -109,6 +109,8 @@ public class LootTasks {
                 bb.navigatingToChest = null;
                 lastChestTarget = null;
                 lootingTicks = 0;
+                // 搜刮箱子后必须整理一次背包
+                InventoryTasks.forceSort();
                 return BTNode.Status.SUCCESS;
             }
             return BTNode.Status.FAILURE;
@@ -117,7 +119,7 @@ public class LootTasks {
 
     public static BTNode navigateToChest() {
         return new Sequence(
-                new Condition(bb -> bb.autoLoot && bb.nearestChest != null),
+                new Condition(bb -> bb.autoLoot && !bb.noChest && bb.nearestChest != null),
                 new Condition(bb -> bb.nearestChestDist > Blackboard.CHEST_INTERACT_RANGE),
                 new Condition(bb -> !bb.isContainerOpen()),
                 new Action(bb -> {

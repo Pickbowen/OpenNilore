@@ -30,6 +30,7 @@ public class AI extends Module {
     public final NumberSetting lowHealth = new NumberSetting("Low Health", 8, 2, 18, 1);
     public final BooleanSetting autoEat = new BooleanSetting("Auto Eat", true);
     public final BooleanSetting autoLoot = new BooleanSetting("Auto Loot", true);
+    public final BooleanSetting noChest = new BooleanSetting("No Chest", false);
     public final BooleanSetting log = new BooleanSetting("Log", true);
 
     private Blackboard blackboard;
@@ -197,6 +198,7 @@ public class AI extends Module {
         blackboard.lowHealthThreshold = lowHealth.getValue().floatValue();
         blackboard.autoEat = autoEat.getValue();
         blackboard.autoLoot = autoLoot.getValue();
+        blackboard.noChest = noChest.getValue();
         blackboard.autoInv = true;
         blackboard.wander = true;
         blackboard.gotoTarget = gotoTarget;
