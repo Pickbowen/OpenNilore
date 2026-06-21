@@ -18,15 +18,16 @@ import shit.nilore.modules.impl.combat.AutoOffHand;
 import shit.nilore.modules.impl.combat.AutoSoup;
 import shit.nilore.modules.impl.combat.AutoThrow;
 import shit.nilore.modules.impl.combat.Backtrack;
-import shit.nilore.modules.impl.combat.Blocking;
 import shit.nilore.modules.impl.combat.Critical;
 import shit.nilore.modules.impl.combat.CrystalAura;
+import shit.nilore.modules.impl.combat.FakeLag;
 import shit.nilore.modules.impl.combat.KillAura;
 import shit.nilore.modules.impl.exploit.Disabler;
 import shit.nilore.modules.impl.exploit.FastPlace;
 import shit.nilore.modules.impl.misc.AimAssist;
 import shit.nilore.modules.impl.misc.AutoClicker;
 import shit.nilore.modules.impl.misc.AutoRod;
+import shit.nilore.modules.impl.misc.Blockin;
 import shit.nilore.modules.impl.misc.AI;
 import shit.nilore.modules.impl.misc.SafeWalk;
 import shit.nilore.modules.impl.movement.CollisionSpeed;
@@ -95,7 +96,7 @@ public class ModuleManager extends ClientBase {
         this.register(new Critical());
         this.register(new CrystalAura());
         this.register(new KillAura());
-        this.register(new Blocking());
+        this.register(new FakeLag());
 
         this.register(new Disabler());
         this.register(new FastPlace());
@@ -104,6 +105,7 @@ public class ModuleManager extends ClientBase {
         this.register(new AutoClicker());
         this.register(new AutoRod());
         this.register(new SafeWalk());
+        this.register(new Blockin());
         this.register(new AI());
 
         this.register(new CollisionSpeed());

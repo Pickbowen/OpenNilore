@@ -1,55 +1,36 @@
 package shit.nilore.modules.impl.misc.ai.tasks;
 
-import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.player.Player;
 import shit.nilore.ClientBase;
+import shit.nilore.modules.impl.combat.KillAura;
 import shit.nilore.modules.impl.misc.ai.BaritoneBridge;
 import shit.nilore.modules.impl.misc.ai.Blackboard;
 import shit.nilore.modules.impl.misc.ai.btree.*;
-import shit.nilore.utils.game.RotationUtil;
-import shit.nilore.utils.rotation.Rotation;
+import shit.nilore.modules.impl.movement.Scaffold;
 
 public class CombatTasks {
 
     private static int strafeDir = 1;
     private static int strafeSwitchTick = 0;
-    private static int attackTick = 0;
-    private static boolean inCombat = false;
 
     /**
-     * 近战：距离 <= 4 时直接砍 + 绕着敌人走
-     * 不依赖 KillAura，自己处理旋转和攻击
+     * 近战：距离 <= 4 时绕着敌人打
      */
     public static BTNode meleeCombat() {
         return new Sequence(
                 new Condition(bb -> bb.nearestEnemy != null && bb.nearestEnemyDist <= 4),
                 new Condition(bb -> !bb.isContainerOpen()),
                 new Action(bb -> {
+                    // Pause path instead of cancel — scaffold needs to stay active over void
                     BaritoneBridge.pause();
                     Player enemy = bb.nearestEnemy;
 
-                    if (!inCombat) {
+                    if (!KillAura.INSTANCE.isEnabled()) {
                         bb.log("Fighting: " + enemy.getName().getString());
-                        inCombat = true;
-                        attackTick = 0;
                     }
+                    KillAura.INSTANCE.setEnabled(true);
 
-                    // === 旋转面向敌人 ===
-                    Rotation rot = RotationUtil.entityRotation(enemy);
-                    if (rot != null) {
-                        Blackboard.smoothYaw(rot.getYaw(), 40f);
-                        Blackboard.smoothPitch(rot.getPitch(), 40f);
-                    }
-
-                    // === 攻击（每 2 tick 一次，模拟 ~10 CPS） ===
-                    attackTick++;
-                    if (attackTick >= 2) {
-                        attackTick = 0;
-                        ClientBase.mc.gameMode.attack(ClientBase.mc.player, enemy);
-                        ClientBase.mc.player.swing(InteractionHand.MAIN_HAND);
-                    }
-
-                    // === 绕着敌人走 ===
+                    // 绕着敌人走
                     strafeSwitchTick++;
                     if (strafeSwitchTick > 20 + (int) (Math.random() * 15)) {
                         strafeDir = -strafeDir;
@@ -85,7 +66,7 @@ public class CombatTasks {
     }
 
     /**
-     * 追踪：距离 4-50 时主动走向敌人
+     * 追踪：距离 4-50 时主动走向敌人（需要有剑，否则先搜刮）
      */
     public static BTNode trackEnemy() {
         return new Sequence(
@@ -93,10 +74,11 @@ public class CombatTasks {
                 new Condition(bb -> bb.nearestEnemy != null && bb.nearestEnemyDist > 4 && bb.nearestEnemyDist <= 50),
                 new Condition(bb -> !bb.isContainerOpen()),
                 new Action(bb -> {
-                    inCombat = false;
+                    KillAura.INSTANCE.setEnabled(false);
                     BaritoneBridge.resume();
                     Player enemy = bb.nearestEnemy;
 
+                    // No path yet: create one. Otherwise re-path every 20 ticks (1s)
                     if (!BaritoneBridge.isPathing()) {
                         BaritoneBridge.setGoalAndPath("near", enemy.blockPosition(), 2);
                     } else if (bb.tickCount % 20 == 0) {
@@ -109,22 +91,14 @@ public class CombatTasks {
     }
 
     /**
-     * 战斗结束后清理状态
+     * 战斗结束后关闭战斗模块
      */
     public static BTNode disableCombatModules() {
         return new Action(bb -> {
-            if (!inCombat) return BTNode.Status.FAILURE;
-            inCombat = false;
-            attackTick = 0;
+            if (!KillAura.INSTANCE.isEnabled()) return BTNode.Status.FAILURE;
+            KillAura.INSTANCE.setEnabled(false);
             BaritoneBridge.resume();
             return BTNode.Status.SUCCESS;
         });
-    }
-
-    public static void reset() {
-        strafeDir = 1;
-        strafeSwitchTick = 0;
-        attackTick = 0;
-        inCombat = false;
     }
 }

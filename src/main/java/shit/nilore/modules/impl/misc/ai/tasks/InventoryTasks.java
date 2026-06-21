@@ -25,9 +25,8 @@ public class InventoryTasks {
                 new Condition(bb -> bb.nearestEnemy == null || bb.nearestEnemyDist > 10),
                 new Condition(bb -> !bb.isContainerOpen()),
                 new Condition(bb -> !(ClientBase.mc.screen instanceof InventoryScreen)),
-                new Condition(bb -> LootTasks.needsSort || bb.tickCount - lastSortTick >= 100),
+                new Condition(bb -> bb.tickCount - lastSortTick >= 100),
                 new Action(bb -> {
-                    LootTasks.needsSort = false;
                     ClientBase.mc.setScreen(new InventoryScreen(ClientBase.mc.player));
                     lastSortTick = bb.tickCount;
                     waitTicks = 0;
@@ -41,6 +40,7 @@ public class InventoryTasks {
         return new Action(bb -> {
             if (!(ClientBase.mc.screen instanceof InventoryScreen)) return BTNode.Status.FAILURE;
             waitTicks++;
+            // Close after InvManager finishes or timeout
             if ((!InventoryManager.isPerformingAction && waitTicks > 5) || waitTicks > 200) {
                 ClientBase.mc.setScreen(null);
                 lastSortTick = bb.tickCount;
@@ -48,10 +48,5 @@ public class InventoryTasks {
             }
             return BTNode.Status.RUNNING;
         });
-    }
-
-    public static void reset() {
-        lastSortTick = -100;
-        waitTicks = 0;
     }
 }

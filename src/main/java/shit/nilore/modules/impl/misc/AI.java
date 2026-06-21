@@ -45,6 +45,7 @@ public class AI extends Module {
     protected void onEnable() {
         blackboard = new Blackboard();
         behaviorTree = buildTree();
+
         sendMsg("§aEnabled - SkyWars Bot");
     }
 
@@ -84,6 +85,7 @@ public class AI extends Module {
     public void onRotation(RotationEvent event) {
         if (blackboard == null) return;
         if (RotationHandler.isRotating) return;
+        // Don't override rotation when baritone is handling movement
         if (BaritoneBridge.isPathing()) return;
     }
 
@@ -162,13 +164,19 @@ public class AI extends Module {
 
         syncSettings();
         blackboard.update();
+
+        // Tick path executor every tick for smooth movement
         BaritoneBridge.tick();
 
+        // Scaffold auto: enable when path has bridge segments nearby (void crossing)
+        // NEVER disable scaffold during combat — falling into void is worse than fighting
         if (Scaffold.INSTANCE != null) {
             boolean shouldScaffold = BaritoneBridge.needsBridgeNearby() && blackboard.hasBlocks();
             if (Scaffold.INSTANCE.isEnabled() != shouldScaffold) {
                 Scaffold.INSTANCE.setEnabled(shouldScaffold);
             }
+            // Ascending bridge: force scaffold to jump (Normal mode + forceJump flag)
+            // This replaces the old mode switch approach
             boolean ascendingBridge = shouldScaffold && BaritoneBridge.needsAscendingNearby();
             if (ascendingBridge && !scaffoldModeOverridden) {
                 Scaffold.INSTANCE.mode.setValue("Normal");
@@ -194,24 +202,14 @@ public class AI extends Module {
         blackboard.gotoTarget = gotoTarget;
     }
 
-    /**
-     * 行为树结构（扁平 Selector，优先级从高到低）:
-     *
-     * [1] 自救 — 吃食物（最高优先级）
-     * [2] 搜刮 — 找箱子（核心循环：装备 > 打架）
-     * [3] 背包整理 — 开完箱子后立刻整理
-     * [4] 打人 — 主动出击（有装备了再打）
-     * [5] goto 命令导航
-     * [6] 空闲 — 随便逛
-     */
     private BTNode buildTree() {
         return new Selector(
-                // [1] 自救
+                // [1] 自救 — 吃食物（最高优先级）
                 new Selector(
                         SurvivalTasks.criticalEat(),
                         SurvivalTasks.eatFood()
                 ),
-                // [2] 搜刮
+                // [2] 搜刮 — 找箱子（核心循环：装备 > 打架）
                 new Selector(
                         LootTasks.waitForChestStealer(),
                         LootTasks.openChest(),
@@ -220,20 +218,20 @@ public class AI extends Module {
                         LootTasks.pickupItems()
                 ),
                 LootTasks.ensureChestStealer(),
-                // [3] 背包整理（开完箱子后立刻整理）
+                // [3] 打人 — 主动出击（有装备了再打）
+                new Selector(
+                        CombatTasks.meleeCombat(),
+                        CombatTasks.trackEnemy()
+                ),
+                // [4] goto 命令
+                BridgeTasks.gotoCommand(),
+                // [5] 背包整理
                 InventoryTasks.ensureInvManager(),
                 new Selector(
                         InventoryTasks.openInventory(),
                         InventoryTasks.waitForSorting()
                 ),
-                // [4] 打人
-                new Selector(
-                        CombatTasks.meleeCombat(),
-                        CombatTasks.trackEnemy()
-                ),
-                // [5] goto 命令
-                BridgeTasks.gotoCommand(),
-                // [6] 空闲
+                // [6] 空闲 — 随便逛
                 ExploreTasks.wander(),
                 ExploreTasks.stopMovement()
         );

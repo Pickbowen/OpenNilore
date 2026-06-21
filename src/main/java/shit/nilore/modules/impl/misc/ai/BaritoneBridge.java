@@ -66,8 +66,7 @@ public class BaritoneBridge {
      * Returns true if currently pathing (not done yet).
      */
     public static boolean tick() {
-        if (currentExecutor == null) return false;
-        if (paused) return true;
+        if (currentExecutor == null || paused) return currentExecutor != null;
         boolean done = currentExecutor.onTick();
         if (done) {
             currentExecutor = null;

@@ -2,6 +2,7 @@ package shit.nilore.modules.impl.misc.ai;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
+import net.minecraft.util.Mth;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.block.ChestBlock;
@@ -9,7 +10,6 @@ import net.minecraft.world.level.block.EnderChestBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import shit.nilore.ClientBase;
-import net.minecraft.util.Mth;
 import shit.nilore.utils.game.ItemUtil;
 import shit.nilore.utils.game.MovementUtil;
 
@@ -175,6 +175,10 @@ public class Blackboard extends ClientBase {
         }
     }
 
+    /**
+     * Move directly toward a position without pathfinding.
+     * Used for simple short-distance movement (item pickup).
+     */
     public static void moveToward(double dx, double dz) {
         double len = Math.sqrt(dx * dx + dz * dz);
         if (len < 0.01) {
@@ -189,6 +193,10 @@ public class Blackboard extends ClientBase {
         mc.options.keyRight.setDown(false);
     }
 
+    /**
+     * Smoothly rotate yaw toward target. Sensitivity-aware, ~0.1s to complete.
+     * Reference: baritone's calculateMouseMove approach.
+     */
     public static void smoothYaw(float targetYaw, float maxStep) {
         float current = mc.player.getYRot();
         float diff = Mth.wrapDegrees(targetYaw - current);
@@ -202,6 +210,7 @@ public class Blackboard extends ClientBase {
         float gcd = scaled * scaled * scaled * 1.2f;
         float result;
         if (Math.abs(step) >= Math.abs(diff) - 0.5f) {
+            // Close enough — snap to GCD-aligned target
             result = targetYaw - targetYaw % gcd;
         } else {
             result = current + step - (current + step) % gcd;
@@ -209,6 +218,9 @@ public class Blackboard extends ClientBase {
         mc.player.setYRot(result);
     }
 
+    /**
+     * Smoothly rotate pitch toward target. Sensitivity-aware.
+     */
     public static void smoothPitch(float targetPitch, float maxStep) {
         float current = mc.player.getXRot();
         float diff = Mth.clamp(targetPitch - current, -90f, 90f);

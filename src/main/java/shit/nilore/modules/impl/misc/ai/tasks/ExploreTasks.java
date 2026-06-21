@@ -74,11 +74,4 @@ public class ExploreTasks {
             return BTNode.Status.SUCCESS;
         });
     }
-
-    public static void reset() {
-        wanderTicks = 0;
-        wanderTarget = null;
-        idleTicks = 0;
-        idleTarget = 0;
-    }
 }

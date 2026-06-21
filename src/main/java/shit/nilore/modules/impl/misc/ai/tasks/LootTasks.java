@@ -19,7 +19,6 @@ public class LootTasks {
     private static int lootingTicks = 0;
     private static BlockPos lootingChest = null;
     private static BlockPos lastChestTarget = null;
-    public static boolean needsSort = false;
 
     public static BTNode ensureChestStealer() {
         return new Action(bb -> {
@@ -110,7 +109,6 @@ public class LootTasks {
                 bb.navigatingToChest = null;
                 lastChestTarget = null;
                 lootingTicks = 0;
-                needsSort = true;
                 return BTNode.Status.SUCCESS;
             }
             return BTNode.Status.FAILURE;
@@ -150,12 +148,5 @@ public class LootTasks {
                     return BTNode.Status.RUNNING;
                 })
         );
-    }
-
-    public static void reset() {
-        lootingTicks = 0;
-        lootingChest = null;
-        lastChestTarget = null;
-        needsSort = false;
     }
 }
