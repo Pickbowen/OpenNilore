@@ -51,8 +51,10 @@ public class NeteaseApi {
                     JsonArray data = root.getAsJsonArray("data");
                     if (data == null || data.isEmpty()) return null;
                     JsonObject first = data.get(0).getAsJsonObject();
-                    return first.has("url") && !first.get("url").isJsonNull()
+                    String url = first.has("url") && !first.get("url").isJsonNull()
                             ? first.get("url").getAsString() : null;
+                    System.out.println("[MusicPlayer] Song URL: " + url);
+                    return url;
                 });
     }
 

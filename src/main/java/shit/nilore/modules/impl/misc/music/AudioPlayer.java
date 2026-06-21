@@ -113,6 +113,7 @@ public class AudioPlayer {
     private void playInternal(String url) {
         SourceDataLine localLine = null;
         try {
+            System.out.println("[MusicPlayer] Starting playback: " + url);
             HttpClient client = HttpClient.newHttpClient();
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
@@ -165,9 +166,12 @@ public class AudioPlayer {
             if (state.get() == State.PLAYING) {
                 state.set(State.STOPPED);
             }
+            System.out.println("[MusicPlayer] Playback started successfully");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } catch (Exception e) {
+            System.err.println("[MusicPlayer] Playback failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            e.printStackTrace();
             if (state.get() != State.STOPPED) {
                 state.set(State.STOPPED);
             }

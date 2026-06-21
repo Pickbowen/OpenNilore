@@ -27,6 +27,7 @@ plugins {
     id 'idea'
     id 'maven-publish'
     id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
 }
 
 version = mod_version
@@ -155,6 +156,12 @@ repositories {
     maven { url = "https://pkgs.dev.azure.com/djtheredstoner/DevAuth/_packaging/public/maven/v1" }
 }
 
+// Standalone configuration for dependencies shaded into the mod JAR
+configurations {
+    bundle
+    implementation.extendsFrom(bundle)
+}
+
 dependencies {
     // Specify the version of Minecraft to use.
     // Any artifact can be supplied so long as it has a "userdev" classifier artifact and is a compatible patcher artifact.
@@ -175,9 +182,9 @@ dependencies {
     // Dev Auth
     runtimeOnly("me.djtheredstoner:DevAuth-forge-latest:1.2.2")
 
-    // MP3 decoding for MusicPlayer
-    implementation 'javazoom:jlayer:1.0.1'
-    implementation 'com.googlecode.soundlibs:mp3spi:1.9.5.4'
+    // MP3 decoding for MusicPlayer — shaded into the mod JAR for DLL injection
+    bundle 'javazoom:jlayer:1.0.1'
+    bundle 'com.googlecode.soundlibs:mp3spi:1.9.5.4'
 
     // Example mod dependency with JEI - using fg.deobf() ensures the dependency is remapped to your development mappings
     // The JEI API is declared for compile time use, while the full JEI artifact is used at runtime
@@ -236,6 +243,19 @@ tasks.named('jar', Jar).configure {
     // This is the preferred method to reobfuscate your jar file
     finalizedBy 'reobfJar'
 }
+
+// ===== Shadow: merge MP3 dependencies into the mod JAR =====
+// The DLL loader only embeds a single JAR — dependencies must be baked in.
+tasks.named('shadowJar', com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar).configure {
+    configurations = [project.configurations.bundle]
+    archiveClassifier.set('')
+    // Merge into the same file as jar so reobfJar and obfuscateClasses see it
+    destinationDirectory.set(jar.archiveFile.get().asFile.parentFile)
+    archiveFileName.set(jar.archiveFileName.get())
+}
+// reobfJar must run on the shadow-merged JAR (not the bare jar)
+tasks.matching { it.name == 'reobfJar' }.configureEach { dependsOn 'shadowJar' }
+tasks.named('jar').configure { finalizedBy 'shadowJar' }
 
 // ===== Build-time class-name obfuscation =====
 //
