@@ -75,7 +75,7 @@ public class KillAura extends Module {
     public final BooleanSetting preferBaby      = new BooleanSetting("Prefer Baby", false);
     public final BooleanSetting morePart        = new BooleanSetting("More Particles", false);
     public final BooleanSetting keepSprint      = new BooleanSetting("Keep Sprint", true);
-    public final BooleanSetting ignoreSkipTicks = new BooleanSetting("Ignore skip ticks", true);
+    public final BooleanSetting ignoreSkipTicks = new BooleanSetting("Ignore skip ticks", false);
     public final BooleanSetting fakeAutoBlock   = new BooleanSetting("Fake AutoBlock", true);
     public final BooleanSetting test            = new BooleanSetting("Test", false);
     public final NumberSetting aimRange    = new NumberSetting("Aim Range", 4.0, 1.0, 6.0, 0.1);
@@ -337,18 +337,9 @@ public class KillAura extends Module {
                 this.attackEntity(entity);
                 if (++attacked >= 2) break;
             }
-        } else {
-            // 优先用 crosshair hitResult, 无实体则直接攻击 KillAura 目标
-            Entity attackTarget = null;
-            if (hitResult != null && hitResult.getType() == HitResult.Type.ENTITY) {
-                attackTarget = ((EntityHitResult) hitResult).getEntity();
-            }
-            if (attackTarget == null && target != null) {
-                attackTarget = target;
-            }
-            if (attackTarget != null) {
-                this.attackEntity(attackTarget);
-            }
+        } else if (hitResult != null && hitResult.getType() == HitResult.Type.ENTITY) {
+            Entity hitEntity = ((EntityHitResult) hitResult).getEntity();
+            this.attackEntity(hitEntity);
         }
     }
 
