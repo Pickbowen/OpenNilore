@@ -17,79 +17,66 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class NeteaseApi {
-    private static final String BASE = "https://music.163.com/api";
+    private static final String BASE = "https://music-api.gdstudio.xyz/api.php";
     private static final HttpClient CLIENT = HttpClient.newHttpClient();
+    private static final Pattern LRC_PATTERN = Pattern.compile("\\[(\\d{2}):(\\d{2})\\.(\\d{2,3})](.*)");
 
     public static CompletableFuture<List<SongInfo>> search(String keywords, int limit) {
         String encoded = java.net.URLEncoder.encode(keywords, StandardCharsets.UTF_8);
-        return get("/search/get", "type=1&offset=0&total=true&limit=" + limit + "&s=" + encoded)
+        return get("types=search&source=netease&name=" + encoded + "&count=" + limit + "&pages=1")
                 .thenApply(root -> {
                     List<SongInfo> results = new ArrayList<>();
-                    JsonObject result = root.getAsJsonObject("result");
-                    if (result == null || !result.has("songs")) return results;
-                    JsonArray songs = result.getAsJsonArray("songs");
-                    for (JsonElement el : songs) {
+                    if (!root.isJsonArray()) return results;
+                    JsonArray arr = root.getAsJsonArray();
+                    for (JsonElement el : arr) {
                         JsonObject obj = el.getAsJsonObject();
                         long id = obj.get("id").getAsLong();
                         String name = obj.get("name").getAsString();
-                        JsonArray artists = obj.getAsJsonArray("artists");
-                        StringBuilder artistBuilder = new StringBuilder();
+                        JsonArray artists = obj.getAsJsonArray("artist");
+                        StringBuilder sb = new StringBuilder();
                         for (int i = 0; i < artists.size(); i++) {
-                            if (i > 0) artistBuilder.append(", ");
-                            artistBuilder.append(artists.get(i).getAsJsonObject().get("name").getAsString());
+                            if (i > 0) sb.append(", ");
+                            sb.append(artists.get(i).getAsString());
                         }
-                        String albumName = obj.getAsJsonObject("album").get("name").getAsString();
-                        String picUrl = obj.getAsJsonObject("album").has("picUrl")
-                                ? obj.getAsJsonObject("album").get("picUrl").getAsString() : "";
-                        long duration = obj.has("duration") ? obj.get("duration").getAsLong() : 0;
-                        results.add(new SongInfo(id, name, artistBuilder.toString(), albumName, picUrl, duration));
+                        String albumName = obj.has("album") ? obj.get("album").getAsString() : "";
+                        String picId = obj.has("pic_id") ? obj.get("pic_id").getAsString() : "";
+                        results.add(new SongInfo(id, name, sb.toString(), albumName, picId, 0));
                     }
                     return results;
                 });
     }
 
     public static CompletableFuture<String> getSongUrl(long songId) {
-        return get("/song/enhance/player/url", "ids=[" + songId + "]&br=320000")
+        return get("types=url&source=netease&id=" + songId + "&br=320")
                 .thenApply(root -> {
-                    JsonArray data = root.getAsJsonArray("data");
-                    if (data == null || data.isEmpty()) return null;
-                    JsonObject first = data.get(0).getAsJsonObject();
-                    String url = first.has("url") && !first.get("url").isJsonNull()
-                            ? first.get("url").getAsString() : null;
+                    if (!root.isJsonObject()) return null;
+                    JsonObject obj = root.getAsJsonObject();
+                    String url = obj.has("url") && !obj.get("url").isJsonNull()
+                            ? obj.get("url").getAsString() : null;
                     System.out.println("[MusicPlayer] Song URL: " + url);
                     return url;
                 });
     }
 
-    public static CompletableFuture<SongInfo> getSongDetail(long songId) {
-        return get("/song/detail", "ids=[" + songId + "]")
+    public static CompletableFuture<String> getAlbumPicUrl(String picId) {
+        if (picId == null || picId.isEmpty()) {
+            return CompletableFuture.completedFuture(null);
+        }
+        return get("types=pic&source=netease&id=" + picId + "&size=300")
                 .thenApply(root -> {
-                    JsonArray songs = root.getAsJsonArray("songs");
-                    if (songs == null || songs.isEmpty()) return null;
-                    JsonObject obj = songs.get(0).getAsJsonObject();
-                    String name = obj.get("name").getAsString();
-                    JsonArray ar = obj.getAsJsonArray("ar");
-                    StringBuilder artistBuilder = new StringBuilder();
-                    for (int i = 0; i < ar.size(); i++) {
-                        if (i > 0) artistBuilder.append(", ");
-                        artistBuilder.append(ar.get(i).getAsJsonObject().get("name").getAsString());
-                    }
-                    JsonObject al = obj.getAsJsonObject("al");
-                    String albumName = al.get("name").getAsString();
-                    String picUrl = al.has("picUrl") ? al.get("picUrl").getAsString() : "";
-                    long duration = obj.has("dt") ? obj.get("dt").getAsLong() : 0;
-                    return new SongInfo(songId, name, artistBuilder.toString(), albumName, picUrl, duration);
+                    if (!root.isJsonObject()) return null;
+                    JsonObject obj = root.getAsJsonObject();
+                    return obj.has("url") ? obj.get("url").getAsString() : null;
                 });
     }
 
-    private static final Pattern LRC_PATTERN = Pattern.compile("\\[(\\d{2}):(\\d{2})\\.(\\d{2,3})](.*)");
-
     public static CompletableFuture<List<LyricLine>> getLyrics(long songId) {
-        return get("/song/lyric", "id=" + songId + "&lv=1&tv=1")
+        return get("types=lyric&source=netease&id=" + songId)
                 .thenApply(root -> {
-                    JsonObject lrc = root.getAsJsonObject("lrc");
-                    if (lrc == null || !lrc.has("lyric")) return Collections.emptyList();
-                    String raw = lrc.get("lyric").getAsString();
+                    if (!root.isJsonObject()) return Collections.emptyList();
+                    JsonObject obj = root.getAsJsonObject();
+                    String raw = obj.has("lyric") ? obj.get("lyric").getAsString() : "";
+                    if (raw.isEmpty()) return Collections.emptyList();
                     return parseLrc(raw);
                 });
     }
@@ -113,15 +100,14 @@ public class NeteaseApi {
         return lines;
     }
 
-    private static CompletableFuture<JsonObject> get(String path, String params) {
-        String url = BASE + path + "?" + params;
+    private static CompletableFuture<JsonElement> get(String params) {
+        String url = BASE + "?" + params;
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
-                .header("Referer", "https://music.163.com")
                 .header("User-Agent", "Mozilla/5.0")
                 .GET()
                 .build();
         return CLIENT.sendAsync(request, HttpResponse.BodyHandlers.ofString())
-                .thenApply(resp -> JsonParser.parseString(resp.body()).getAsJsonObject());
+                .thenApply(resp -> JsonParser.parseString(resp.body()));
     }
 }
