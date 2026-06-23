@@ -10,6 +10,10 @@ import shit.nilore.event.EventTarget;
 public class Critical
 extends Module {
     public static Critical INSTANCE;
+
+    public final NumberSetting range = new NumberSetting("Range", 3.0, 1.0, 3.2, 0.1);
+    public final BooleanSetting autoJump = new BooleanSetting("Auto Jump", true);
+
     public Critical() {
         super("Critical", Category.COMBAT);
         INSTANCE = this;
