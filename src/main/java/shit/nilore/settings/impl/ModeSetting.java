@@ -12,7 +12,7 @@ extends Setting<String> {
     private final String[] modes;
 
     public ModeSetting(String string, String ... stringArray) {
-        super(string, null);
+        super(string, stringArray.length > 0 ? stringArray[0] : null);
         this.modes = stringArray;
     }
 
@@ -27,7 +27,7 @@ extends Setting<String> {
     }
 
     public boolean is(String string) {
-        return this.getValue().equals(string);
+        return this.getValue() != null && this.getValue().equals(string);
     }
 
     @Override

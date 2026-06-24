@@ -89,6 +89,20 @@ extends ClientBase {
     protected void onDisable() {
     }
 
+    public boolean isHiddenInModuleList() {
+        return false;
+    }
+
+    public String getSuffix() {
+        return null;
+    }
+
+    public void registerSetting(Setting<?>... settings) {
+        for (Setting<?> setting : settings) {
+            this.addSetting(setting);
+        }
+    }
+
     @Generated
     public int getKey() {
         return this.keyCode;

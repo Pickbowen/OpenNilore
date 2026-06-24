@@ -93,6 +93,12 @@ public class KillAura extends Module {
     public final ModeSetting priorityMode = new ModeSetting("Priority", "Distance", "FoV", "Health", "None").withDefault("FoV");
     public final ModeSetting targetEsp    = new ModeSetting("Target ESP", "None", "Spiral", "Box", "Tab").withDefault("None");
 
+    public final BooleanSetting predictionEnabled  = new BooleanSetting("Prediction", false);
+    public final NumberSetting enemyDelayThreshold = new NumberSetting("Enemy Delay Ticks", 3, 1, 5, 1,
+            () -> (Boolean) this.predictionEnabled.getValue());
+    public final NumberSetting selfDelayThreshold  = new NumberSetting("Self Delay Ticks", 3, 1, 5, 1,
+            () -> (Boolean) this.predictionEnabled.getValue());
+
     public final NumberSetting rotationSpeed = new NumberSetting("Rotation Speed", 180, 0, 720, 5);
     public final NumberSetting rotationDrift = new NumberSetting("Drift", 0.1, 0, 5, 0.1);
     public final NumberSetting rotationJitter = new NumberSetting("Jitter", 0.02, 0, 1, 0.01);
@@ -522,10 +528,53 @@ public class KillAura extends Module {
             return false;
         }
         Vec3 vec3 = RotationUtil.closestPoint(mc.player.getEyePosition(), entity.getBoundingBox());
-        if (vec3.distanceTo(mc.player.getEyePosition()) > this.aimRange.getValue().floatValue()) {
+        double dist = vec3.distanceTo(mc.player.getEyePosition());
+        if (dist <= 2.9) {
+            // 已经在 2.9 格以内，不预测，直接通过
+        } else if (dist > 5.0) {
             return false;
+        } else if (dist > this.aimRange.getValue().floatValue()) {
+            if (!(Boolean) this.predictionEnabled.getValue()
+                    || this.predictDistance(entity) >= 3.0) {
+                return false;
+            }
         }
         return RotationUtil.isEntityInFov(entity, this.fov.getValue().floatValue() / 2.0f);
+    }
+
+    private double predictDistance(Entity entity) {
+        double selfDelayMs = 0.0;
+        if (mc.getConnection() != null
+                && mc.getConnection().getPlayerInfo(mc.player.getUUID()) != null) {
+            selfDelayMs = mc.getConnection().getPlayerInfo(mc.player.getUUID()).getLatency();
+        }
+        double selfDelayTicks = Math.min(selfDelayMs / 50.0, this.selfDelayThreshold.getValue().doubleValue());
+
+        double enemyDelayMs = 0.0;
+        if (entity instanceof Player player) {
+            if (mc.getConnection() != null
+                    && mc.getConnection().getPlayerInfo(player.getUUID()) != null) {
+                enemyDelayMs = mc.getConnection().getPlayerInfo(player.getUUID()).getLatency();
+            }
+        }
+        double enemyDelayTicks = Math.min(enemyDelayMs / 50.0, this.enemyDelayThreshold.getValue().doubleValue());
+
+        // 固定 3tick 预测 + 延迟 tick
+        double totalTicks = 3.0 + selfDelayTicks + enemyDelayTicks;
+
+        double playerVelX = mc.player.getX() - mc.player.xOld;
+        double playerVelZ = mc.player.getZ() - mc.player.zOld;
+        double enemyVelX = entity.getX() - entity.xOld;
+        double enemyVelZ = entity.getZ() - entity.zOld;
+
+        double predictedPlayerX = mc.player.getX() + playerVelX * totalTicks;
+        double predictedPlayerZ = mc.player.getZ() + playerVelZ * totalTicks;
+        double predictedEnemyX = entity.getX() + enemyVelX * totalTicks;
+        double predictedEnemyZ = entity.getZ() + enemyVelZ * totalTicks;
+
+        double dx = predictedEnemyX - predictedPlayerX;
+        double dz = predictedEnemyZ - predictedPlayerZ;
+        return Math.sqrt(dx * dx + dz * dz);
     }
 
     public void attackEntity(Entity entity) {

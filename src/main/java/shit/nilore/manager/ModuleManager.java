@@ -73,6 +73,7 @@ import shit.nilore.modules.impl.render.XRay;
 import shit.nilore.modules.impl.world.AntiStaff;
 import shit.nilore.modules.impl.world.AutoPlay;
 import shit.nilore.modules.impl.world.AutoTools;
+import shit.nilore.modules.impl.world.BlockIn;
 import shit.nilore.modules.impl.world.Debugger;
 import shit.nilore.modules.impl.world.Teams;
 import shit.nilore.modules.impl.world.WebUI;
@@ -154,6 +155,7 @@ public class ModuleManager extends ClientBase {
         this.register(new AntiStaff());
         this.register(new AutoPlay());
         this.register(new AutoTools());
+        this.register(new BlockIn());
         this.register(new Debugger());
         this.register(new Teams());
         this.register(new WebUI());
