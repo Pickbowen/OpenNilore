@@ -40,7 +40,8 @@ public class NotificationHud extends HudElement {
     private static final float SPACING = 5.4f;
     private static final float ICON_SIZE = 21.6f;
     private static final int BG_COLOR = 0xFF111615;
-    private static final int BAR_COLOR = 0xFF1E6BD0;
+    private static final int BAR_COLOR = 0xFFFFFFFF;
+    private static final int BAR_BG_COLOR = 0xFF3A3A3A;
     private static final int TEXT_COLOR = 0xFFFFFFFF;
 
     private final NumberSetting margin = new NumberSetting("Margin", 8.0f, 0.0f, 100.0f, 1.0f);
@@ -103,8 +104,8 @@ public class NotificationHud extends HudElement {
                 if (!entry.entranceStarted) {
                     // First render: kick off entrance animations
                     entry.entranceStarted = true;
-                    entry.xAnim.animate(targetX, 0.3, Easings.EASE_OUT_QUAD);
-                    entry.alphaAnim.animate(1.0, 0.25, Easings.EASE_OUT_QUAD);
+                    entry.xAnim.animate(targetX, 0.3, Easings.EASE_OUT_POW4);
+                    entry.alphaAnim.animate(1.0, 0.2, Easings.EASE_OUT_POW3);
                 }
                 entry.xAnim.tick();
                 entry.alphaAnim.tick();
@@ -162,13 +163,24 @@ public class NotificationHud extends HudElement {
             drawContext.drawRoundedRect(rect, paint);
         }
 
-        // Bottom progress bar
+        // Progress bar background track - bottom aligned with card bottom, sharing corner radius
+        float barBottom = y + CARD_HEIGHT;
+        float barY = barBottom - BAR_HEIGHT;
+        try (Paint paint = new Paint()) {
+            paint.setColor(ColorUtil.withAlpha(BAR_BG_COLOR, alpha));
+            drawContext.drawRoundedRect(
+                    RoundedRectangle.ofXYWHRadii(x, barY, CARD_WIDTH, BAR_HEIGHT, new float[]{0, 0, CARD_RADIUS, CARD_RADIUS}),
+                    paint
+            );
+        }
+
+        // Progress bar
         float barWidth = CARD_WIDTH * progress;
         if (barWidth > 0.5f) {
             try (Paint paint = new Paint()) {
                 paint.setColor(ColorUtil.withAlpha(BAR_COLOR, alpha));
                 drawContext.drawRoundedRect(
-                        RoundedRectangle.ofXYWHR(x, y + CARD_HEIGHT - BAR_HEIGHT, barWidth, BAR_HEIGHT, CARD_RADIUS),
+                        RoundedRectangle.ofXYWHRadii(x, barY, barWidth, BAR_HEIGHT, new float[]{0, 0, CARD_RADIUS, CARD_RADIUS}),
                         paint
                 );
             }
@@ -202,8 +214,8 @@ public class NotificationHud extends HudElement {
         FontRenderer descFont = FontPresets.pingfang(12.6f);
 
         float textX = x + textOffsetX;
-        float titleY = y + PADDING + 4.05f;
-        float descY = titleY + 16.2f;
+        float titleY = y + PADDING + 6.05f;
+        float descY = titleY + 12.2f;
 
         int titleColor = ColorUtil.withAlpha(TEXT_COLOR, alpha);
         int descColor = ColorUtil.withAlpha(0xFFCCCCCC, alpha);

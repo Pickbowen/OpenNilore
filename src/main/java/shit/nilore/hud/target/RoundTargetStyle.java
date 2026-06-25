@@ -79,7 +79,7 @@ extends TargetStyle {
             }
         }
         boolean visibleNow = shouldShow = hasTarget || now - this.lastActiveTime < 300L;
-        if (shouldShow != this.visible) {
+        if (shouldShow != this.visible || (shouldShow && this.fadeAnim.getValueF() <= 0.01f)) {
             this.visible = shouldShow;
             if (this.visible) {
                 this.fadeAnim.animate(1.0, 0.35, Easings.EASE_OUT_POW3);

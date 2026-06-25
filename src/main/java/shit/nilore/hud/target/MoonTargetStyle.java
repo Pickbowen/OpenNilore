@@ -37,8 +37,7 @@ public class MoonTargetStyle extends TargetStyle {
     private LivingEntity currentTarget;
     private int lastHurtTime;
     private boolean visible = false;
-    private int delayCounter = 0;
-    private boolean hasEverHadTarget = false;
+    private long lastActiveTime = 0L;
 
     public MoonTargetStyle() {
         super("Moon");
@@ -57,23 +56,20 @@ public class MoonTargetStyle extends TargetStyle {
 
         boolean hasTarget = target != null;
         boolean targetChanged = false;
+        long now = System.currentTimeMillis();
 
-        // Vanish delay logic (matching Kotlin code)
         if (hasTarget) {
-            hasEverHadTarget = true;
+            this.lastActiveTime = now;
             if (this.currentTarget != target) {
                 this.currentTarget = target;
                 this.lastTarget = target;
                 targetChanged = true;
             }
-            this.delayCounter = 0;
-        } else if (hasEverHadTarget) {
-            this.delayCounter++;
         }
 
-        boolean shouldShow = hasTarget;
+        boolean shouldShow = hasTarget || now - this.lastActiveTime < 300L;
 
-        if (shouldShow != this.visible) {
+        if (shouldShow != this.visible || (shouldShow && this.fadeAnim.getValueF() <= 0.01f)) {
             this.visible = shouldShow;
             if (this.visible) {
                 this.fadeAnim.setCurrentValue(1.0);

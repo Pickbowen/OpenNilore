@@ -6,17 +6,20 @@ import asm.patchify.annotation.Overwrite;
 import asm.patchify.annotation.Patch;
 import asm.patchify.annotation.WrapInvoke;
 import com.mojang.blaze3d.vertex.PoseStack;
+import net.minecraft.client.Camera;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.LivingEntity;
 import org.joml.Matrix4f;
+import shit.nilore.ClientBase;
 import shit.nilore.NiloreClient;
 import shit.nilore.asm.Invocation;
 import shit.nilore.event.impl.GlRenderEvent;
 import shit.nilore.event.impl.Render2DEvent;
 import shit.nilore.modules.impl.render.AspectRatio;
 import shit.nilore.modules.impl.render.FullBright;
+import shit.nilore.modules.impl.render.NoFov;
 import shit.nilore.modules.impl.render.NoHurtCam;
 import shit.nilore.render.Renderer;
 import shit.nilore.utils.misc.ReflectionUtil;
@@ -81,6 +84,23 @@ public class GameRendererPatch {
     public static void onBobHurt(GameRenderer gameRenderer, PoseStack poseStack, float partial, CallbackInfo callbackInfo) {
         if (NiloreClient.isReady() && NoHurtCam.INSTANCE != null && NoHurtCam.INSTANCE.isEnabled()) {
             callbackInfo.cancel();
+        }
+    }
+
+    @Inject(method = "getFov", desc = "(Lnet/minecraft/client/Camera;FZ)D", at = @At(At.Type.TAIL))
+    public static void onGetFov(GameRenderer gameRenderer, Camera camera, float tickDelta, boolean changingFov, CallbackInfo callbackInfo) {
+        if (!NiloreClient.isReady() || NoFov.INSTANCE == null || !NoFov.INSTANCE.isEnabled()) return;
+        if (!changingFov) return;
+
+        double originalFov = (double) callbackInfo.result;
+        int baseFov = ClientBase.mc.options.fov().get();
+
+        if (NoFov.INSTANCE.isConstant()) {
+            callbackInfo.result = NoFov.INSTANCE.fovSetting.getValue().doubleValue();
+        } else {
+            double originalMultiplier = originalFov / baseFov;
+            double newMultiplier = 1.0 + (originalMultiplier - 1.0) * NoFov.INSTANCE.multiplierSetting.getValue().doubleValue();
+            callbackInfo.result = baseFov * Math.max(0.1, newMultiplier);
         }
     }
 }
