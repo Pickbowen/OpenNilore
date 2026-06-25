@@ -63,7 +63,7 @@ public class NiloreClient extends ClientBase {
     public static String configDir = System.getProperty("user.home") + File.separator + ".nilore";
     public static String username = "";
 
-    private static final String[] CLOUD_ASSET_NAMES = { "panel.png", "ptr.png", "lie.wav", "truth.wav" };
+    private static final String[] CLOUD_ASSET_NAMES = { "panel.png", "ptr.png", "lie.wav", "truth.wav", "Enabled.png", "Disabled.png" };
 
     private EventBus eventBus;
     private RotationHandler rotationHandler;

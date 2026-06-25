@@ -1,9 +1,22 @@
 package shit.nilore.hud;
 
+import com.mojang.blaze3d.platform.NativeImage;
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.vertex.BufferBuilder;
+import com.mojang.blaze3d.vertex.BufferUploader;
+import com.mojang.blaze3d.vertex.DefaultVertexFormat;
+import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.blaze3d.vertex.Tesselator;
+import com.mojang.blaze3d.vertex.VertexFormat;
+import java.io.InputStream;
+import net.minecraft.client.renderer.GameRenderer;
+import org.joml.Matrix4f;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.util.Mth;
+import shit.nilore.NiloreClient;
 import shit.nilore.event.EventTarget;
 import shit.nilore.event.impl.GlRenderEvent;
 import shit.nilore.event.impl.ModuleToggleEvent;
@@ -16,18 +29,21 @@ import shit.nilore.render.Paint;
 import shit.nilore.render.Renderer;
 import shit.nilore.render.RoundedRectangle;
 import shit.nilore.settings.impl.NumberSetting;
+import shit.nilore.utils.animation.SmoothAnimationTimer;
+import shit.nilore.utils.math.Easings;
 import shit.nilore.utils.render.ColorUtil;
 
 public class NotificationHud extends HudElement {
 
-    private static final float CARD_WIDTH = 190.0f;
-    private static final float CARD_HEIGHT = 50.0f;
-    private static final float CARD_RADIUS = 6.0f;
-    private static final float PADDING = 8.0f;
-    private static final float BAR_HEIGHT = 3.0f;
-    private static final float SPACING = 6.0f;
-    private static final int BG_COLOR = 0xCC000000;
-    private static final int BAR_COLOR = 0xFF4488FF;
+    private static final float CARD_WIDTH = 171.0f;
+    private static final float CARD_HEIGHT = 45.0f;
+    private static final float CARD_RADIUS = 5.4f;
+    private static final float PADDING = 7.2f;
+    private static final float BAR_HEIGHT = 2.7f;
+    private static final float SPACING = 5.4f;
+    private static final float ICON_SIZE = 21.6f;
+    private static final int BG_COLOR = 0xFF111615;
+    private static final int BAR_COLOR = 0xFF1E6BD0;
     private static final int TEXT_COLOR = 0xFFFFFFFF;
 
     private final NumberSetting margin = new NumberSetting("Margin", 8.0f, 0.0f, 100.0f, 1.0f);
@@ -35,6 +51,9 @@ public class NotificationHud extends HudElement {
     private final NumberSetting maxNotifications = new NumberSetting("Max Notifications", 7, 1, 10, 1);
 
     private final List<NotificationEntry> notifications = new ArrayList<>();
+
+    private DynamicTexture enabledIcon;
+    private DynamicTexture disabledIcon;
 
     public NotificationHud() {
         super("Notification");
@@ -53,6 +72,7 @@ public class NotificationHud extends HudElement {
         if (event.module() == this) {
             return;
         }
+        loadTextures();
         notifications.add(new NotificationEntry(
                 event.module().getName(),
                 event.enabled(),
@@ -70,12 +90,43 @@ public class NotificationHud extends HudElement {
         }
         long now = System.currentTimeMillis();
         long dur = duration.getValue().longValue();
+        float screenW = mc.getWindow().getGuiScaledWidth();
+        float screenH = mc.getWindow().getGuiScaledHeight();
+        float marginVal = margin.getValue().floatValue();
+        float targetX = screenW - CARD_WIDTH - marginVal;
+        float baseY = screenH - CARD_HEIGHT - marginVal;
 
         Iterator<NotificationEntry> it = notifications.iterator();
         while (it.hasNext()) {
             NotificationEntry entry = it.next();
-            if (now - entry.time > dur) {
-                it.remove();
+            long elapsed = now - entry.time;
+
+            if (elapsed < dur) {
+                // Visible: entrance or steady state
+                if (!entry.entranceStarted) {
+                    // First render: kick off entrance animations
+                    entry.entranceStarted = true;
+                    entry.xAnim.animate(targetX, 0.3, Easings.EASE_OUT_QUAD);
+                    entry.alphaAnim.animate(1.0, 0.25, Easings.EASE_OUT_QUAD);
+                }
+                entry.xAnim.tick();
+                entry.alphaAnim.tick();
+            } else if (!entry.exiting) {
+                // Time's up: start exit
+                entry.exiting = true;
+                entry.lastBarProgress = 0.0f;
+                entry.exitStartTime = now;
+                entry.alphaAnim.setCurrentValue(1.0);
+                entry.alphaAnim.animate(0.0, 0.2, Easings.EASE_OUT_QUAD);
+                entry.xAnim.animate(screenW + 10.0, 0.2, Easings.EASE_OUT_QUAD);
+            } else {
+                // Exiting
+                entry.xAnim.tick();
+                entry.alphaAnim.tick();
+                if (!entry.alphaAnim.isAnimating() || (now - entry.exitStartTime > 300)) {
+                    it.remove();
+                    continue;
+                }
             }
         }
 
@@ -83,28 +134,21 @@ public class NotificationHud extends HudElement {
             return;
         }
 
-        float screenW = mc.getWindow().getGuiScaledWidth();
-        float screenH = mc.getWindow().getGuiScaledHeight();
-        float marginVal = margin.getValue().floatValue();
-
         Renderer.render(event.guiGraphics(), drawContext -> {
             for (int i = 0; i < notifications.size(); i++) {
                 NotificationEntry entry = notifications.get(i);
-                float elapsed = now - entry.time;
-                float progress = 1.0f - Mth.clamp(elapsed / (float) dur, 0.0f, 1.0f);
+                long elapsed = now - entry.time;
+                float fadeAlpha = Mth.clamp(entry.alphaAnim.getValueF(), 0.0f, 1.0f);
+                float cardX = entry.xAnim.getValueF();
+                float cardY = baseY - i * (CARD_HEIGHT + SPACING);
 
-                float fadeAlpha;
-                if (elapsed < 200.0f) {
-                    fadeAlpha = elapsed / 200.0f;
-                } else if (elapsed > dur - 300.0f) {
-                    fadeAlpha = (dur - elapsed) / 300.0f;
+                float progress;
+                if (!entry.exiting) {
+                    progress = 1.0f - Mth.clamp((float) elapsed / dur, 0.0f, 1.0f);
+                    entry.lastBarProgress = progress;
                 } else {
-                    fadeAlpha = 1.0f;
+                    progress = entry.lastBarProgress;
                 }
-                fadeAlpha = Mth.clamp(fadeAlpha, 0.0f, 1.0f);
-
-                float cardX = screenW - CARD_WIDTH - marginVal;
-                float cardY = screenH - CARD_HEIGHT - marginVal - i * (CARD_HEIGHT + SPACING);
 
                 renderCard(drawContext, entry, cardX, cardY, progress, fadeAlpha);
             }
@@ -121,32 +165,55 @@ public class NotificationHud extends HudElement {
             drawContext.drawRoundedRect(rect, paint);
         }
 
-        // Blue progress bar at the bottom
+        // Bottom progress bar
         float barWidth = CARD_WIDTH * progress;
         if (barWidth > 0.5f) {
             try (Paint paint = new Paint()) {
                 paint.setColor(ColorUtil.withAlpha(BAR_COLOR, alpha));
                 drawContext.drawRoundedRect(
-                        RoundedRectangle.ofXYWHR(x, y + CARD_HEIGHT - BAR_HEIGHT, barWidth, BAR_HEIGHT, 1.5f),
+                        RoundedRectangle.ofXYWHR(x, y + CARD_HEIGHT - BAR_HEIGHT, barWidth, BAR_HEIGHT, CARD_RADIUS),
                         paint
                 );
             }
         }
 
-        // Text: line 1 "Module" (larger font)
-        FontRenderer titleFont = FontPresets.pingfang(18.0f);
-        FontRenderer descFont = FontPresets.pingfang(14.0f);
+        // Icon (pure white, original PNG colors preserved)
+        DynamicTexture icon = entry.enabled ? enabledIcon : disabledIcon;
+        float textOffsetX = PADDING;
+        if (icon != null) {
+            float drawSize = entry.enabled ? ICON_SIZE * 0.9f : ICON_SIZE;
+            float iconX = x + PADDING;
+            float iconY = y + (CARD_HEIGHT - BAR_HEIGHT - drawSize) / 2.0f;
+            RenderSystem.setShader(GameRenderer::getPositionTexShader);
+            RenderSystem.setShaderTexture(0, icon.getId());
+            RenderSystem.enableBlend();
+            RenderSystem.defaultBlendFunc();
+            Matrix4f pose = drawContext.getPoseStack().last().pose();
+            Tesselator tesselator = Tesselator.getInstance();
+            BufferBuilder bufferBuilder = tesselator.getBuilder();
+            bufferBuilder.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_TEX);
+            bufferBuilder.vertex(pose, iconX, iconY, 0.0f).uv(0.0f, 0.0f).endVertex();
+            bufferBuilder.vertex(pose, iconX, iconY + drawSize, 0.0f).uv(0.0f, 1.0f).endVertex();
+            bufferBuilder.vertex(pose, iconX + drawSize, iconY + drawSize, 0.0f).uv(1.0f, 1.0f).endVertex();
+            bufferBuilder.vertex(pose, iconX + drawSize, iconY, 0.0f).uv(1.0f, 0.0f).endVertex();
+            BufferUploader.drawWithShader(bufferBuilder.end());
+            textOffsetX = PADDING + ICON_SIZE + 5.4f;
+        }
 
-        float textX = x + PADDING;
-        float titleY = y + PADDING;
-        float descY = titleY + 18.0f + 4.0f;
+        // Title text
+        FontRenderer titleFont = FontPresets.pingfang(16.2f);
+        FontRenderer descFont = FontPresets.pingfang(12.6f);
+
+        float textX = x + textOffsetX;
+        float titleY = y + PADDING + 4.05f;
+        float descY = titleY + 16.2f;
 
         int titleColor = ColorUtil.withAlpha(TEXT_COLOR, alpha);
         int descColor = ColorUtil.withAlpha(0xFFCCCCCC, alpha);
 
         GlHelper.drawText("Module", textX, titleY, titleFont, titleColor);
 
-        String stateText = "Toggled " + entry.name + " " + (entry.enabled ? "ON" : "OFF");
+        String stateText = "Toggled " + entry.name + " " + (entry.enabled ? "on" : "off");
         GlHelper.drawText(stateText, textX, descY, descFont, descColor);
     }
 
@@ -158,15 +225,44 @@ public class NotificationHud extends HudElement {
     public void onSettings() {
     }
 
+    private void loadTextures() {
+        if (enabledIcon != null && disabledIcon != null) {
+            return;
+        }
+        enabledIcon = loadCloudTexture("Enabled.png");
+        disabledIcon = loadCloudTexture("Disabled.png");
+    }
+
+    private static DynamicTexture loadCloudTexture(String name) {
+        try (InputStream is = NiloreClient.class.getResourceAsStream("/assets/nilore/cloud_assets/" + name)) {
+            if (is == null) {
+                return null;
+            }
+            NativeImage nativeImage = NativeImage.read(is);
+            return new DynamicTexture(nativeImage);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     private static class NotificationEntry {
         final String name;
         final boolean enabled;
         final long time;
+        final SmoothAnimationTimer xAnim = new SmoothAnimationTimer();
+        final SmoothAnimationTimer alphaAnim = new SmoothAnimationTimer();
+        boolean entranceStarted;
+        boolean exiting;
+        long exitStartTime;
+        float lastBarProgress = 1.0f;
 
         NotificationEntry(String name, boolean enabled, long time) {
             this.name = name;
             this.enabled = enabled;
             this.time = time;
+            // Set initial values; animate() will be called on first render
+            this.xAnim.setCurrentValue(9999.0);
+            this.alphaAnim.setCurrentValue(0.0);
         }
     }
 }
