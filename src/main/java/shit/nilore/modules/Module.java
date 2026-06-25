@@ -7,6 +7,7 @@ import lombok.Getter;
 import lombok.Generated;
 import shit.nilore.ClientBase;
 import shit.nilore.NiloreClient;
+import shit.nilore.event.impl.ModuleToggleEvent;
 import shit.nilore.hud.ModuleListHud;
 import shit.nilore.modules.Category;
 import shit.nilore.modules.KeyBind;
@@ -77,6 +78,7 @@ extends ClientBase {
             this.onDisable();
             NiloreClient.getInstance().getEventBus().unregister(this);
         }
+        NiloreClient.getInstance().getEventBus().call(new ModuleToggleEvent(this, enabled));
     }
 
     public void toggle() {
