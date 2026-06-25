@@ -1,14 +1,11 @@
 package shit.nilore.hud;
 
-import com.mojang.blaze3d.platform.NativeImage;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.BufferBuilder;
 import com.mojang.blaze3d.vertex.BufferUploader;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
-import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.Tesselator;
 import com.mojang.blaze3d.vertex.VertexFormat;
-import java.io.InputStream;
 import net.minecraft.client.renderer.GameRenderer;
 import org.joml.Matrix4f;
 import java.util.ArrayList;
@@ -16,7 +13,6 @@ import java.util.Iterator;
 import java.util.List;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.util.Mth;
-import shit.nilore.NiloreClient;
 import shit.nilore.event.EventTarget;
 import shit.nilore.event.impl.GlRenderEvent;
 import shit.nilore.event.impl.ModuleToggleEvent;
@@ -32,6 +28,7 @@ import shit.nilore.settings.impl.NumberSetting;
 import shit.nilore.utils.animation.SmoothAnimationTimer;
 import shit.nilore.utils.math.Easings;
 import shit.nilore.utils.render.ColorUtil;
+import shit.nilore.utils.render.TextureUtil;
 
 public class NotificationHud extends HudElement {
 
@@ -229,20 +226,8 @@ public class NotificationHud extends HudElement {
         if (enabledIcon != null && disabledIcon != null) {
             return;
         }
-        enabledIcon = loadCloudTexture("Enabled.png");
-        disabledIcon = loadCloudTexture("Disabled.png");
-    }
-
-    private static DynamicTexture loadCloudTexture(String name) {
-        try (InputStream is = NiloreClient.class.getResourceAsStream("/assets/nilore/cloud_assets/" + name)) {
-            if (is == null) {
-                return null;
-            }
-            NativeImage nativeImage = NativeImage.read(is);
-            return new DynamicTexture(nativeImage);
-        } catch (Exception e) {
-            return null;
-        }
+        enabledIcon = TextureUtil.loadTexture("Enabled.png");
+        disabledIcon = TextureUtil.loadTexture("Disabled.png");
     }
 
     private static class NotificationEntry {
