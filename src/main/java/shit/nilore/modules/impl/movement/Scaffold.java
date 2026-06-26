@@ -63,8 +63,8 @@ public class Scaffold extends Module {
     public final BooleanSetting smoothTelly = new BooleanSetting("Smooth", true, () -> this.mode.is("Telly Bridge"));
     public final BooleanSetting renderItemSpoof = new BooleanSetting("Render Item Spoof", true);
     public final BooleanSetting renderAimPoint = new BooleanSetting("Render Aim Point", false);
-    public final BooleanSetting interactBeforePlace = new BooleanSetting("Interact item before place", false);
-    public final NumberSetting rotationTick = new NumberSetting("Rotation Tick", 3, 1, 6, 1);
+    public final BooleanSetting interactBeforePlace = new BooleanSetting("Interact item before place", true);
+    public final NumberSetting rotationTick = new NumberSetting("Rotation Tick", 4, 1, 6, 1);
     public final NumberSetting placeDelay = new NumberSetting("Place Delay", 1, 1, 5, 1);
     public final BooleanSetting clutch = new BooleanSetting("Clutch", true);
     public final BooleanSetting clutchTestMode = new BooleanSetting("Clutch Verify target", false, () -> clutch.getValue());
