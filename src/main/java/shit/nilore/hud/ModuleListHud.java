@@ -192,12 +192,12 @@ public class ModuleListHud extends HudElement {
         this.useClientColor = new BooleanSetting("Use Client Color", true);
         this.textColorMode = new ModeSetting("Text Color Mode", "Rainbow", "Rainbow", "Gradient", "Solid").withDefault("Rainbow");
         this.gradientTheme = new ModeSetting("Gradient Theme", "Rainbow",
-                "Rainbow", "Aurora", "Sunset", "Ocean", "Neon", "Pastel", "Fire", "Forest", "Galaxy", "Cherry")
+                "Rainbow", "Aurora", "Sunset", "Ocean", "Cotton Candy", "Lavender", "Peach", "Mint", "Cyberpunk", "Drift")
                 .withDefault("Rainbow");
         this.rainbowSpeed = new NumberSetting("Rainbow Speed", 60.0f, 1.0f, 240.0f, 1.0f);
-        this.rainbowSaturation = new NumberSetting("Rainbow Saturation", 60.0f, 0.0f, 100.0f, 1.0f);
+        this.rainbowSaturation = new NumberSetting("Rainbow Saturation", 80.0f, 0.0f, 100.0f, 1.0f);
         this.rainbowBrightness = new NumberSetting("Rainbow Brightness", 100.0f, 10.0f, 100.0f, 1.0f);
-        this.rainbowOffset = new NumberSetting("Rainbow Offset", 20.0f, 0.0f, 90.0f, 1.0f);
+        this.rainbowOffset = new NumberSetting("Rainbow Offset", 15.0f, 0.0f, 90.0f, 1.0f);
 
         // Register all settings
         this.registerSetting(sideMode, breakEnabled, showSuffix, suffixColorEnabled, suffixLowercaseEnabled,
