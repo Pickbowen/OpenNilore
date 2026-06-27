@@ -107,3 +107,8 @@ HudElement (base), IHudElement (interface), AutoPlayHud, DynamicIsland, EventAle
 - `mapping/zen.mapping` 和 `mapping/zen-orignial.jar` 不要改名
 - Access Transformer 已注释掉（build.gradle line 80）
 - 外部依赖: Lombok 1.18.34, ASM 9.6, DevAuth (runtime only)
+
+## 提交github
+- git add -A
+- git commit -m "你的提交说明"
+- git push origin master
