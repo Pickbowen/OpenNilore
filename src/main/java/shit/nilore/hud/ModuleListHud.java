@@ -25,6 +25,7 @@ import shit.nilore.settings.impl.NumberSetting;
 import shit.nilore.utils.animation.SmoothAnimationTimer;
 import shit.nilore.utils.math.Easings;
 import shit.nilore.utils.render.ColorUtil;
+import shit.nilore.utils.render.GradientTheme;
 import shit.nilore.event.EventTarget;
 
 public class ModuleListHud extends HudElement {
@@ -139,6 +140,7 @@ public class ModuleListHud extends HudElement {
     // Text color settings
     private BooleanSetting useClientColor;
     private ModeSetting textColorMode;
+    private ModeSetting gradientTheme;
     private NumberSetting rainbowSpeed;
     private NumberSetting rainbowSaturation;
     private NumberSetting rainbowBrightness;
@@ -189,6 +191,9 @@ public class ModuleListHud extends HudElement {
         // Text color settings
         this.useClientColor = new BooleanSetting("Use Client Color", true);
         this.textColorMode = new ModeSetting("Text Color Mode", "Rainbow", "Rainbow", "Gradient", "Solid").withDefault("Rainbow");
+        this.gradientTheme = new ModeSetting("Gradient Theme", "Rainbow",
+                "Rainbow", "Aurora", "Sunset", "Ocean", "Neon", "Pastel", "Fire", "Forest", "Galaxy", "Cherry")
+                .withDefault("Rainbow");
         this.rainbowSpeed = new NumberSetting("Rainbow Speed", 60.0f, 1.0f, 240.0f, 1.0f);
         this.rainbowSaturation = new NumberSetting("Rainbow Saturation", 60.0f, 0.0f, 100.0f, 1.0f);
         this.rainbowBrightness = new NumberSetting("Rainbow Brightness", 100.0f, 10.0f, 100.0f, 1.0f);
@@ -198,7 +203,7 @@ public class ModuleListHud extends HudElement {
         this.registerSetting(sideMode, breakEnabled, showSuffix, suffixColorEnabled, suffixLowercaseEnabled,
                 paddingX, paddingY, rowHeight, rowSpacing, backgroundEnabled, backgroundRadius,
                 sideLineEnabled, sideLineMode, sideLineWidth,
-                useClientColor, textColorMode, rainbowSpeed, rainbowSaturation, rainbowBrightness, rainbowOffset);
+                useClientColor, textColorMode, gradientTheme, rainbowSpeed, rainbowSaturation, rainbowBrightness, rainbowOffset);
     }
 
     private List<AnimatedRow> updateRows() {
@@ -464,13 +469,25 @@ public class ModuleListHud extends HudElement {
                     rowIndex * this.rainbowOffset.getValue().intValue()).getRGB();
         }
         String mode = this.textColorMode.getValue();
+        int speed = this.rainbowSpeed.getValue().intValue();
+        int offset = rowIndex * this.rainbowOffset.getValue().intValue();
+        float saturation = this.rainbowSaturation.getValue().floatValue();
+        float brightness = this.rainbowBrightness.getValue().floatValue();
+
         if ("Rainbow".equals(mode)) {
-            return ColorUtil.getRainbowColor(this.rainbowSpeed.getValue().intValue(),
-                    rowIndex * this.rainbowOffset.getValue().intValue()).getRGB();
+            return ColorUtil.getRainbowColor(speed, offset).getRGB();
+        }
+        if ("Gradient".equals(mode)) {
+            GradientTheme theme = GradientTheme.fromName(this.gradientTheme.getValue());
+            double position = (double) ((System.currentTimeMillis() / (long) speed + (long) offset) % 1000L) / 1000.0;
+            return theme.getColorAt(position, saturation, brightness).getRGB();
+        }
+        if ("Solid".equals(mode)) {
+            // Use client color as solid color
+            return ColorUtil.getRainbowColor(speed, 0).getRGB();
         }
         // Default to rainbow
-        return ColorUtil.getRainbowColor(this.rainbowSpeed.getValue().intValue(),
-                rowIndex * this.rainbowOffset.getValue().intValue()).getRGB();
+        return ColorUtil.getRainbowColor(speed, offset).getRGB();
     }
 
     private Alignment resolveAlignment(float x, float width) {
