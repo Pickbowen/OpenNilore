@@ -24,7 +24,6 @@ import shit.nilore.modules.impl.combat.FakeLag;
 import shit.nilore.modules.impl.combat.KillAura;
 import shit.nilore.modules.impl.exploit.Disabler;
 import shit.nilore.modules.impl.exploit.FastPlace;
-import shit.nilore.modules.impl.exploit.MaxHookBypass;
 import shit.nilore.modules.impl.misc.AimAssist;
 import shit.nilore.modules.impl.misc.AutoClicker;
 import shit.nilore.modules.impl.misc.AutoRod;
@@ -86,7 +85,6 @@ public class ModuleManager extends ClientBase {
 
         this.register(new Disabler());
         this.register(new FastPlace());
-        this.register(new MaxHookBypass());
 
         this.register(new AimAssist());
         this.register(new AutoClicker());

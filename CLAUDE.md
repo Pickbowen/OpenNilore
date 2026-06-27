@@ -58,7 +58,7 @@ COMBAT, MOVEMENT, PLAYER, RENDER, EXPLOIT, WORLD, MISC
 **combat/**: AntiBots, AntiFireball, AntiKB, AutoOffHand, AutoSoup, AutoThrow, Backtrack, Critical, CrystalAura, KillAura
 - `antikb/`: AntiKBMode, JumpResetMode, MixMode, NoXZMode
 
-**exploit/**: Disabler, FastPlace, MaxHookBypass
+**exploit/**: Disabler, FastPlace
 
 **misc/**: AI (stub), AimAssist, AutoClicker, AutoRod, SafeWalk
 
