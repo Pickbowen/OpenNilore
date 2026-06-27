@@ -27,6 +27,7 @@ import shit.nilore.modules.impl.exploit.FastPlace;
 import shit.nilore.modules.impl.misc.AimAssist;
 import shit.nilore.modules.impl.misc.AutoClicker;
 import shit.nilore.modules.impl.misc.AutoRod;
+import shit.nilore.modules.impl.misc.BalancedTimer;
 import shit.nilore.modules.impl.misc.MusicPlayer;
 import shit.nilore.modules.impl.misc.SafeWalk;
 import shit.nilore.modules.impl.movement.CollisionSpeed;
@@ -89,6 +90,7 @@ public class ModuleManager extends ClientBase {
         this.register(new AimAssist());
         this.register(new AutoClicker());
         this.register(new AutoRod());
+        this.register(new BalancedTimer());
         this.register(new SafeWalk());
         this.register(new MusicPlayer());
 
