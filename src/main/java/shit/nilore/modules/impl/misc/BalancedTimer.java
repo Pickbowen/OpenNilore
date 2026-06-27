@@ -103,15 +103,19 @@ public class BalancedTimer extends HudElement {
         } else {
             if (stage != Stage.IDLE) {
                 Packet<?> p = event.getPacket();
+                // 阻止放置方块和使用物品
+                if (p instanceof ServerboundUseItemOnPacket ||
+                        p instanceof ServerboundUseItemPacket) {
+                    event.setCancelled(true);
+                    return;
+                }
                 if (p instanceof ServerboundHelloPacket ||
                         p instanceof ServerboundStatusRequestPacket ||
                         p instanceof ServerboundPingRequestPacket ||
                         p instanceof ServerboundKeyPacket ||
-                        p instanceof ServerboundUseItemPacket ||
                         p instanceof ServerboundInteractPacket ||
                         p instanceof ServerboundChatPacket ||
                         p instanceof ServerboundPlayerActionPacket ||
-                        p instanceof ServerboundUseItemOnPacket ||
                         p instanceof ServerboundMovePlayerPacket ||
                         p instanceof ServerboundSwingPacket ||
                         p instanceof ServerboundKeepAlivePacket) {
