@@ -495,7 +495,11 @@ public class Scaffold extends Module {
                     direction.getNormal().getY() * 0.5,
                     direction.getNormal().getZ() * 0.5));
             BlockPos offset = pos.offset(direction.getNormal());
-            if (mc.level.getBlockState(offset).entityCanStandOnFace(mc.level, offset, mc.player, direction)) {
+            BlockState offsetState = mc.level.getBlockState(offset);
+            // 支持光滑墙面：检查方块是否有坚固的面
+            boolean canPlace = offsetState.entityCanStandOnFace(mc.level, offset, mc.player, direction)
+                    || (offsetState.isSolid() && !offsetState.canBeReplaced());
+            if (canPlace) {
                 Vec3 delta = offsetCenter.subtract(from);
                 if (delta.lengthSqr() <= 25.0
                         && delta.normalize().dot(Vec3.atLowerCornerOf(direction.getNormal()).normalize()) >= 0.0) {
