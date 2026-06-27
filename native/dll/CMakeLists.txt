@@ -43,6 +43,3 @@ set_target_properties(OpenZen PROPERTIES
 # We do not link jvm.dll: jvm.dll is already loaded in the host process when the
 # DLL is injected, and JNI_GetCreatedJavaVMs is provided by it. We only need
 # the JNI headers at compile time.
-
-# Link psapi.dll for GetModuleInformation
-target_link_libraries(OpenZen PRIVATE psapi)
