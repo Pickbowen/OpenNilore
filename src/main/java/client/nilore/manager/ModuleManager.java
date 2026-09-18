@@ -1,10 +1,11 @@
 package client.nilore.manager;
 
+import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
-import org.apache.commons.lang3.StringUtils;
 import client.nilore.ClientBase;
 import client.nilore.NiloreClient;
 import client.nilore.event.impl.KeyEvent;
@@ -66,6 +67,10 @@ import client.nilore.event.EventTarget;
 
 public class ModuleManager extends ClientBase {
     private final Map<String, Module> moduleMap = new ConcurrentHashMap<>();
+    private final Map<Class<?>, Module> modulesByClass = new ConcurrentHashMap<>();
+    private final Map<String, Module> modulesByName = new ConcurrentHashMap<>();
+    private volatile List<Module> moduleSnapshot = List.of();
+    private volatile Map<Category, List<Module>> modulesByCategory = Map.of();
 
     public ModuleManager() {
         NiloreClient.getInstance().getEventBus().register(this);
@@ -153,15 +158,15 @@ public class ModuleManager extends ClientBase {
 
     public void register(Module module) {
         this.moduleMap.put(module.getClass().getSimpleName(), module);
+        this.modulesByClass.put(module.getClass(), module);
+        this.modulesByName.put(normalizeName(module.getName()), module);
         module.registerSettings();
+        this.rebuildCaches();
     }
 
+    // 索引键是去掉空格的模块名；查询键沿用原先的行为，不对入参做去空格处理。
     public Module getModule(String string) {
-        Module module = null;
-        for (Module module2 : this.moduleMap.values()) {
-            if (!StringUtils.replace(module2.getName(), " ", "").equalsIgnoreCase(string)) continue;
-            module = module2;
-        }
+        Module module = this.modulesByName.get(string.toLowerCase(Locale.ROOT));
         if (module == null) {
             throw new ModuleNotFoundException();
         }
@@ -169,29 +174,47 @@ public class ModuleManager extends ClientBase {
     }
 
     public <T extends Module> T getModule(Class<T> clazz) {
-        Module module = clazz.cast(this.moduleMap.get(clazz.getSimpleName()));
+        Module module = this.modulesByClass.get(clazz);
         if (module == null) {
             throw new ModuleNotFoundException();
         }
-        return (T) module;
+        return clazz.cast(module);
     }
 
     public List<Module> getModules() {
-        return this.moduleMap.values().stream().toList();
+        return this.moduleSnapshot;
     }
 
     public List<Module> getModulesByCategory(Category category) {
-        return this.moduleMap.values().stream()
-                .filter(module -> module.getCategory().equals(category))
-                .sorted((a, b) -> a.getName().compareTo(b.getName()))
-                .collect(Collectors.toList());
+        return this.modulesByCategory.getOrDefault(category, List.of());
+    }
+
+    private static String normalizeName(String name) {
+        return name.replace(" ", "").toLowerCase(Locale.ROOT);
+    }
+
+    private void rebuildCaches() {
+        List<Module> snapshot = List.copyOf(this.moduleMap.values());
+        this.moduleSnapshot = snapshot;
+        Map<Category, List<Module>> byCategory = new EnumMap<>(Category.class);
+        for (Category category : Category.values()) {
+            List<Module> modules = new ArrayList<>();
+            for (Module module : snapshot) {
+                if (module.getCategory().equals(category)) {
+                    modules.add(module);
+                }
+            }
+            modules.sort((a, b) -> a.getName().compareTo(b.getName()));
+            byCategory.put(category, List.copyOf(modules));
+        }
+        this.modulesByCategory = byCategory;
     }
 
     @EventTarget
     public void onKey(KeyEvent event) {
-        if (mc.screen == null) {
-            for (Module module : this.moduleMap.values()) {
-                if (module.getKey() != 0 && module.getKey() == event.getKeyCode() && event.isPressed()) {
+        if (mc.screen == null && event.isPressed()) {
+            for (Module module : this.moduleSnapshot) {
+                if (module.getKey() != 0 && module.getKey() == event.getKeyCode()) {
                     module.toggle();
                 }
             }

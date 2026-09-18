@@ -8,6 +8,7 @@ import client.nilore.event.impl.PacketEvent;
 import client.nilore.event.impl.TickEvent;
 import client.nilore.modules.Category;
 import client.nilore.modules.Module;
+import client.nilore.protocol.heypixel.HeyPixelId1Wiring;
 import client.nilore.protocol.heypixel.HeyPixelProtocolRuntime;
 import client.nilore.settings.impl.BooleanSetting;
 import client.nilore.settings.impl.ModeSetting;
@@ -17,8 +18,8 @@ public final class Protocol extends Module {
         mc, Path.of(NiloreClient.configDir));
     public final ModeSetting enabledHosts = new ModeSetting("Hosts", "pc.bjdmc.net,*.bjdmc.net");
     public final BooleanSetting traceLogger = new BooleanSetting("Trace Logger", false);
-    public final BooleanSetting observeOnly = new BooleanSetting("Observe Only", true);
-    public final BooleanSetting allowLiveSend = new BooleanSetting("Allow Live Send", false);
+    public final BooleanSetting observeOnly = new BooleanSetting("Observe Only", false);
+    public final BooleanSetting allowLiveSend = new BooleanSetting("Allow Live Send", true);
     public final BooleanSetting strictProviderGate = new BooleanSetting("Strict Provider Gate", true);
 
     public Protocol() {
@@ -27,6 +28,7 @@ public final class Protocol extends Module {
 
     @Override
     public void onEnable() {
+        HeyPixelId1Wiring.configure(runtime);
         updateRuntimeSettings();
         runtime.start();
     }

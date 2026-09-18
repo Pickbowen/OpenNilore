@@ -36,6 +36,8 @@ extends HudElement {
         public final client.nilore.utils.animation.SmoothAnimationTimer widthAnim = new client.nilore.utils.animation.SmoothAnimationTimer();
         public boolean removing = false;
         public boolean visible = true;
+        // widthAnim 存的是该行的高度；记录当前目标高度，样式切换时据此重新动画。
+        public float rowHeight = -1.0f;
 
         public EffectEntry(PotionEffectsHud outer, MobEffectInstance instance) {
             this.outer = outer;
@@ -77,7 +79,15 @@ extends HudElement {
         }
 
         public void show(float targetHeight) {
+            this.rowHeight = targetHeight;
             this.heightAnim.animate(1.0, 0.3, client.nilore.utils.math.Easings.EASE_OUT_POW3);
+            this.widthAnim.animate(targetHeight, 0.3, client.nilore.utils.math.Easings.EASE_OUT_POW3);
+        }
+
+        // show() 只在首次渲染时触发，所以样式切换后必须在这里把行高重新动画到新样式的值。
+        public void updateRowHeight(float targetHeight) {
+            if (this.removing || this.rowHeight == targetHeight) return;
+            this.rowHeight = targetHeight;
             this.widthAnim.animate(targetHeight, 0.3, client.nilore.utils.math.Easings.EASE_OUT_POW3);
         }
 
@@ -199,6 +209,7 @@ extends HudElement {
                 entry.fadeAnim.setCurrentValue(currentY);
                 entry.show(entryHeight);
             }
+            entry.updateRowHeight(entryHeight);
             entry.fadeAnim.animate(currentY, 0.15, Easings.EASE_OUT_SINE);
             float animHeight = entry.heightAnim.getValueF();
             float entryY = entry.fadeAnim.getValueF();
@@ -264,6 +275,7 @@ extends HudElement {
                 entry.fadeAnim.setCurrentValue(currentY);
                 entry.show(entryHeight);
             }
+            entry.updateRowHeight(entryHeight);
             entry.fadeAnim.animate(currentY, 0.15, Easings.EASE_OUT_SINE);
             float entryY = entry.fadeAnim.getValueF();
 

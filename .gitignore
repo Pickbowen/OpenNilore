@@ -36,3 +36,4 @@ changes/
 .claude/worktrees/
 .claude/
 /bash.exe.stackdump
+.workbuddy/
