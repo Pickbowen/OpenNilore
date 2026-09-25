@@ -1,8 +1,12 @@
 package client.nilore.utils.game;
 
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Random;
+import java.util.Set;
 import lombok.Generated;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
@@ -16,7 +20,6 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
-import org.antlr.v4.runtime.misc.OrderedHashSet;
 import client.nilore.ClientBase;
 import client.nilore.utils.math.MathUtil;
 import client.nilore.utils.rotation.Rotation;
@@ -258,65 +261,238 @@ extends ClientBase {
         return null;
     }
 
-    public static RotationUtil.BestHitInfo getBestHit(Entity entity) {
-        double sampleAxis2;
-        double sampleAxis1;
-        Vec3 playerPos = new Vec3(mc.player.getX(), mc.player.getY(), mc.player.getZ());
-        Vec3 eyePos = playerPos.add(0.0, mc.player.getEyeHeight(), 0.0);
-        AABB aABB = RotationUtil.getEntityBB(entity);
-        double minX = aABB.minX;
-        double minY = aABB.minY;
-        double minZ = aABB.minZ;
-        double maxX = aABB.maxX;
-        double maxY = aABB.maxY;
-        double maxZ = aABB.maxZ;
-        double step = 0.1;
-        OrderedHashSet<Vec3> samplePoints = new OrderedHashSet<>();
-        samplePoints.add(new Vec3((minX + maxX) / 2.0, (minY + maxY) / 2.0, (minZ + maxZ) / 2.0));
-        samplePoints.add(RotationUtil.closestPoint(eyePos, aABB));
-        for (sampleAxis1 = minX; sampleAxis1 <= maxX; sampleAxis1 += step) {
-            for (sampleAxis2 = minY; sampleAxis2 <= maxY; sampleAxis2 += step) {
-                samplePoints.add(new Vec3(sampleAxis1, sampleAxis2, minZ));
-                samplePoints.add(new Vec3(sampleAxis1, sampleAxis2, maxZ));
-            }
+    // ------------------------------------------------------------------
+    // 碰撞箱可命中点搜索
+    // ------------------------------------------------------------------
+
+    /** 碰撞箱表面粗采样间距(格)。 */
+    private static final double HIT_SAMPLE_SPACING = 0.25;
+    /** 单轴最大分段数, 防止大体积实体产生海量候选点。 */
+    private static final int HIT_SAMPLE_MAX_SEGMENTS = 8;
+    /** 单次搜索的 raycast 上限, 约束"整箱被遮"这种最坏情况的开销。 */
+    private static final int HIT_SEARCH_MAX_RAYCASTS = 48;
+    /** 候选方向去重粒度(度)。最终瞄准还要做灵敏度对齐, 更细的差别没有意义。 */
+    private static final double HIT_CANDIDATE_DEDUP_DEG = 0.5;
+
+    private static Entity hitCacheEntity;
+    private static long hitCacheTick = Long.MIN_VALUE;
+    private static double hitCacheEyeX;
+    private static double hitCacheEyeY;
+    private static double hitCacheEyeZ;
+    private static double hitCacheMinX;
+    private static double hitCacheMinY;
+    private static double hitCacheMinZ;
+    private static double hitCacheMaxX;
+    private static double hitCacheMaxY;
+    private static double hitCacheMaxZ;
+    private static BestHitInfo hitCacheResult;
+
+    private record HitCandidate(Vec3 point, Rotation rotation, double pitchAbs) {
+    }
+
+    /**
+     * 在目标碰撞箱上搜索最优可命中点, 返回命中点和对应的瞄准 rotation。
+     *
+     * 与旧实现的差别:
+     *  - 旧实现按固定顺序遍历采样点, 第一个通过 raycast 的就返回。碰撞箱中心被排在
+     *    第一位, 所以只要中心看得见就永远只打中心, 命中点被钉死。
+     *  - 新实现先一次性生成候选点, 按"平视角优先"排序后再逐个 raycast, 命中即返回。
+     *    平视角下 eye→命中点的水平分量最大, 也就是攻击距离收益最大; 上半身被方块挡住时
+     *    会自然让位到下半身, 于是"露出来的那半截"也能打到。
+     *
+     * 性能:
+     *  - 排序后 early-exit, 常见情况(平视角那一点可见)只需 1 次 raycast;
+     *  - 候选方向按 {@link #HIT_CANDIDATE_DEDUP_DEG} 去重, 远处目标的几十个采样点会
+     *    塌缩成几个方向;
+     *  - 同一 tick 内 (实体, 碰撞箱, 眼位) 不变则直接复用上次结果, 所以一条 tick 里
+     *    目标切换、multiAttack、doAttack 反复调用不会重复搜索;
+     *  - 最坏情况(整箱被遮)由 {@link #HIT_SEARCH_MAX_RAYCASTS} 封顶。
+     */
+    public static BestHitInfo getBestHit(Entity entity) {
+        if (entity == null || mc.player == null || mc.level == null) {
+            return null;
         }
-        for (sampleAxis1 = minX; sampleAxis1 <= maxX; sampleAxis1 += step) {
-            for (sampleAxis2 = minZ; sampleAxis2 <= maxZ; sampleAxis2 += step) {
-                samplePoints.add(new Vec3(sampleAxis1, minY, sampleAxis2));
-                samplePoints.add(new Vec3(sampleAxis1, maxY, sampleAxis2));
-            }
+        Vec3 eyePos = mc.player.getEyePosition(1.0f);
+        AABB aABB = entity.getBoundingBox();
+        long tick = mc.level.getGameTime();
+        if (entity == hitCacheEntity && tick == hitCacheTick
+                && eyePos.x == hitCacheEyeX && eyePos.y == hitCacheEyeY && eyePos.z == hitCacheEyeZ
+                && aABB.minX == hitCacheMinX && aABB.minY == hitCacheMinY && aABB.minZ == hitCacheMinZ
+                && aABB.maxX == hitCacheMaxX && aABB.maxY == hitCacheMaxY && aABB.maxZ == hitCacheMaxZ) {
+            return hitCacheResult;
         }
-        for (sampleAxis1 = minY; sampleAxis1 <= maxY; sampleAxis1 += step) {
-            for (sampleAxis2 = minZ; sampleAxis2 <= maxZ; sampleAxis2 += step) {
-                samplePoints.add(new Vec3(minX, sampleAxis1, sampleAxis2));
-                samplePoints.add(new Vec3(maxX, sampleAxis1, sampleAxis2));
-            }
-        }
-        for (Vec3 samplePoint : samplePoints) {
-            HitResult hitResult;
-            Rotation rotation = RotationUtil.exactRotation(eyePos, samplePoint);
-            if (rotation == null) {
-                logger.error("NULL????");
-            }
-            if ((hitResult = RotationUtil.performRaycast(rotation)) == null) {
-                logger.error("NULL2????");
+        BestHitInfo result = RotationUtil.searchBestHit(entity, eyePos, aABB);
+        hitCacheEntity = entity;
+        hitCacheTick = tick;
+        hitCacheEyeX = eyePos.x;
+        hitCacheEyeY = eyePos.y;
+        hitCacheEyeZ = eyePos.z;
+        hitCacheMinX = aABB.minX;
+        hitCacheMinY = aABB.minY;
+        hitCacheMinZ = aABB.minZ;
+        hitCacheMaxX = aABB.maxX;
+        hitCacheMaxY = aABB.maxY;
+        hitCacheMaxZ = aABB.maxZ;
+        hitCacheResult = result;
+        return result;
+    }
+
+    private static BestHitInfo searchBestHit(Entity entity, Vec3 eyePos, AABB aABB) {
+        List<HitCandidate> candidates = new ArrayList<>();
+        for (Vec3 point : RotationUtil.collectHitPoints(eyePos, aABB)) {
+            Rotation rotation = RotationUtil.exactRotation(eyePos, point);
+            if (rotation == null || Float.isNaN(rotation.getYaw()) || Float.isNaN(rotation.getPitch())) {
                 continue;
             }
-            if (!RotationUtil.isHitValid(eyePos, hitResult, entity)) continue;
-            try {
-                Rotation prevRotation = RotationHandler.prevRotation != null
-                        ? RotationHandler.prevRotation
-                        : new Rotation(mc.player.getYRot(), mc.player.getXRot());
-                Vec3 hitLocation = hitResult.getLocation();
-                return new RotationUtil.BestHitInfo(eyePos, hitLocation, hitLocation.distanceTo(eyePos), RotationUtil.getSensitivitySnappedRotation(rotation.getYaw(), rotation.getPitch(), prevRotation.yaw, prevRotation.pitch));
-            } catch (Exception exception) {
-                logger.error("er here");
-                logger.error(exception);
-                exception.printStackTrace();
-                return null;
+            candidates.add(new HitCandidate(point, rotation, Math.abs(rotation.getPitch())));
+        }
+        // 平视角优先(|pitch| 小), 其次取近点(离眼越近越稳地在攻击距离内)。
+        candidates.sort(Comparator.<HitCandidate>comparingDouble(HitCandidate::pitchAbs)
+                .thenComparingDouble(candidate -> candidate.point().distanceToSqr(eyePos)));
+
+        Rotation prevRotation = RotationHandler.prevRotation != null
+                ? RotationHandler.prevRotation
+                : new Rotation(mc.player.getYRot(), mc.player.getXRot());
+        Set<Long> tried = new HashSet<>();
+        int raycasts = 0;
+        for (HitCandidate candidate : candidates) {
+            if (raycasts >= HIT_SEARCH_MAX_RAYCASTS) {
+                break;
+            }
+            if (!tried.add(RotationUtil.quantizeRotation(candidate.rotation()))) {
+                continue;
+            }
+            ++raycasts;
+            HitResult hitResult = RotationUtil.performRaycast(candidate.rotation());
+            if (hitResult == null || !RotationUtil.isHitValid(eyePos, hitResult, entity)) {
+                continue;
+            }
+            Vec3 hitLocation = hitResult.getLocation();
+            return new BestHitInfo(eyePos, hitLocation, hitLocation.distanceTo(eyePos),
+                    RotationUtil.getSensitivitySnappedRotation(candidate.rotation().getYaw(), candidate.rotation().getPitch(),
+                            prevRotation.getYaw(), prevRotation.getPitch()));
+        }
+        return new BestHitInfo(eyePos, eyePos, 1000.0, null);
+    }
+
+    /**
+     * 生成碰撞箱表面候选点。第一个是"离眼睛最近的点"——与眼同高、pitch≈0, 正是平视角
+     * 收益最大的那个解, 排序后会被最先试到。
+     *
+     * 只采"朝向眼睛"的那几个面: 射线本来就从近侧进入碰撞箱, 瞄准背面的采样点和近侧
+     * 落在同一个入射点上, 却因为 pitch 更小而排到前面, 会把顺序带偏(还会白白吃掉 raycast
+     * 预算)。眼睛在箱内时退化成全表面采样。
+     */
+    private static List<Vec3> collectHitPoints(Vec3 eyePos, AABB aABB) {
+        List<Vec3> points = new ArrayList<>();
+        points.add(RotationUtil.closestPoint(eyePos, aABB));
+
+        double sizeX = aABB.maxX - aABB.minX;
+        double sizeY = aABB.maxY - aABB.minY;
+        double sizeZ = aABB.maxZ - aABB.minZ;
+        int segmentsX = RotationUtil.axisSegments(sizeX);
+        int segmentsY = RotationUtil.axisSegments(sizeY);
+        int segmentsZ = RotationUtil.axisSegments(sizeZ);
+
+        boolean includeMinX = eyePos.x <= aABB.minX;
+        boolean includeMaxX = eyePos.x >= aABB.maxX;
+        boolean includeMinY = eyePos.y <= aABB.minY;
+        boolean includeMaxY = eyePos.y >= aABB.maxY;
+        boolean includeMinZ = eyePos.z <= aABB.minZ;
+        boolean includeMaxZ = eyePos.z >= aABB.maxZ;
+        if (!(includeMinX || includeMaxX || includeMinY || includeMaxY || includeMinZ || includeMaxZ)) {
+            includeMinX = includeMaxX = includeMinY = includeMaxY = includeMinZ = includeMaxZ = true;
+        }
+
+        for (int ix = 0; ix <= segmentsX; ++ix) {
+            double x = aABB.minX + sizeX * ix / segmentsX;
+            for (int iy = 0; iy <= segmentsY; ++iy) {
+                double y = aABB.minY + sizeY * iy / segmentsY;
+                if (includeMinZ) {
+                    points.add(new Vec3(x, y, aABB.minZ));
+                }
+                if (includeMaxZ) {
+                    points.add(new Vec3(x, y, aABB.maxZ));
+                }
             }
         }
-        return new RotationUtil.BestHitInfo(eyePos, eyePos, 1000.0, null);
+        for (int ix = 0; ix <= segmentsX; ++ix) {
+            double x = aABB.minX + sizeX * ix / segmentsX;
+            for (int iz = 0; iz <= segmentsZ; ++iz) {
+                double z = aABB.minZ + sizeZ * iz / segmentsZ;
+                if (includeMinY) {
+                    points.add(new Vec3(x, aABB.minY, z));
+                }
+                if (includeMaxY) {
+                    points.add(new Vec3(x, aABB.maxY, z));
+                }
+            }
+        }
+        for (int iy = 0; iy <= segmentsY; ++iy) {
+            double y = aABB.minY + sizeY * iy / segmentsY;
+            for (int iz = 0; iz <= segmentsZ; ++iz) {
+                double z = aABB.minZ + sizeZ * iz / segmentsZ;
+                if (includeMinX) {
+                    points.add(new Vec3(aABB.minX, y, z));
+                }
+                if (includeMaxX) {
+                    points.add(new Vec3(aABB.maxX, y, z));
+                }
+            }
+        }
+        return points;
+    }
+
+    private static int axisSegments(double size) {
+        return Mth.clamp((int)Math.ceil(size / HIT_SAMPLE_SPACING), 1, HIT_SAMPLE_MAX_SEGMENTS);
+    }
+
+    private static long quantizeRotation(Rotation rotation) {
+        long yaw = Math.round(Mth.wrapDegrees(rotation.getYaw()) / HIT_CANDIDATE_DEDUP_DEG);
+        long pitch = Math.round(rotation.getPitch() / HIT_CANDIDATE_DEDUP_DEG);
+        return (yaw << 32) ^ (pitch & 0xFFFFFFFFL);
+    }
+
+    /**
+     * 廉价的可见性探测: 碰撞箱上是否存在至少一个可命中点。
+     * 目标筛选会每 tick 对多个实体调用, 所以只探有限个点并 early-exit, 不做完整搜索;
+     * 真正的命中点选择交给 {@link #getBestHit(Entity)}。
+     */
+    public static boolean canSeeAnyPoint(Entity entity) {
+        if (entity == null || mc.player == null || mc.level == null) {
+            return false;
+        }
+        Vec3 eyePos = mc.player.getEyePosition(1.0f);
+        AABB aABB = entity.getBoundingBox();
+        Vec3 nearest = RotationUtil.closestPoint(eyePos, aABB);
+        if (RotationUtil.isPointVisible(entity, eyePos, nearest)) {
+            return true;
+        }
+        // 沿朝向目标的竖直列上下扫, 覆盖"上半身被挡、下半身露着"这类情况
+        double sizeY = aABB.maxY - aABB.minY;
+        for (int i = 1; i <= 4; ++i) {
+            double y = aABB.minY + sizeY * i / 5.0;
+            if (RotationUtil.isPointVisible(entity, eyePos, new Vec3(nearest.x, y, nearest.z))) {
+                return true;
+            }
+        }
+        // 兜底: 四个顶角
+        return RotationUtil.isPointVisible(entity, eyePos, new Vec3(aABB.minX, aABB.maxY, aABB.minZ))
+                || RotationUtil.isPointVisible(entity, eyePos, new Vec3(aABB.minX, aABB.maxY, aABB.maxZ))
+                || RotationUtil.isPointVisible(entity, eyePos, new Vec3(aABB.maxX, aABB.maxY, aABB.minZ))
+                || RotationUtil.isPointVisible(entity, eyePos, new Vec3(aABB.maxX, aABB.maxY, aABB.maxZ));
+    }
+
+    private static boolean isPointVisible(Entity entity, Vec3 eyePos, Vec3 point) {
+        if (eyePos.distanceToSqr(point) < 1.0E-4) {
+            return true;
+        }
+        Rotation rotation = RotationUtil.exactRotation(eyePos, point);
+        if (rotation == null) {
+            return false;
+        }
+        HitResult hitResult = RotationUtil.performRaycast(rotation);
+        return hitResult != null && RotationUtil.isHitValid(eyePos, hitResult, entity);
     }
 
     public static Rotation getEntityRotation(Entity entity, float spreadFactor, float verticalSpread, float heightFraction) {

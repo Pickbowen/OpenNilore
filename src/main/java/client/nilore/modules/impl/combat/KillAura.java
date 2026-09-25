@@ -25,7 +25,9 @@ import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
+import net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraftforge.client.ForgeHooksClient;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
@@ -39,9 +41,7 @@ import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.entity.monster.Slime;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.phys.AABB;
-import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
@@ -73,6 +73,7 @@ import client.nilore.utils.game.RotationUtil;
 import client.nilore.utils.math.MathUtil;
 import client.nilore.utils.misc.ChatUtil;
 import client.nilore.utils.misc.Assets;
+import client.nilore.utils.misc.PacketUtil;
 import client.nilore.utils.render.RenderUtil;
 import client.nilore.utils.rotation.Rotation;
 import client.nilore.utils.rotation.RotationHandler;
@@ -122,9 +123,14 @@ public class KillAura extends Module {
     public final NumberSetting selfDelayThreshold  = new NumberSetting("Self Delay Ticks", 2, 1, 5, 1,
             () -> (Boolean) this.predictionEnabled.getValue());
 
-    public final NumberSetting rotationSpeed = new NumberSetting("Rotation Speed", 180, 0, 360, 5);
+    // Rotation Speed 的量纲是"度/tick": 角误差在它以内一次到位, 超过之后每 tick 至少走这么多。
+    // 有效区间大约 0-90, 所以上限压到 90、步长给到 1(0-30 才是真正"平滑"的档位)。
+    public final NumberSetting rotationSpeed = new NumberSetting("Rotation Speed", 25, 0, 90, 1);
     public final NumberSetting rotationDrift = new NumberSetting("Drift", 0.1, 0, 5, 0.1);
     public final NumberSetting rotationJitter = new NumberSetting("Jitter", 0.02, 0, 1, 0.01);
+
+    /** 角误差超过 2×Rotation Speed 之后, 每 tick 至少收敛掉误差的这个比例(等效指数收敛)。 */
+    private static final double TURN_RATIO = 0.5;
 
     private RotationUtil.BestHitInfo currentBestHit;
     private RotationUtil.BestHitInfo prevBestHit;
@@ -136,6 +142,9 @@ public class KillAura extends Module {
 
     private Random organicRandom;
     private double organicTimeAccumulator;
+    /** 漂移/抖动攒下来的、还不足一个灵敏度步长的零头。 */
+    private double organicResidualYaw;
+    private double organicResidualPitch;
     private double orgFreqYaw1, orgFreqYaw2, orgFreqPitch1, orgFreqPitch2;
     private double orgPhaseYaw1, orgPhaseYaw2, orgPhasePitch1, orgPhasePitch2;
 
@@ -170,6 +179,8 @@ public class KillAura extends Module {
     private void reinitOrganicModel() {
         this.organicRandom = new Random(System.nanoTime());
         this.organicTimeAccumulator = 0.0;
+        this.organicResidualYaw = 0.0;
+        this.organicResidualPitch = 0.0;
         this.orgFreqYaw1 = this.organicRandom.nextDouble() * 0.3 + 0.1;
         this.orgFreqYaw2 = this.organicRandom.nextDouble() * 0.5 + 0.5;
         this.orgFreqPitch1 = this.organicRandom.nextDouble() * 0.3 + 0.1;
@@ -180,11 +191,29 @@ public class KillAura extends Module {
         this.orgPhasePitch2 = this.organicRandom.nextDouble() * Math.PI * 2;
     }
 
+    /**
+     * 一次鼠标移动对应的角度步长(度)。真实鼠标产生的旋转增量永远是它的整数倍, 所以发出去的
+     * rotation 增量也必须落在同一张网格上, 否则就是"非人手"的旋转。
+     */
+    private static double sensitivityStep() {
+        double sensitivity = mc.options.sensitivity().get().floatValue() * 0.6 + 0.2;
+        return sensitivity * sensitivity * sensitivity * 8.0 * 0.15;
+    }
+
+    /** 把角度增量取整到灵敏度步长的整数倍。 */
+    private static float quantizeToStep(double delta, double step) {
+        return (float)(Math.round(delta / step) * step);
+    }
+
     private Rotation applyOrganicRotation(Rotation from, Rotation to, float timeDelta) {
         float rawYawDelta = Mth.wrapDegrees(to.getYaw() - from.getYaw());
         float rawPitchDelta = to.getPitch() - from.getPitch();
 
-        double speed = this.rotationSpeed.getValue().doubleValue();
+        // Rotation Speed 单位是"度/tick"。先夹回设置自身的上下限, 免得旧配置里还存着超出
+        // 当前范围的值(Setting#setValue 不做钳制)。
+        double speed = Mth.clamp(this.rotationSpeed.getValue().doubleValue(),
+                this.rotationSpeed.getMin().doubleValue(),
+                this.rotationSpeed.getMax().doubleValue());
         double driftIntensity = this.rotationDrift.getValue().doubleValue();
         double jitterIntensity = this.rotationJitter.getValue().doubleValue();
 
@@ -197,17 +226,18 @@ public class KillAura extends Module {
         float deltaPitch = rawPitchDelta * timeDelta;
 
         double distance = Math.sqrt(deltaYaw * deltaYaw + deltaPitch * deltaPitch);
-        if (distance < driftIntensity) {
-            return new Rotation(from.getYaw() + deltaYaw, from.getPitch() + deltaPitch);
-        }
+
+        // 单 tick 步长上限: speed 以内一步到位, 超过之后按 TURN_RATIO 收缩。
+        // 这条同时管住了"换目标瞬移" —— 180° 换目标会走成 180→90→45→… 的减速段。
+        double allowed = Math.min(distance, Math.max(speed, distance * TURN_RATIO));
 
         if (distance > 0) {
             double ratioYaw = Math.abs(deltaYaw) / distance;
             double ratioPitch = Math.abs(deltaPitch) / distance;
-            double maxYaw = speed * ratioYaw * timeDelta;
-            double maxPitch = speed * ratioPitch * timeDelta;
-            deltaYaw = Mth.clamp(deltaYaw, (float)-maxYaw, (float)maxYaw);
-            deltaPitch = Mth.clamp(deltaPitch, (float)-maxPitch, (float)maxPitch);
+            float maxYaw = (float)(allowed * ratioYaw);
+            float maxPitch = (float)(allowed * ratioPitch);
+            deltaYaw = Mth.clamp(deltaYaw, -maxYaw, maxYaw);
+            deltaPitch = Mth.clamp(deltaPitch, -maxPitch, maxPitch);
         }
 
         this.organicTimeAccumulator += timeDelta;
@@ -222,8 +252,20 @@ public class KillAura extends Module {
         double jitterYaw = (this.organicRandom.nextDouble() * 2 - 1) * jitterIntensity * timeDelta;
         double jitterPitch = (this.organicRandom.nextDouble() * 2 - 1) * jitterIntensity * timeDelta;
 
-        float moveYaw = deltaYaw + (float)driftYaw + (float)jitterYaw;
-        float movePitch = deltaPitch + (float)driftPitch + (float)jitterPitch;
+        // 漂移/抖动先攒进残差, 攒够一个灵敏度步长才真的走一格。
+        // 旧实现每 tick 对总和四舍五入, 默认灵敏度下步长 0.15° 而 Drift 只有 0.1°、Jitter
+        // 只有 0.02°, 于是两者几乎全被抹成 0。攒格不丢量, 也不会产生亚步长的"非人手"增量;
+        // 累积出来的偏移最终被主运动的回拉限制在几个步长内, 表现为 ±0.2° 量级的手部微晃。
+        double step = sensitivityStep();
+        this.organicResidualYaw += driftYaw + jitterYaw;
+        this.organicResidualPitch += driftPitch + jitterPitch;
+        float organicYaw = quantizeToStep(this.organicResidualYaw, step);
+        float organicPitch = quantizeToStep(this.organicResidualPitch, step);
+        this.organicResidualYaw -= organicYaw;
+        this.organicResidualPitch -= organicPitch;
+
+        float moveYaw = deltaYaw + organicYaw;
+        float movePitch = deltaPitch + organicPitch;
 
         float finalYaw = from.getYaw() + moveYaw;
         float finalPitch = Mth.clamp(from.getPitch() + movePitch, -90.0f, 90.0f);
@@ -231,18 +273,13 @@ public class KillAura extends Module {
     }
 
     /**
-     * GCD 对齐：将旋转增量取整到灵敏度步长的整数倍，
-     * 防止对静止目标产生微抖。等价于 Candy 的 RotationUtility.patchConstantRotation。
+     * GCD 对齐：将旋转增量取整到灵敏度步长的整数倍，锚定在上一次发出的 rotation 上。
+     * 于是网格随目标一起漂移，不会把瞄准点吸到固定格点上；收到攻击时横竖都是整数倍步长。
      */
     private static Rotation patchConstantRotation(Rotation rotation, Rotation prevRotation) {
-        double sensitivity = mc.options.sensitivity().get().floatValue() * 0.6 + 0.2;
-        double multiplier = (sensitivity * sensitivity * sensitivity) * 8.0;
-        double divisor = multiplier * 0.15;
-
-        float yawDelta = rotation.getYaw() - prevRotation.getYaw();
-        float pitchDelta = rotation.getPitch() - prevRotation.getPitch();
-        float yaw = prevRotation.getYaw() + (float)(Math.round(yawDelta / divisor) * divisor);
-        float pitch = Mth.clamp(prevRotation.getPitch() + (float)(Math.round(pitchDelta / divisor) * divisor), -90.0f, 90.0f);
+        double step = sensitivityStep();
+        float yaw = prevRotation.getYaw() + quantizeToStep(rotation.getYaw() - prevRotation.getYaw(), step);
+        float pitch = Mth.clamp(prevRotation.getPitch() + quantizeToStep(rotation.getPitch() - prevRotation.getPitch(), step), -90.0f, 90.0f);
         return new Rotation(yaw, pitch);
     }
 
@@ -504,15 +541,6 @@ public class KillAura extends Module {
                 && mc.screen == null
                 && (this.ignoreSkipTicks.getValue() || ClientBase.delayPackets.isEmpty()
                 || (Critical.INSTANCE != null && Critical.INSTANCE.isEnabled()))) {
-            // res јхiа: keepSprint 开启时, 满足条件(空中跳劈等)先 stop sprint
-            if (this.keepSprint.getValue() && mc.player.isSprinting() && this.shouldStopSprint(target)) {
-                mc.player.setSprinting(false);
-            }
-            // res eеxі: keepSprint 开启 + 还在疾跑 + NoXZ 未激活时跳过攻击, 保持疾跑
-            if (this.keepSprint.getValue() && mc.player.isSprinting() && !NoXZMode.handlingVelocity) {
-                this.attacks = 0.0f;
-                return;
-            }
             while (this.attacks >= 1.0f) {
                 this.doAttack();
                 this.attacks -= 1.0f;
@@ -631,25 +659,21 @@ public class KillAura extends Module {
                 return false;
             }
         }
-        // Wall check — reject if a block sits between the player and the
-        // entity. When "Through Walls" is on and the target is close enough,
-        // the check is skipped so you can attack through thin walls at close
-        // range.
+        if (!RotationUtil.isEntityInFov(entity, this.fov.getValue().floatValue() / 2.0f)) {
+            return false;
+        }
+        // Wall check — 只要碰撞箱上还有任何一个点能打到就放行, 不再要求"离眼睛最近的那个点"
+        // 必须畅通。上半身被方块堵住、下半身露在外面的情况(半砖、蜘蛛网等)因此能正常攻击。
+        // When "Through Walls" is on and the target is close enough, the check is
+        // skipped so you can attack through thin walls at close range.
         if (mc.level != null) {
             boolean skipWallCheck = this.throughWalls.getValue()
                     && dist <= this.throughWallsRange.getValue().floatValue();
-            if (!skipWallCheck) {
-                Vec3 eyePos = mc.player.getEyePosition(1.0f);
-                Vec3 targetPoint = RotationUtil.closestPoint(eyePos, entity.getBoundingBox());
-                if (eyePos.distanceToSqr(targetPoint) > 1.0E-4) {
-                    BlockHitResult blockHit = mc.level.clip(new ClipContext(eyePos, targetPoint, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, mc.player));
-                    if (blockHit.getType() == HitResult.Type.BLOCK) {
-                        return false;
-                    }
-                }
+            if (!skipWallCheck && !RotationUtil.canSeeAnyPoint(entity)) {
+                return false;
             }
         }
-        return RotationUtil.isEntityInFov(entity, this.fov.getValue().floatValue() / 2.0f);
+        return true;
     }
 
     private double predictDistance(Entity entity) {
@@ -697,12 +721,29 @@ public class KillAura extends Module {
             mc.player.setXRot(RotationHandler.targetRotation.getPitch());
         }
 
+        // KeepSprint: 这一刀能打出暴击(1.5 倍伤害)时, 攻击前把疾跑停掉——服务端也要在
+        // "攻击那一刻没在疾跑"才会结算暴击, 所以必须显式发 STOP_SPRINTING(vanilla 的疾跑包
+        // 在玩家 tick 里才发, 那已经排在 ATTACK 后面了), 打完立刻恢复。
+        boolean keepSprinting = this.keepSprint.getValue() && mc.player.isSprinting();
+        boolean critSprintBypass = keepSprinting && this.canCriticalAttack(entity);
+        if (critSprintBypass) {
+            this.sendSprintState(false);
+        }
+
         ++this.attackTimes;
         int attackKey = mc.options.keyAttack.getKey().getValue();
         mc.gameMode.attack(mc.player, entity);
         ForgeHooksClient.onMouseButtonPre(attackKey, 1, 0);
         mc.player.swing(InteractionHand.MAIN_HAND);
         ForgeHooksClient.onMouseButtonPost(attackKey, 1, 0);
+
+        // 打完恢复: 暴击分支自己发过 STOP, 必须补一个 START 把服务端同步回疾跑;
+        // 非暴击分支只是补回 vanilla 疾跑攻击后自己 setSprinting(false) 掉的状态。
+        if (critSprintBypass) {
+            this.sendSprintState(true);
+        } else if (keepSprinting) {
+            mc.player.setSprinting(true);
+        }
 
         if (this.morePart.getValue()) {
             mc.player.magicCrit(entity);
@@ -714,19 +755,29 @@ public class KillAura extends Module {
         return true;
     }
 
-    // res саѕһa 的翻译: 判断是否该在攻击前停止疾跑
-    private boolean shouldStopSprint(Entity entity) {
-        if (mc.player == null || mc.level == null || entity == null) return false;
-
-        // velocity 联动: NoXZ 正在处理击退时不打断疾跑, 交给 AntiKB 自己管
-        if (NoXZMode.handlingVelocity) {
+    /**
+     * 这一刀是否具备出暴击的条件。与 vanilla {@code Player#attack} 的判定一致:
+     * 下落中(fallDistance>0)、不在方块上、不爬梯、不在水里、不处于失明、不在乘骑,
+     * 且目标是 LivingEntity。"未疾跑"这一条由调用方在停疾跑之后满足。
+     */
+    private boolean canCriticalAttack(Entity entity) {
+        if (mc.player == null || !(entity instanceof LivingEntity)) {
             return false;
         }
+        return mc.player.fallDistance > 0.0f
+                && !mc.player.onGround()
+                && !mc.player.onClimbable()
+                && !mc.player.isInWater()
+                && !mc.player.hasEffect(MobEffects.BLINDNESS)
+                && !mc.player.isPassenger();
+    }
 
-        return entity.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) <= 12.25
-                && mc.player.getUseItem().isEmpty()
-                && !NoXZMode.isAttacking
-                && (!mc.player.onGround() || !mc.options.keyUp.isDown());
+    /** 切换疾跑状态并发包同步给服务端。 */
+    private void sendSprintState(boolean sprinting) {
+        mc.player.setSprinting(sprinting);
+        PacketUtil.send(new ServerboundPlayerCommandPacket(mc.player, sprinting
+                ? ServerboundPlayerCommandPacket.Action.START_SPRINTING
+                : ServerboundPlayerCommandPacket.Action.STOP_SPRINTING));
     }
 
     private boolean isWebPlacing() {

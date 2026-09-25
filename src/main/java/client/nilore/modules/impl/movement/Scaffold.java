@@ -81,7 +81,8 @@ public class Scaffold extends Module {
     public final NumberSetting turnSpeed = new NumberSetting("Turn Speed", 180, 0, 360, 5, this.syncRotSpeed::getValue);
     public final NumberSetting returnSpeed = new NumberSetting("Return Speed", 180, 0, 360, 5, this.syncRotSpeed::getValue);
     public final ModeSetting switchMode = new ModeSetting("Switch Mode", "Normal", "Hotbar", "Full").withDefault("Hotbar");
-    public final NumberSetting bps = new NumberSetting("BPS", 10, 2, 10, 1);
+    public final BooleanSetting bpsLimit = new BooleanSetting("Limit BPS", false);
+    public final NumberSetting bps = new NumberSetting("BPS", 10, 2, 10, 1, this.bpsLimit::getValue);
     public final BooleanSetting print_log = new BooleanSetting("Log",false);
     public final BooleanSetting mark = new BooleanSetting("Mark", true);
     public final NumberSetting markRed = new NumberSetting("Mark Red", 255, 0, 255, 1, () -> this.mark.getValue());
@@ -219,6 +220,7 @@ public class Scaffold extends Module {
     @EventTarget
     public void onStrafe(StrafeEvent strafeEvent) {
         if (mc.player == null) return;
+        if (!this.bpsLimit.getValue()) return;
         int limit = this.bps.getValue().intValue();
         if (limit >= 10) return;
         double maxSpeed = limit / 20.0;

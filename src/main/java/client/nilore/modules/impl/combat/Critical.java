@@ -34,14 +34,9 @@ public class Critical extends Module {
             }
         }
     }
-
-    /**
-     * 松疾跑窗口: KillAura 目标存在且 LivingEntity.hurtTime ∈ [2,8]。
-     * 供 KillAura KeepSprint 在攻击后决定是否恢复疾跑(窗口内不恢复)。
-     */
     public boolean isReleaseWindow() {
         // res 对齐: 击退收放(Velocity/NoXZ Alink)进行中 Critical 停手, 避免松疾跑打断放包
-        if (NoXZMode.handlingVelocity) return false;
+        if (!NoXZMode.handlingVelocity) return false;
         if (mc.player == null) return false;
         Entity target = KillAura.target;
         if (!(target instanceof LivingEntity living)) {
