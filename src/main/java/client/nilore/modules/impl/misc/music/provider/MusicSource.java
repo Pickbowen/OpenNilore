@@ -34,6 +34,13 @@ public interface MusicSource {
      */
     CompletableFuture<String> coverUrl(SongInfo song);
 
-    record SongUrlResult(String url, long size) {
+    /**
+     * @param url        播放直链
+     * @param size       文件字节数，拿不到时填 0
+     * @param durationMs 歌曲时长（毫秒），拿不到时填 0。
+     *                   有这个就别再拿 size 去估了——搜索接口经常不给时长，
+     *                   而播放地址接口会顺带返回准确的 {@code time}。
+     */
+    record SongUrlResult(String url, long size, long durationMs) {
     }
 }

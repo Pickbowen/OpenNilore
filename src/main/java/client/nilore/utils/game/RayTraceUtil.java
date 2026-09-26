@@ -59,18 +59,29 @@ extends ClientBase {
         return hitResult;
     }
 
+    /**
+     * 由 yaw/pitch 得到单位朝向向量: yaw 0=南(+Z)、90=西(-X)、pitch 90=下(-Y)。
+     * 与 {@link RotationUtil#getDirection(float, float)} 和 vanilla 的
+     * {@code Vec3.directionFromRotation} 同一定义。
+     *
+     * 原实现把 x/y 两个分量写反了(y 分量里甚至不含 pitch), 唯一调用者是
+     * {@link #rayTrace(double, float, boolean, float, float)} 的方块裁剪, 因此会让
+     * KillAura 的遮挡判定整条射线指到别的方向上去。
+     */
     public static Vec3 getViewVector(float pitch, float yaw) {
         float yawRad = yaw * ((float)Math.PI / 180);
-        float pitchRad = -pitch * ((float)Math.PI / 180);
+        float pitchRad = pitch * ((float)Math.PI / 180);
         float cosPitch = Mth.cos(pitchRad);
         float sinPitch = Mth.sin(pitchRad);
         float cosYaw = Mth.cos(yawRad);
         float sinYaw = Mth.sin(yawRad);
-        return new Vec3(sinPitch * cosYaw, -sinYaw, cosPitch * cosYaw);
+        return new Vec3(-sinYaw * cosPitch, -sinPitch, cosYaw * cosPitch);
     }
 
     public static HitResult rayTrace(double range, float partialTicks, boolean clipFluids, float yaw, float pitch) {
-        Vec3 eyePos = new Vec3(mc.player.getX(), mc.player.getY() + 1.62, mc.player.getZ());
+        // 起点必须和上层比较命中距离用的眼位一致: 原来硬编码 y+1.62, 潜行(1.27)、游泳(0.4)、
+        // 鞘翅姿态下会和真正的眼睛差出一大截, 等于换个高度去打遮挡。
+        Vec3 eyePos = mc.player.getEyePosition(partialTicks);
         Vec3 viewVec = RayTraceUtil.getViewVector(pitch, yaw);
         Vec3 endPos = eyePos.add(viewVec.x * range, viewVec.y * range, viewVec.z * range);
         return mc.player.level().clip(new ClipContext(eyePos, endPos, ClipContext.Block.OUTLINE, clipFluids ? ClipContext.Fluid.ANY : ClipContext.Fluid.NONE, mc.player));

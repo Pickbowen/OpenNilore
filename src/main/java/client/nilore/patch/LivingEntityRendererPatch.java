@@ -16,6 +16,7 @@ import client.nilore.asm.Invocation;
 import client.nilore.event.impl.RenderEntityEvent;
 import client.nilore.event.impl.RotationAnimationEvent;
 import client.nilore.modules.impl.render.FakeAntiAim;
+import client.nilore.modules.impl.render.esp.SkeletonCache;
 
 @Patch(LivingEntityRenderer.class)
 public class LivingEntityRendererPatch {
@@ -56,6 +57,26 @@ public class LivingEntityRendererPatch {
         float off = faa.headYawOffset(time, tick);
         entity.yHeadRot += off;
         entity.yHeadRotO += off;
+    }
+
+    // Skeleton ESP reads bone transforms here: setupAnim has already written the ModelPart
+    // rotations (it is called a few instructions earlier), and renderToBuffer restores the
+    // poseStack, so poseStack.last() is the entity render matrix the model was drawn with.
+    // Only one EntityModel.renderToBuffer("(PoseStack;VertexConsumer;IIFFFF)V") call exists
+    // in this method, so no slice is needed.
+    @Inject(
+            method = "render",
+            desc = "(Lnet/minecraft/world/entity/LivingEntity;FFLcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/client/renderer/MultiBufferSource;I)V",
+            at = @At(
+                    value = At.Type.AFTER_INVOKE,
+                    method = "net/minecraft/client/model/EntityModel/renderToBuffer",
+                    desc = "(Lcom/mojang/blaze3d/vertex/PoseStack;Lcom/mojang/blaze3d/vertex/VertexConsumer;IIFFFF)V"
+            )
+    )
+    public static void onRenderModelPost(
+            LivingEntityRenderer<?, ?> renderer, LivingEntity entity, float yaw, float partialTick,
+            PoseStack poseStack, MultiBufferSource bufferSource, int packedLight, CallbackInfo callbackInfo) {
+        SkeletonCache.capture(renderer, entity, poseStack);
     }
 
     @Inject(

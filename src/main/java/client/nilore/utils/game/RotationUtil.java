@@ -276,6 +276,7 @@ extends ClientBase {
 
     private static Entity hitCacheEntity;
     private static long hitCacheTick = Long.MIN_VALUE;
+    private static boolean hitCacheIgnoreBlocks;
     private static double hitCacheEyeX;
     private static double hitCacheEyeY;
     private static double hitCacheEyeZ;
@@ -309,21 +310,30 @@ extends ClientBase {
      *  - 最坏情况(整箱被遮)由 {@link #HIT_SEARCH_MAX_RAYCASTS} 封顶。
      */
     public static BestHitInfo getBestHit(Entity entity) {
+        return RotationUtil.getBestHit(entity, false);
+    }
+
+    /**
+     * @param ignoreBlocks 跳过方块遮挡(Through Walls 在生效范围内时由调用方传 true),
+     *                     开了以后被墙挡住的点也能作为命中点, 只受 maxRange 限制。
+     */
+    public static BestHitInfo getBestHit(Entity entity, boolean ignoreBlocks) {
         if (entity == null || mc.player == null || mc.level == null) {
             return null;
         }
         Vec3 eyePos = mc.player.getEyePosition(1.0f);
         AABB aABB = entity.getBoundingBox();
         long tick = mc.level.getGameTime();
-        if (entity == hitCacheEntity && tick == hitCacheTick
+        if (entity == hitCacheEntity && tick == hitCacheTick && ignoreBlocks == hitCacheIgnoreBlocks
                 && eyePos.x == hitCacheEyeX && eyePos.y == hitCacheEyeY && eyePos.z == hitCacheEyeZ
                 && aABB.minX == hitCacheMinX && aABB.minY == hitCacheMinY && aABB.minZ == hitCacheMinZ
                 && aABB.maxX == hitCacheMaxX && aABB.maxY == hitCacheMaxY && aABB.maxZ == hitCacheMaxZ) {
             return hitCacheResult;
         }
-        BestHitInfo result = RotationUtil.searchBestHit(entity, eyePos, aABB);
+        BestHitInfo result = RotationUtil.searchBestHit(entity, eyePos, aABB, ignoreBlocks);
         hitCacheEntity = entity;
         hitCacheTick = tick;
+        hitCacheIgnoreBlocks = ignoreBlocks;
         hitCacheEyeX = eyePos.x;
         hitCacheEyeY = eyePos.y;
         hitCacheEyeZ = eyePos.z;
@@ -337,7 +347,7 @@ extends ClientBase {
         return result;
     }
 
-    private static BestHitInfo searchBestHit(Entity entity, Vec3 eyePos, AABB aABB) {
+    private static BestHitInfo searchBestHit(Entity entity, Vec3 eyePos, AABB aABB, boolean ignoreBlocks) {
         List<HitCandidate> candidates = new ArrayList<>();
         for (Vec3 point : RotationUtil.collectHitPoints(eyePos, aABB)) {
             Rotation rotation = RotationUtil.exactRotation(eyePos, point);
@@ -363,7 +373,7 @@ extends ClientBase {
                 continue;
             }
             ++raycasts;
-            HitResult hitResult = RotationUtil.performRaycast(candidate.rotation());
+            HitResult hitResult = RotationUtil.performRaycast(candidate.rotation(), ignoreBlocks);
             if (hitResult == null || !RotationUtil.isHitValid(eyePos, hitResult, entity)) {
                 continue;
             }
@@ -491,7 +501,7 @@ extends ClientBase {
         if (rotation == null) {
             return false;
         }
-        HitResult hitResult = RotationUtil.performRaycast(rotation);
+        HitResult hitResult = RotationUtil.performRaycast(rotation, false);
         return hitResult != null && RotationUtil.isHitValid(eyePos, hitResult, entity);
     }
 
@@ -548,10 +558,15 @@ extends ClientBase {
         return false;
     }
 
-    public static HitResult performRaycast(Rotation rotation) {
+    /**
+     * @param ignoreBlocks true 时不做方块裁剪, 只保留 maxRange 限制(供 Through Walls 使用)。
+     *                     注意: 方块裁剪的距离同时充当了实体射线的搜索上限, 所以跳过裁剪
+     *                     等于"墙不算数, 直线可达就打"。
+     */
+    public static HitResult performRaycast(Rotation rotation, boolean ignoreBlocks) {
         AABB expandedBB;
         double pickRange = mc.gameMode.getPickRange();
-        HitResult hitResult = RayTraceUtil.rayTrace(pickRange, 1.0f, false, rotation);
+        HitResult hitResult = ignoreBlocks ? null : RayTraceUtil.rayTrace(pickRange, 1.0f, false, rotation);
         Vec3 eyePos = mc.player.getEyePosition(1.0f);
         boolean checkClampedRange = false;
         double maxRangeSqr = pickRange;

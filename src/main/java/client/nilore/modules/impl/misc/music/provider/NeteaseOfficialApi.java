@@ -203,8 +203,7 @@ public final class NeteaseOfficialApi {
                 }
                 String albumName = "";
                 String picId = "";
-                JsonObject album = song.has("album") && song.get("album").isJsonObject()
-                        ? song.getAsJsonObject("album") : null;
+                JsonObject album = firstAlbum(song);
                 if (album != null) {
                     albumName = optString(album, "name");
                     // 官方的 album.picId 是个纯数字，这里沿用 SongInfo.albumPicUrl 存它，
@@ -213,7 +212,7 @@ public final class NeteaseOfficialApi {
                         picId = album.get("picId").getAsString();
                     }
                 }
-                out.add(new SongInfo(id, name, artists.toString(), albumName, picId, optLong(song, "duration")));
+                out.add(new SongInfo(id, name, artists.toString(), albumName, picId, songDurationMs(song)));
             }
             return out;
         });
@@ -240,38 +239,63 @@ public final class NeteaseOfficialApi {
         });
     }
 
-    /** 播放地址。未登录时多数歌会返回 null。 */
-    public static CompletableFuture<String> songUrl(long songId, boolean lossless) {
+    /**
+     * 请求的音频编码。
+     *
+     * <p>同一个 {@code exhigh} 档，配 mp3 是 320kbps、配 aac 是 256kbps——
+     * aac 在同等听感下码率更低、效率更高，所以走 aac。
+     * 项目依赖里有 jlayer + mp3spi，走 mp3 一定解得了；aac 靠 JDK 自带解码器，
+     * 万一某个环境没带，把这里改成 "mp3" 即可。
+     */
+    private static final String ENCODE_TYPE = "aac";
+
+    /** 播放地址 + 时长。 */
+    public record PlayerUrl(String url, long durationMs) {
+    }
+
+    /**
+     * 播放地址。未登录时多数歌会返回 null。
+     *
+     * <p>高码率拿不到会**自动降一档**再试一次，不管请求的是不是 lossless——
+     * 原来 {@code lossless} 请求失败时直接返回 null，等于白白放弃这次播放。
+     */
+    public static CompletableFuture<PlayerUrl> songUrl(long songId, boolean lossless) {
         String level = lossless ? "lossless" : "exhigh";
-        String json = "{\"ids\":\"[" + songId + "]\",\"level\":\"" + level + "\",\"encodeType\":\"aac\"}";
+        String json = "{\"ids\":\"[" + songId + "]\",\"level\":\"" + level + "\",\"encodeType\":\""
+                + ENCODE_TYPE + "\"}";
         return post("/weapi/song/enhance/player/url/v1", json).thenCompose(root -> {
-            String url = firstUrl(root);
-            if (url != null || lossless) {
-                return CompletableFuture.completedFuture(url);
+            PlayerUrl parsed = parsePlayerUrl(root);
+            if (parsed.url() != null) {
+                return CompletableFuture.completedFuture(parsed);
             }
-            // 高码率拿不到就降一档再试一次
-            String fallback = "{\"ids\":\"[" + songId + "]\",\"level\":\"standard\",\"encodeType\":\"aac\"}";
-            return post("/weapi/song/enhance/player/url/v1", fallback).thenApply(NeteaseOfficialApi::firstUrl);
+            String fallback = "{\"ids\":\"[" + songId + "]\",\"level\":\"standard\",\"encodeType\":\""
+                    + ENCODE_TYPE + "\"}";
+            return post("/weapi/song/enhance/player/url/v1", fallback)
+                    .thenApply(NeteaseOfficialApi::parsePlayerUrl);
         });
     }
 
-    private static String firstUrl(JsonElement root) {
+    /**
+     * 从 song/url 的响应里取地址和时长。
+     *
+     * <p>{@code time} 是网易随播放地址一起返回的时长（毫秒），比搜索接口那个 duration 可靠得多——
+     * 搜索结果经常不带时长，界面就只能拿文件大小去估，进度条和倒计时会一直是错的。
+     */
+    private static PlayerUrl parsePlayerUrl(JsonElement root) {
         if (root == null || !root.isJsonObject()) {
-            return null;
+            return new PlayerUrl(null, 0L);
         }
         JsonElement data = root.getAsJsonObject().get("data");
         if (data == null || !data.isJsonArray() || data.getAsJsonArray().isEmpty()) {
-            return null;
+            return new PlayerUrl(null, 0L);
         }
         JsonElement first = data.getAsJsonArray().get(0);
         if (!first.isJsonObject()) {
-            return null;
+            return new PlayerUrl(null, 0L);
         }
         JsonObject obj = first.getAsJsonObject();
-        if (!obj.has("url") || obj.get("url").isJsonNull()) {
-            return null;
-        }
-        return obj.get("url").getAsString();
+        String url = obj.has("url") && !obj.get("url").isJsonNull() ? obj.get("url").getAsString() : null;
+        return new PlayerUrl(url, optLong(obj, "time"));
     }
 
     /** 封面直链。走 song/detail，省得自己实现图片地址的加密。 */
@@ -286,10 +310,12 @@ public final class NeteaseOfficialApi {
                 return null;
             }
             JsonObject song = songs.getAsJsonArray().get(0).getAsJsonObject();
-            if (!song.has("album") || !song.get("album").isJsonObject()) {
+            // 这个接口返回的专辑字段叫 al，只有老接口才叫 album。
+            // 之前只认 album，所以封面永远是 null。
+            JsonObject album = firstAlbum(song);
+            if (album == null) {
                 return null;
             }
-            JsonObject album = song.getAsJsonObject("album");
             return album.has("picUrl") && !album.get("picUrl").isJsonNull()
                     ? album.get("picUrl").getAsString() + "?param=300y300" : null;
         });
@@ -512,6 +538,28 @@ public final class NeteaseOfficialApi {
 
     private static String optString(JsonObject obj, String key) {
         return obj.has(key) && !obj.get(key).isJsonNull() ? obj.get(key).getAsString() : "";
+    }
+
+    /**
+     * 专辑字段的取法。
+     *
+     * <p>网易有两套命名：新接口（搜索结果、{@code v3/song/detail}）用缩写 {@code al}，
+     * 老接口用全称 {@code album}。之前只认后者，所以封面和专辑名一直拿不到。
+     */
+    private static JsonObject firstAlbum(JsonObject song) {
+        if (song.has("al") && song.get("al").isJsonObject()) {
+            return song.getAsJsonObject("al");
+        }
+        if (song.has("album") && song.get("album").isJsonObject()) {
+            return song.getAsJsonObject("album");
+        }
+        return null;
+    }
+
+    /** 时长字段同样有两套：新接口 {@code duration}，老接口 {@code dt}。 */
+    private static long songDurationMs(JsonObject song) {
+        long duration = optLong(song, "duration");
+        return duration > 0 ? duration : optLong(song, "dt");
     }
 
     private static long optLong(JsonObject obj, String key) {

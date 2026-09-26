@@ -23,6 +23,7 @@ import client.nilore.NiloreClient;
 import client.nilore.modules.impl.misc.MusicPlayer;
 import client.nilore.modules.impl.misc.music.AudioPlayer;
 import client.nilore.modules.impl.misc.music.LyricLine;
+import client.nilore.modules.impl.misc.music.LyricSprings;
 import client.nilore.modules.impl.misc.music.MusicHttp;
 import client.nilore.modules.impl.misc.music.NeteaseApi;
 import client.nilore.modules.impl.misc.music.SongInfo;
@@ -36,12 +37,14 @@ import client.nilore.render.DrawContext;
 import client.nilore.render.FontPresets;
 import client.nilore.render.FontRenderer;
 import client.nilore.render.GlHelper;
+import client.nilore.render.LyricGlowFbo;
 import client.nilore.render.Paint;
 import client.nilore.render.Rectangle;
 import client.nilore.render.Renderer;
 import client.nilore.render.RoundedRectangle;
 import client.nilore.render.Texture;
 import client.nilore.utils.animation.SmoothAnimationTimer;
+import client.nilore.utils.animation.SpringSolver;
 import client.nilore.utils.math.Easings;
 import client.nilore.utils.render.ColorUtil;
 import client.nilore.utils.render.MonetPalette;
@@ -67,9 +70,12 @@ public class MusicPlayerScreen extends Screen {
     private static int ACCENT = 0xFFFFA6C3;
     private static int ACCENT_STRONG = 0xFFFF8FB5;
     private static int ACCENT_HOVER = 0xFFFFB9CE;
-    private static int CREAM = 0xFFF8EEF1;
-    private static int MUTED = 0xFFC1AAB2;
-    private static int DIM = 0xFF77646B;
+    // 文字色不参与主题派生：恒为白色系，免得跟着专辑封面来回变色。
+    // 三个值只差明度，对应「标题 / 次要 / 最弱」三层信息，不是三种颜色。
+    // 进度条滑块也用 CREAM，所以它一起变成白的。
+    private static final int CREAM = 0xFFFFFFFF;
+    private static final int MUTED = 0xFFD5D5D5;
+    private static final int DIM = 0xFF9A9A9A;
     private static int NAV_ACTIVE = 0xFF60404B;
     private static int ROW_ACTIVE = 0xFF52313D;
     private static int DIVIDER = 0xFF3B2B31;
@@ -90,7 +96,10 @@ public class MusicPlayerScreen extends Screen {
      * 把一套 Monet 配色套到上面那组字段上。
      *
      * <p>tone 按 Material 3 深色方案取：表面层级 surfaceLowest(5) → surfaceHighest(21)，
-     * 主色块 primaryContainer(30)，强调色 primary(80)，正文 onSurface(92)，描边 outline(60)。
+     * 主色块 primaryContainer(30)，强调色 primary(80)。
+     *
+     * <p>注意这里**不碰文字色**（CREAM / MUTED / DIM）——那三个是固定的白色系常量，
+     * 只有背景、卡片、强调色/图标才跟随封面变化。
      */
     private static void applyScheme(MonetPalette.Scheme scheme) {
         SCRIM = MonetPalette.withAlphaOf(scheme.surfaceLowest(), 0xC3);
@@ -103,9 +112,6 @@ public class MusicPlayerScreen extends Screen {
         ACCENT = scheme.primary();
         ACCENT_STRONG = scheme.primary.at(88);
         ACCENT_HOVER = scheme.primary.at(92);
-        CREAM = scheme.onSurface();
-        MUTED = scheme.onSurfaceVariant();
-        DIM = scheme.outline();
         NAV_ACTIVE = scheme.secondaryContainer();
         ROW_ACTIVE = scheme.secondaryContainer();
         DIVIDER = scheme.outlineVariant();
@@ -155,11 +161,37 @@ public class MusicPlayerScreen extends Screen {
     private static final FontRenderer BODY_FONT = FontPresets.pingfang(23.0f);
     private static final FontRenderer SMALL_FONT = FontPresets.pingfang(21.0f);
     private static final FontRenderer NAV_FONT = FontPresets.productSans(20.0f);
-    private static final FontRenderer LYRIC_FONT = FontPresets.pingfang(26.0f);
-    private static final FontRenderer LYRIC_ACTIVE_FONT = FontPresets.pingfang(33.0f);
     private static final FontRenderer ICON_FONT = FontPresets.materialIcons(28.0f);
     private static final FontRenderer ICON_LARGE = FontPresets.materialIcons(38.0f);
     private static final FontRenderer USERNAME_FONT = FontPresets.pingfang(33.0f);
+
+    // 歌词泛光：光晕半径（逻辑像素）和送进离屏纹理的强度。
+    // 半径偏大才是「氛围」，太小就成了一圈描边。
+    private static final float GLOW_RADIUS = 6.0f;
+    private static final float GLOW_ALPHA = 0.55f;
+
+    /** 从第几行开始压低亮度。更远的不再继续降，免得一行比一行暗。 */
+    private static final int LYRIC_FADE_DISTANCE = 2;
+
+    // --- 沉浸式播放页：Apple 风格固定配色 ---
+    // 这一页刻意不参与 Monet 主题派生，配色写死。背景仍然是封面流体（那是内容不是配色），
+    // 但文字、进度条、控件都是中性白，换歌时不会跟着封面一起变。
+    private static final int AP_TEXT = 0xFFFFFFFF;      // 主文字 / 图标
+    private static final int AP_TEXT_DIM = 0xB3FFFFFF;  // 次要文字
+    private static final int AP_TEXT_FAINT = 0x73FFFFFF;// 时间戳 / 未激活
+    private static final int AP_HOVER = 0x1FFFFFFF;     // 悬停垫底
+    private static final int AP_TRACK = 0x33FFFFFF;     // 进度条轨道
+    private static final int AP_BAR = 0xFFE6E6E6;       // 进度条已播放（比纯白灰一档）
+    private static final int AP_BAR_GLOW = 0x4DFFFFFF;  // 进度条泛光，比歌词那层弱得多
+    private static final int AP_PLACEHOLDER = 0x14FFFFFF;// 封面占位
+
+    // 沉浸式页专用字体：Product Sans（Google Sans 的近亲）+ 中文自动落到苹方。
+    // 单独一组，不动上面那些被其它页面共用的字体。
+    private static final FontRenderer AP_TITLE_FONT = FontPresets.googleSansBold(30.0f);
+    private static final FontRenderer AP_ARTIST_FONT = FontPresets.googleSansBold(22.0f);
+    private static final FontRenderer AP_TIME_FONT = FontPresets.googleSans(16.0f);
+    private static final FontRenderer AP_LYRIC_FONT = FontPresets.googleSansBold(26.0f);
+    private static final FontRenderer AP_LYRIC_ACTIVE_FONT = FontPresets.googleSansBold(33.0f);
 
     private static final String ICON_PREV = "";
     private static final String ICON_PLAY = "";
@@ -202,8 +234,23 @@ public class MusicPlayerScreen extends Screen {
     private float maxQueueScroll;
     private float playlistScroll;
     private float maxPlaylistScroll;
-    private float lyricScroll;
     private long lyricSongId = -1;
+
+    // --- 歌词动画 ---
+    // 每行一个独立弹簧，而不是整块一起 lerp：换行时是「新行滑上来、旧行走完自己那一段」，
+    // 而不是整个列表硬邦邦地一起位移。区域位置、尺寸全部沿用原来那套，只换动画。
+    private SpringSolver[] lyricLineY = new SpringSolver[0];
+    private SpringSolver[] lyricLineScale = new SpringSolver[0];
+    /** 每行静止时的屏幕 y（行顶部），由当前行位置推出来。 */
+    private float[] lyricRestY = new float[0];
+    /** 级联延迟：离锚点越远的行越晚起步，形成波浪。 */
+    private float[] lyricCascade = new float[0];
+    /** 上次的锚点行 / 整块偏移，变了才重设弹簧目标。 */
+    private int lyricAnchor = -1;
+    private float lyricLastBlockTop = Float.NaN;
+    private boolean lyricSpringsReady;
+    private long lyricFrameNs;
+    private long lyricLastPosMs = -1L;
 
     private Bounds searchViewport;
     private Bounds queueViewport;
@@ -213,6 +260,33 @@ public class MusicPlayerScreen extends Screen {
     private Rectangle lastVolumeRect;
     private float pendingVolume = -1.0f;
     private float pendingProgress = -1.0f;
+
+    // --- 沉浸式页的交互反馈 ---
+    // 悬停要平滑淡入、按下要弹簧回弹、图标还要跟着微缩放。这三样是「手感」的来源，
+    // 缺一样控件看起来就是死的——点下去毫无回应，再好的静态外观也救不回来。
+    /** 顺序：音量 / 上一首 / 播放 / 下一首 / 关闭。 */
+    private static final int PLAYER_BTN_COUNT = 5;
+    private final float[] playerBtnHover = new float[PLAYER_BTN_COUNT];
+    private final SpringSolver[] playerBtnPress = new SpringSolver[PLAYER_BTN_COUNT];
+    /** 每个按钮上一帧的矩形，用来在 mouseClicked/Released 里判断按到了哪个。 */
+    private final Rectangle[] playerBtnRects = new Rectangle[PLAYER_BTN_COUNT];
+    private int playerPressedButton = -1;
+    private long playerMotionNs;
+    /** 进度条的悬停展开程度：0 是常态，1 是拉粗。 */
+    private float playerBarEngage;
+    /** 音量滑块是否展开（点音量按钮切换）。 */
+    private boolean volumeBarOpen;
+    /** 滑块的展开进度 0..1，用它做「从中间长出来」的动画。 */
+    private float volumeBarReveal;
+    /** 封面呼吸：播放中满尺寸，暂停时略收。 */
+    private final SmoothAnimationTimer coverBreath = new SmoothAnimationTimer();
+
+    {
+        for (int i = 0; i < PLAYER_BTN_COUNT; i++) {
+            // 和 deobfmusic 的按压弹簧同一组参数，阻尼比约 0.62，按下去有轻微回弹
+            playerBtnPress[i] = new SpringSolver(1.0, 21.5, 300.0);
+        }
+    }
 
     private float layoutOriginX;
     private float layoutOriginY;
@@ -291,6 +365,8 @@ public class MusicPlayerScreen extends Screen {
         // 退出时落盘当前播放渠道。Cookie 文件由 NeteaseOfficialApi 自己在登录成功时存。
         MusicSources.save(sourceFile);
         releaseLoginQr();
+        // 泛光那三张离屏纹理占的是显存，页面关掉就还回去
+        LyricGlowFbo.release();
         super.onClose();
     }
 
@@ -390,8 +466,8 @@ public class MusicPlayerScreen extends Screen {
         }
 
         float contentH = DESIGN_H - BOTTOM_H;
-        ctx.drawRoundedRect(RoundedRectangle.ofXYWHRadii(0, 0, SIDEBAR_W, contentH,
-                new float[]{RADIUS, 0, 0, 0}), new Paint().setColor(withAlpha(SIDEBAR, 0.85f)));
+        // 侧栏不铺底色了：那层半透明面会把封面流体挡住，去掉之后流体能一直透到这一栏来。
+        // 导航项的 hover / 选中底还留着，所以可读性不靠底下这层。
         renderSidebar(ctx, 0, 0, SIDEBAR_W, contentH, mouseX, mouseY);
         renderCurrentPage(ctx, SIDEBAR_W, 0, DESIGN_W - SIDEBAR_W, contentH, mouseX, mouseY);
         renderPlaybackBar(ctx, 0, contentH, DESIGN_W, BOTTOM_H, mouseX, mouseY);
@@ -455,7 +531,7 @@ public class MusicPlayerScreen extends Screen {
         GlHelper.drawText("Made for you", innerX, cardsTitleY, TITLE_FONT, CREAM);
         String seeAll = "See all";
         float seeAllW = measure(seeAll, BODY_FONT);
-        GlHelper.drawText(seeAll, innerX + innerW - seeAllW, cardsTitleY + 2, BODY_FONT, ACCENT);
+        GlHelper.drawText(seeAll, innerX + innerW - seeAllW, cardsTitleY + 2, BODY_FONT, CREAM);
         clickAreas.add(new ClickArea(innerX + innerW - seeAllW - 8, cardsTitleY - 5, seeAllW + 16, 25,
                 () -> openPage(Page.PLAYLIST)));
 
@@ -586,7 +662,7 @@ public class MusicPlayerScreen extends Screen {
                     new Paint().setColor(withAlpha(ACCENT, blink)).setStrokeWidth(1.54f));
         }
         ctx.restore();
-        GlHelper.drawText("Enter", x + w - 49, y + 17, SMALL_FONT, searchText.isEmpty() ? DIM : ACCENT);
+        GlHelper.drawText("Enter", x + w - 49, y + 17, SMALL_FONT, searchText.isEmpty() ? DIM : CREAM);
         clickAreas.add(new ClickArea(x, y, w, h, () -> {
             searchFocused = true;
             searchSelectAll = false;
@@ -627,7 +703,7 @@ public class MusicPlayerScreen extends Screen {
                         new Paint().setColor(playing ? ROW_ACTIVE : RAISED));
             }
             GlHelper.drawText(playing ? "♪" : String.valueOf(i + 1), x + 14, rowY + 19, SMALL_FONT,
-                    playing ? ACCENT : DIM);
+                    playing ? CREAM : DIM);
             GlHelper.drawText(ellipsize(song.name, BODY_FONT, w - 185), x + 44, rowY + 11, BODY_FONT,
                     playing ? CREAM : MUTED);
             GlHelper.drawText(ellipsize(song.artist, SMALL_FONT, w - 185), x + 44, rowY + 32, SMALL_FONT, DIM);
@@ -703,7 +779,7 @@ public class MusicPlayerScreen extends Screen {
                         new Paint().setColor(ACCENT));
             }
             GlHelper.drawText(String.valueOf(i + 1), innerX + 16, rowY + 20, SMALL_FONT,
-                    playing ? ACCENT : DIM);
+                    playing ? CREAM : DIM);
             GlHelper.drawText(ellipsize(song.name, BODY_FONT, innerW - 150), innerX + 48, rowY + 12, BODY_FONT,
                     playing ? CREAM : MUTED);
             GlHelper.drawText(ellipsize(song.artist, SMALL_FONT, innerW - 150), innerX + 48, rowY + 33, SMALL_FONT, DIM);
@@ -988,88 +1064,505 @@ public class MusicPlayerScreen extends Screen {
         SongInfo song = player.getCurrentSong();
         ensureAlbum(song);
 
-        boolean backHover = contains(mouseX, mouseY, 22.88f, 19.36f, 38.72f, 32);
-        if (backHover) {
-            ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(22.88f, 19.36f, 38.72f, 32, 16), new Paint().setColor(RAISED));
-        }
-        drawCentered(ICON_BACK, 22.88f, 34.32f, 38.72f, ICON_LARGE, backHover ? ACCENT : CREAM);
-        clickAreas.add(new ClickArea(22.88f, 19.36f, 38.72f, 32, this::returnFromPlayer));
+        float dt = playerMotionDelta();
 
-        float cover = 194.48f;
-        float coverX = 82.0f;
-        float coverY = 54.0f;
-        drawAlbum(ctx, song, coverX, coverY, cover, 16.72f);
-        float infoY = coverY + cover + 15.84f;
-        GlHelper.drawText(ellipsize(song == null ? "No track playing" : song.name, TITLE_FONT, cover),
-                coverX, infoY, TITLE_FONT, CREAM);
-        GlHelper.drawText(ellipsize(song == null ? "Search for a song to start" : song.artist, BODY_FONT, cover),
-                coverX, infoY + 31, BODY_FONT, MUTED);
-        if (song != null && song.albumName != null && !song.albumName.isEmpty()) {
-            GlHelper.drawText(ellipsize(song.albumName, SMALL_FONT, cover), coverX, infoY + 54, SMALL_FONT, DIM);
+        // 背景压暗：封面流体本身挺亮，不压一层的话白字会发飘，歌词也「浮」不起来。
+        // deobfmusic 的沉浸式页也是整屏盖一层约 60% 的黑。
+        ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(0, 0, DESIGN_W, DESIGN_H, RADIUS),
+                new Paint().setColor(0x96000000));
+
+        // 布局照 deobfmusic 的沉浸式页来：左边 40% 一整列竖排，右边 60% 全给歌词。
+        // 左右各往内收 30：分栏位置不动，两列的内容区各自窄 30。
+        float sideInset = 30.0f;
+        float dividerX = DESIGN_W * 0.4f;
+        float leftContentW = dividerX - sideInset;
+        float cx = sideInset + leftContentW * 0.5f;
+
+        float artD = 182.0f;
+        // 封面在左列里水平居中，所以它到面板左边框的距离 = sideInset + 两侧余量的一半。
+        // 让「到上边框的距离」等于这个值，四个方向的留白才均衡。
+        float top = sideInset + (leftContentW - artD) * 0.5f;
+        // 封面横向往左挪
+        float coverNudge = 8.0f;
+        top -= coverNudge;
+        float volW = 30.0f;
+        float nameH = 34.0f;
+        float artistH = 26.0f;
+        float barH = 5.5f;
+        float timeH = 16.0f;
+        float ctrlH = 42.0f;
+        float gapArtName = 22.0f;
+        float gapNameArtist = 2.0f;
+        float gapArtistBar = 2.0f;
+        float gapBarTime = 9.0f;
+        float gapTimeCtrl = 12.0f;
+
+        // 封面呼吸：播放时满尺寸，暂停时收一点。静止状态也有层次，不会像贴上去的。
+        coverBreath.animate(player.getState() == AudioPlayer.State.PLAYING ? 1.0 : 0.0, 0.4, Easings.EASE_OUT_QUAD);
+        coverBreath.tick();
+        float coverD = artD * (0.94f + 0.06f * coverBreath.getValueF());
+        float artX = cx - artD * 0.5f - coverNudge;
+        float coverX = artX + (artD - coverD) * 0.5f;
+        float coverY = top + (artD - coverD) * 0.5f;
+        // 封面外面一圈白色柔光。压暗的背景上，白光的「托举感」比黑色投影更轻，
+        // 也不会在深色底上糊成一团黑边。
+        ctx.drawBlurredRoundedRect(RoundedRectangle.ofXYWHR(coverX, coverY, coverD, coverD, 16.0f),
+                0.0f, 0.0f, 22.0f, 0.0f, 0x40FFFFFF);
+        drawAlbum(ctx, song, coverX, coverY, coverD, 16.0f, AP_PLACEHOLDER, AP_TEXT_FAINT);
+
+        // 歌名和歌手左对齐到进度条左端
+        float nameY = top + artD + gapArtName;
+        // 右侧要给音量按钮让位
+        float textMaxW = artD - volW - 10.0f;
+        String title = song == null ? "Nothing playing" : song.name;
+        GlHelper.drawText(ellipsize(title, AP_TITLE_FONT, textMaxW), artX, nameY, AP_TITLE_FONT, AP_TEXT);
+
+        float artistY = nameY + nameH + gapNameArtist - 16.0f;
+        String artist = song == null ? "Pick a song to start" : song.artist;
+        GlHelper.drawText(ellipsize(artist, AP_ARTIST_FONT, textMaxW), artX, artistY, AP_ARTIST_FONT, AP_TEXT_DIM);
+
+        // 音量按钮：和歌曲信息同一行、再上移 21，右端对齐进度条右端。
+        // 图标在按钮自身的基础上再上移 1px，悬停矩形保持原位不动。
+        playerBtnRects[0] = Rectangle.ofXYWH(artX + artD - volW, artistY - 24.0f, volW, volW);
+        boolean muted = player.getVolume() <= 0.001f;
+        drawPlayerButton(ctx, 0, playerBtnRects[0], ICON_VOLUME, ICON_FONT,
+                mouseX, mouseY, this::toggleVolumeBar, -1.0f, muted ? AP_TEXT_FAINT : AP_TEXT_DIM, dt);
+
+        // 进度条：命中范围比条本身大一圈，悬停（或拖拽）时拉粗 3px。
+        // 相对歌手再上移 12（歌手自己已经上移 16，合起来是用户要的 28）。
+        float barHitY = artistY + artistH + gapArtistBar - 12.0f;
+        boolean barActive = dragTarget == DragTarget.PROGRESS
+                || contains(mouseX, mouseY, artX - 6.0f, barHitY - 10.0f, artD + 12.0f, barH + 20.0f);
+        playerBarEngage += ((barActive ? 1.0f : 0.0f) - playerBarEngage) * Math.min(1.0f, dt / 0.09f);
+        float barHeight = barH + 3.0f * playerBarEngage;
+        float progress = dragTarget == DragTarget.PROGRESS && pendingProgress >= 0
+                ? pendingProgress : player.getProgress();
+        drawPlayerProgress(ctx, artX, barHitY - (barHeight - barH) * 0.5f, artD, barHeight, progress);
+        lastProgressRect = Rectangle.ofXYWH(artX, barHitY - 8.0f, artD, barH + 16.0f);
+        clickAreas.add(new ClickArea(artX, barHitY - 8.0f, artD, barH + 16.0f, () -> dragTarget = DragTarget.PROGRESS));
+
+        float timeY = barHitY + barH + gapBarTime;
+        boolean loading = player.getState() == AudioPlayer.State.LOADING;
+        long duration = song == null ? 0L : song.duration;
+        // 拖进度条时先按拖到的位置显示，松手才真正 seek
+        long shownPos = dragTarget == DragTarget.PROGRESS && pendingProgress >= 0
+                ? (long) (pendingProgress * duration) : player.getCurrentPositionMs();
+        // 右边显示的是「距离结束还有多久」，带个负号，和左边已播时长一眼区分开
+        String elapsed = loading ? "Loading" : timestamp(shownPos);
+        String remaining = "-" + timestamp(Math.max(0L, duration - shownPos));
+        GlHelper.drawText(elapsed, artX, timeY, AP_TIME_FONT, AP_TEXT_FAINT);
+        GlHelper.drawText(remaining, artX + artD - measure(remaining, AP_TIME_FONT), timeY, AP_TIME_FONT, AP_TEXT_FAINT);
+
+        // 三个控制按钮：居中于进度条。timeY 已经跟着进度条上移 28，这里再下压 2，净上移 26。
+        float ctrlY = timeY + timeH + gapTimeCtrl - 2.0f;
+        float sideW = 34.0f;
+        float playW = 42.0f;
+        float ctrlGap = 14.0f;
+        float bx = artX + artD * 0.5f - (sideW * 2.0f + playW + ctrlGap * 2.0f) * 0.5f;
+        playerBtnRects[1] = Rectangle.ofXYWH(bx, ctrlY + (ctrlH - sideW) * 0.5f, sideW, sideW);
+        playerBtnRects[2] = Rectangle.ofXYWH(bx + sideW + ctrlGap, ctrlY + (ctrlH - playW) * 0.5f, playW, playW);
+        playerBtnRects[3] = Rectangle.ofXYWH(bx + sideW + ctrlGap + playW + ctrlGap,
+                ctrlY + (ctrlH - sideW) * 0.5f, sideW, sideW);
+        drawPlayerButton(ctx, 1, playerBtnRects[1], ICON_PREV, ICON_FONT,
+                mouseX, mouseY, this::prevSong, -1.0f, AP_TEXT, dt);
+        drawPlayerButton(ctx, 2, playerBtnRects[2],
+                player.getState() == AudioPlayer.State.PLAYING ? ICON_PAUSE : ICON_PLAY,
+                ICON_LARGE, mouseX, mouseY, loading ? null : player::togglePause, 0.0f, AP_TEXT, dt);
+        drawPlayerButton(ctx, 3, playerBtnRects[3], ICON_NEXT, ICON_FONT,
+                mouseX, mouseY, this::nextSong, -1.0f, AP_TEXT, dt);
+
+        // 音量滑块：点音量按钮展开，宽度高度都从中间「长出来」。
+        // 用的是和主进度条同一套画法（白、左圆右直、带泛光），所以高宽比一致。
+        volumeBarReveal += ((volumeBarOpen ? 1.0f : 0.0f) - volumeBarReveal) * Math.min(1.0f, dt / 0.12f);
+        if (volumeBarReveal > 0.01f) {
+            float volBarW = artD * volumeBarReveal;
+            float volBarH = Math.max(1.0f, barH * volumeBarReveal);
+            float volBarX = artX + (artD - volBarW) * 0.5f;
+            float volBarY = ctrlY - 20.0f + (barH - volBarH) * 0.5f;
+            float volume = dragTarget == DragTarget.VOLUME && pendingVolume >= 0
+                    ? pendingVolume : player.getVolume();
+            drawPlayerProgress(ctx, volBarX, volBarY, volBarW, volBarH, volume);
+            lastVolumeRect = Rectangle.ofXYWH(artX, ctrlY - 26.0f, artD, barH + 18.0f);
+            clickAreas.add(new ClickArea(artX, ctrlY - 26.0f, artD, barH + 18.0f,
+                    () -> dragTarget = DragTarget.VOLUME));
         }
 
-        float lyricX = 376.0f;
-        float lyricY = 37.0f;
-        float lyricW = DESIGN_W - lyricX - 38.0f;
-        float lyricH = 292.0f;
-        renderLyrics(ctx, song, lyricX, lyricY, lyricW, lyricH);
-        renderPlayerTransport(ctx, song, player, mouseX, mouseY);
+        float padL = DESIGN_W * 0.055f;
+
+        // 右列整块给歌词
+        float lyricX = dividerX + padL;
+        renderLyrics(ctx, song, lyricX, 8.0f, DESIGN_W - sideInset - 16.0f - lyricX, DESIGN_H - 16.0f);
+
+        // 关闭放右上角。图标单独上移 1px，悬停矩形保持原样。
+        float closeSize = 32.0f;
+        playerBtnRects[4] = Rectangle.ofXYWH(DESIGN_W - closeSize - 18.0f, 18.0f, closeSize, closeSize);
+        drawPlayerButton(ctx, 4, playerBtnRects[4], ICON_CLOSE, ICON_FONT,
+                mouseX, mouseY, this::returnFromPlayer, -1.0f, AP_TEXT, dt);
+    }
+
+    /** 点音量按钮展开／收起音量滑块。 */
+    private void toggleVolumeBar() {
+        volumeBarOpen = !volumeBarOpen;
+    }
+
+    /** 沉浸式页自己的帧间隔。不走 renderRoot 那套全局计时，免得互相吃掉 delta。 */
+    private float playerMotionDelta() {
+        long now = System.nanoTime();
+        float dt = playerMotionNs == 0L ? 0.0f : (now - playerMotionNs) / 1.0e9f;
+        playerMotionNs = now;
+        return clamp(dt, 0.0f, 0.05f);
+    }
+
+    /** 命中哪个按钮就按哪个（按下状态要撑到松手，所以得记下来）。 */
+    private void pressPlayerButton(double mouseX, double mouseY) {
+        double designX = toDesignX(mouseX);
+        double designY = toDesignY(mouseY);
+        for (int i = 0; i < PLAYER_BTN_COUNT; i++) {
+            Rectangle rect = playerBtnRects[i];
+            if (rect != null && contains(designX, designY,
+                    rect.getX(), rect.getY(), rect.getWidth(), rect.getHeight())) {
+                playerPressedButton = i;
+                playerBtnPress[i].setTarget(1.0);
+                return;
+            }
+        }
+    }
+
+    /**
+     * 沉浸式页的进度条：白色、轻微泛光、左端圆角右端直角。
+     *
+     * <p>泛光走的是和歌词同一套离屏模糊，但半径小得多——进度条是细长条，
+     * 光晕一大就糊了，只要贴着边缘微微透出来就够。
+     */
+    private void drawPlayerProgress(DrawContext ctx, float x, float y, float w, float h, float value) {
+        float progress = clamp(value, 0, 1);
+        float radius = h * 0.5f;
+        float[] trackRadii = {radius, radius, radius, radius};
+
+        ctx.drawRoundedRect(RoundedRectangle.ofXYWHRadii(x, y, w, h, trackRadii),
+                new Paint().setColor(AP_TRACK));
+        if (progress <= 0.001f) {
+            return;
+        }
+        float filled = w * progress;
+
+        // 右端半径：进入轨道的右圆角区之后才开始长出来，用线性过渡。
+        //
+        // 这个式子不是凑出来的：设右端半径 r，白色右上角的最右点是 filled - r，
+        // 而轨道在顶边处的最右点是 w - radius。要让两者相切就得 filled - r = w - radius，
+        // 即 r = filled - (w - radius)——正好就是把 (filled - (w - radius)) / radius 归一化后
+        // 再乘 radius。所以白色右上角会严丝合缝地贴着轨道的圆角走，
+        // 既不会在快播完时顶掉圆角，也不需要任何裁剪。
+        float rightR = radius * clamp((filled - (w - radius)) / radius, 0.0f, 1.0f);
+        float[] fillRadii = {radius, rightR, rightR, radius};
+
+        // 泛光按已播宽度画，不裁，让它自然溢出轨道一圈
+        ctx.drawBlurredRoundedRect(RoundedRectangle.ofXYWHRadii(x, y - 1.0f, filled, h + 2.0f, fillRadii),
+                0.0f, 0.0f, 8.0f, 0.0f, AP_BAR_GLOW);
+        ctx.drawRoundedRect(RoundedRectangle.ofXYWHRadii(x, y, filled, h, fillRadii),
+                new Paint().setColor(AP_BAR));
+    }
+
+    /**
+     * 沉浸式页的按钮：无边框、无底色，只有图标。
+     *
+     * <p>三样东西凑出「手感」：悬停垫底平滑淡入、按下走弹簧回弹、图标随交互微缩放
+     * （悬停放大 4%、按下缩小 6%，取值和 deobfmusic 一致）。缺一样，控件看着就是死的。
+     *
+     * @param index       第几个按钮，用来索引动画状态
+     * @param iconOffsetY 只挪图标的额外垂直偏移，悬停矩形保持原位
+     * @param activeColor 可点击时的图标颜色
+     */
+    private void drawPlayerButton(DrawContext ctx, int index, Rectangle box, String icon, FontRenderer iconFont,
+                                  float mouseX, float mouseY, Runnable action,
+                                  float iconOffsetY, int activeColor, float dt) {
+        float x = box.getX();
+        float y = box.getY();
+        float w = box.getWidth();
+        float h = box.getHeight();
+        boolean enabled = action != null;
+        boolean hovered = enabled && contains(mouseX, mouseY, x, y, w, h);
+
+        // 悬停：指数逼近，时间常数 55ms
+        playerBtnHover[index] += ((hovered ? 1.0f : 0.0f) - playerBtnHover[index]) * Math.min(1.0f, dt / 0.055f);
+        playerBtnPress[index].update(dt);
+        float hoverK = playerBtnHover[index];
+        float pressK = (float) playerBtnPress[index].getValue();
+
+        if (hoverK > 0.01f) {
+            ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(x, y, w, h, h * 0.5f),
+                    new Paint().setColor(withAlpha(AP_HOVER, hoverK)));
+        }
+
+        float iconX = x + (w - measure(icon, iconFont)) * 0.5f;
+        float iconY = y + (h - iconFont.getMetrics().capHeight()) * 0.5f + 8.0f + iconOffsetY;
+        float iconScale = 1.0f + hoverK * 0.04f - pressK * 0.06f;
+        boolean scaled = Math.abs(iconScale - 1.0f) > 0.001f;
+        if (scaled) {
+            float pivotX = x + w * 0.5f;
+            float pivotY = y + h * 0.5f;
+            ctx.save();
+            ctx.translate(pivotX, pivotY);
+            ctx.scale(iconScale, iconScale);
+            ctx.translate(-pivotX, -pivotY);
+        }
+        GlHelper.drawText(icon, iconX, iconY, iconFont, enabled ? activeColor : AP_TEXT_FAINT);
+        if (scaled) {
+            ctx.restore();
+        }
+        if (enabled) {
+            clickAreas.add(new ClickArea(x, y, w, h, action));
+        }
     }
 
     private void renderLyrics(DrawContext ctx, SongInfo song, float x, float y, float w, float h) {
         if (song == null) {
-            GlHelper.drawText("Play a song to see lyrics", x, y + h * 0.495f, HEADING_FONT, DIM);
+            GlHelper.drawText("Play a song to see lyrics", x, y + h * 0.495f, AP_TITLE_FONT, DIM);
             return;
         }
 
         List<LyricLine> lines = lyricsFor(song);
         if (lines.isEmpty()) {
             String message = lyricsCache.containsKey(song.id) ? "Lyrics unavailable" : "Loading lyrics...";
-            GlHelper.drawText(message, x, y + h * 0.495f, HEADING_FONT, DIM);
+            GlHelper.drawText(message, x, y + h * 0.495f, AP_TITLE_FONT, DIM);
             return;
         }
 
-        if (lyricSongId != song.id) {
-            lyricSongId = song.id;
-            lyricScroll = 0;
-        }
+        final float lineH = 46.64f;
+        final int count = lines.size();
         long position = MusicPlayer.AUDIO_PLAYER.getCurrentPositionMs();
         int current = findCurrentLyricLine(lines, position);
-        float lineH = 46.64f;
-        float totalHeight = lines.size() * lineH;
-        // 歌词不足一屏时整体垂直居中，否则按当前行滚动（target 夹在可滚动范围内，防止滚过头）。
-        float topOffset;
-        if (totalHeight < h) {
-            lyricScroll = 0;
-            topOffset = (h - totalHeight) * 0.5f;
-        } else {
-            float maxScroll = totalHeight - h;
-            float target = clamp(current * lineH - h * 0.264f, 0.0f, maxScroll);
-            lyricScroll += (target - lyricScroll) * 0.198f;
-            topOffset = 0;
+
+        // 换歌或行数变了：重建弹簧并直接落位，不让上一首的位置飘过来
+        if (lyricSongId != song.id || lyricLineY.length != count) {
+            lyricSongId = song.id;
+            lyricLineY = new SpringSolver[count];
+            lyricLineScale = new SpringSolver[count];
+            lyricRestY = new float[count];
+            lyricCascade = new float[count];
+            for (int i = 0; i < count; i++) {
+                lyricLineY[i] = new SpringSolver();
+                lyricLineScale[i] = new SpringSolver(2.0, 25.0, 100.0);
+            }
+            lyricAnchor = -1;
+            lyricLastBlockTop = Float.NaN;
+            lyricSpringsReady = false;
+            lyricLastPosMs = -1L;
+            lyricFrameNs = 0L;
         }
 
-        Rectangle viewport = Rectangle.ofXYWH(x, y, w, h);
+        // 整块的位置：不足一屏居中，否则让当前行停在区域内 26.4% 处（沿用原来的锚点比例）
+        float blockTop;
+        if (count * lineH < h) {
+            blockTop = (h - count * lineH) * 0.5f;
+        } else {
+            // 上界必须是「第一行作为当前行时的位置」，不能写成 0。
+            // 写 0 的话第一句会被硬按在区域顶边上——0:00 时还没轮到下一句，
+            // 当前行一直是第一行，于是它就一直贴在框沿上，看着像跑到框外去了。
+            blockTop = clamp(h * 0.264f - current * lineH, h - count * lineH, h * 0.264f);
+        }
+        for (int i = 0; i < count; i++) {
+            lyricRestY[i] = y + blockTop + i * lineH;
+        }
+
+        // 帧间隔自己维护，不动 renderRoot 那套全局计时
+        long now = System.nanoTime();
+        float dt = lyricFrameNs == 0L ? 0.0f : (now - lyricFrameNs) / 1.0e9f;
+        lyricFrameNs = now;
+        dt = clamp(dt, 0.0f, 0.05f);
+
+        boolean seek = lyricLastPosMs >= 0L
+                && LyricSprings.isHardClockDiscontinuity(lyricLastPosMs / 1000.0, position / 1000.0);
+        long seekDeltaMs = lyricLastPosMs >= 0L ? position - lyricLastPosMs : 0L;
+        lyricLastPosMs = position;
+
+        boolean anchorMoved = current != lyricAnchor;
+        boolean layoutMoved = Float.isNaN(lyricLastBlockTop)
+                || Math.abs(blockTop - lyricLastBlockTop) > 0.5f;
+
+        if (anchorMoved || layoutMoved || seek) {
+            double posSec = position / 1000.0;
+            double lineEndSec = lineEndMs(lines, current) / 1000.0;
+            LyricSprings.Physics physics;
+            if (seek) {
+                physics = LyricSprings.seekSpring(current - lyricAnchor, seekDeltaMs / 1000.0);
+            } else {
+                double gap = current > 0
+                        ? Math.max(lines.get(current).timeMs() - lineEndMs(lines, current - 1), 0L) / 1000.0
+                        : 0.0;
+                physics = LyricSprings.lineTransitionSpring(lines.get(current).hasWordTiming(), gap);
+                physics = LyricSprings.retimeLineSpring(physics, lineEndSec, posSec,
+                        lineEndSec - posSec - 0.5 < 0.6);
+            }
+            for (int i = 0; i < count; i++) {
+                lyricLineY[i].setParams(physics.mass(), physics.damping(), physics.stiffness());
+                lyricLineScale[i].setParams(physics.mass(), physics.damping(), physics.stiffness());
+            }
+
+            // 级联锚点取可见的第一行，让波形从屏幕边缘往中间推
+            int cascadeAnchor = current;
+            while (cascadeAnchor > 0 && lyricRestY[cascadeAnchor - 1] + lineH > y) {
+                cascadeAnchor--;
+            }
+            for (int i = 0; i < count; i++) {
+                double delay = seek ? 0.0 : LyricSprings.cascadeDelay(
+                        LyricSprings.validLineDistance(lines, cascadeAnchor, i), false);
+                lyricCascade[i] = (float) delay;
+                lyricLineY[i].setTarget(lyricRestY[i], delay);
+                lyricLineScale[i].setTarget(i == current ? 1.0 : 0.96, delay);
+            }
+            lyricAnchor = current;
+            lyricLastBlockTop = blockTop;
+        }
+
+        for (int i = 0; i < count; i++) {
+            if (!lyricSpringsReady) {
+                lyricLineY[i].setValue(lyricRestY[i]);
+                lyricLineScale[i].setValue(1.0);
+                continue;
+            }
+            lyricLineY[i].update(dt);
+            lyricLineScale[i].update(dt);
+        }
+        lyricSpringsReady = true;
+
+        // 左边多给 3px 余量：字形的抗锯齿边缘和泛光需要一点空间，贴着边会被切掉
+        Rectangle viewport = Rectangle.ofXYWH(x - 3.0f, y, w + 3.0f, h);
         ctx.save();
         ctx.clipRect(viewport, true);
-        for (int i = 0; i < lines.size(); i++) {
-            float rowY = y + topOffset + i * lineH - lyricScroll;
+
+        for (int i = 0; i < count; i++) {
+            float rowY = (float) lyricLineY[i].getValue();
             if (rowY < y - lineH || rowY > y + h) {
                 continue;
             }
             int distance = Math.abs(i - current);
             boolean active = i == current;
-            FontRenderer font = active ? LYRIC_ACTIVE_FONT : LYRIC_FONT;
-            int color = active ? ACCENT_STRONG : distance == 1 ? MUTED : distance == 2 ? withAlpha(MUTED, 0.605f) : DIM;
+            FontRenderer font = active ? AP_LYRIC_ACTIVE_FONT : AP_LYRIC_FONT;
+            // 层次全靠 alpha，颜色一律用白。以前远处行同时叠了「更深的灰」和「更低的 alpha」，
+            // 两个衰减相乘，越远越接近全黑。
+            float alpha = (0.30f + 0.70f * lyricActiveK(lines, i, position))
+                    * (distance >= LYRIC_FADE_DISTANCE ? 0.85f : 1.0f);
             String raw = lines.get(i).text();
             String text = ellipsize(raw == null || raw.isBlank() ? "···" : raw, font, w);
+
+            float scale = (float) lyricLineScale[i].getValue();
+            boolean scaled = Math.abs(scale - 1.0f) > 0.001f;
+            if (scaled) {
+                float anchorY = rowY + lineH * 0.5f;
+                ctx.save();
+                ctx.translate(x, anchorY);
+                ctx.scale(scale, scale);
+                ctx.translate(-x, -anchorY);
+            }
             if (active) {
-                drawKaraokeLine(text, x, rowY, font, lineProgress(lines, current, position));
+                drawKaraokeLine(text, x, rowY, font, lineProgress(lines, current, position), alpha,
+                        lines.get(current), lineEndMs(lines, current), position);
             } else {
-                GlHelper.drawText(text, x, rowY, font, color);
+                GlHelper.drawText(text, x, rowY, font, withAlpha(CREAM, alpha));
+            }
+            if (scaled) {
+                ctx.restore();
             }
         }
+
+        // 泛光必须在裁剪框内叠回。放在 restore 之后的话，当前行的光晕会整圈溢到歌词区外面，
+        // 看着就是「歌词跑出屏幕还留了一点点」。
+        if (current >= 0 && current < count) {
+            emitLyricGlow(lines.get(current), x, (float) lyricLineY[current].getValue(), w);
+        }
         ctx.restore();
+    }
+
+    /**
+     * 当前行的泛光层。
+     *
+     * <p>只画当前行，并且用固定的高亮色——发光是被高斯核扩散开的低频信息，逐字细节在里面留不住，
+     * 画整行反而更省。扫光的层次感留给主画面那一遍。
+     */
+    private void emitLyricGlow(LyricLine line, float x, float rowY, float w) {
+        String raw = line.text();
+        if (raw == null || raw.isBlank()) {
+            return;
+        }
+        String text = ellipsize(raw, AP_LYRIC_ACTIVE_FONT, w);
+        LyricGlowFbo.begin();
+        if (LyricGlowFbo.isCollecting()) {
+            GlHelper.drawText(text, x, rowY, AP_LYRIC_ACTIVE_FONT, withAlpha(CREAM, GLOW_ALPHA));
+            LyricGlowFbo.end(GLOW_RADIUS);
+        }
+    }
+
+    /**
+     * 一行的结束时间。
+     *
+     * <p>有逐字时间就用最后一个字的时间窗算准；没有就退回到「下一行的起点」——
+     * 这也是 LRC 格式能给出的最好估计。
+     */
+    private static long lineEndMs(List<LyricLine> lines, int index) {
+        LyricLine line = lines.get(index);
+        List<LyricLine.Word> words = line.words();
+        if (words != null && !words.isEmpty()) {
+            LyricLine.Word last = words.get(words.size() - 1);
+            return last.startMs() + Math.max(last.durationMs(), 1L);
+        }
+        if (index + 1 < lines.size()) {
+            return lines.get(index + 1).timeMs();
+        }
+        return line.timeMs() + 6000L;
+    }
+
+    /**
+     * 某一行此刻的「亮起程度」0..1。
+     *
+     * <p>提前 450ms 开始淡入（歌词比人声早一点点浮起来），行尾后 100ms 开始淡出。
+     * 这样旧行不是被当前行替换时瞬间压暗，而是自己缓缓沉下去。
+     */
+    private static float lyricActiveK(List<LyricLine> lines, int index, long positionMs) {
+        long start = lines.get(index).timeMs();
+        long end = Math.max(lineEndMs(lines, index), start + 1L);
+        long fadeInStart = start - 450L;
+        long fadeInEnd = fadeInStart + 600L;
+        if (positionMs < fadeInStart) {
+            return 0.0f;
+        }
+        if (positionMs < fadeInEnd) {
+            return smoothstep((positionMs - fadeInStart) / (float) Math.max(1L, fadeInEnd - fadeInStart));
+        }
+        long fadeOutStart = end + 100L;
+        long fadeOutEnd = fadeOutStart + 250L;
+        if (positionMs < fadeOutStart) {
+            return 1.0f;
+        }
+        if (positionMs >= fadeOutEnd) {
+            return 0.0f;
+        }
+        return 1.0f - smoothstep((positionMs - fadeOutStart) / (float) Math.max(1L, fadeOutEnd - fadeOutStart));
+    }
+
+    private static float smoothstep(float t) {
+        t = clamp(t, 0.0f, 1.0f);
+        return t * t * (3.0f - 2.0f * t);
+    }
+
+    /**
+     * 「唱到这个字之后过了 τ 秒」对应的上浮系数 0..1。
+     *
+     * <p>是一条阻尼比约 0.94 的二阶弹簧阶跃响应（就是 deobfmusic 用的那条曲线）：
+     * 字刚唱到时弹起来，2.5 秒内回落到原位。上浮快、回来慢，所以看着是「跳一下」。
+     */
+    private static float lyricLiftK(double tau) {
+        if (tau <= 0.0) {
+            return 0.0f;
+        }
+        if (tau > 2.5) {
+            return 1.0f;
+        }
+        double decay = 3.49999983766082;
+        double omegaD = 3.7416574 * Math.sqrt(0.12500008735550994);
+        double envelope = Math.exp(-decay * tau);
+        double y = 1.0 - envelope * (Math.cos(omegaD * tau) + decay / omegaD * Math.sin(omegaD * tau));
+        return (float) Math.max(0.0, y);
     }
 
     /**
@@ -1108,56 +1601,39 @@ public class MusicPlayerScreen extends Screen {
     }
 
     /**
-     * 画当前歌词行：未唱部分压暗，已唱部分提亮。
+     * 画当前歌词行：未唱部分压暗，已唱部分提亮，分界随播放连续推进。
      *
-     * <p>不做任何发光效果（发光那套 FBO 模糊在这台机器上出雪花噪点，已回滚）。
-     * 只按已唱宽度取完整前缀画亮色，分界逐字推进，能看清唱到哪一句的哪个字。
+     * <p>亮色不是在字与字之间跳着走，而是按「已唱宽度」裁一块区域出来再叠一层亮色，
+     * 所以唱到半个字也看得出来，分界是连续的。
+     *
+     * <p>注意这里刻意不套缩放变换：裁剪区域是按当前 pose 变换后的坐标算的，
+     * 而当前行本来就不缩放，套上去只会把裁剪算歪。
      */
-    private void drawKaraokeLine(String text, float x, float rowY, FontRenderer font, float progress) {
-        // 整行先画暗色
-        GlHelper.drawText(text, x, rowY, font, MUTED);
-
-        float sungWidth = font.getWidth(text) * progress;
-        if (sungWidth < 1.0f) {
+    /**
+     * 画当前歌词行的扫光：逐个字画，唱到的字向上浮一点再落回原位。
+     *
+     * <p>改成逐字之后就不再用裁剪做扫光了——每个字自己决定亮还是暗，界线按字走，
+     * 同时还能给每个字单独加上浮位移（整行一次画是做不出来的）。
+     */
+    private void drawKaraokeLine(String text, float x, float rowY, FontRenderer font, float progress,
+                                 float alpha, LyricLine line, long lineEndMs, long positionMs) {
+        int count = text.length();
+        if (count == 0) {
             return;
         }
-        String sung = prefixFitting(text, font, sungWidth);
-        // 已唱前缀提亮，无发光
-        GlHelper.drawText(sung, x, rowY, font, ACCENT_STRONG);
-    }
-
-    private void renderPlayerTransport(DrawContext ctx, SongInfo song, AudioPlayer player, float mouseX, float mouseY) {
-        float progressX = 25.0f;
-        float progressY = 370.0f;
-        float progressW = DESIGN_W - 50.0f;
-        float progress = dragTarget == DragTarget.PROGRESS && pendingProgress >= 0
-                ? pendingProgress : player.getProgress();
-        drawSplitProgress(ctx, progressX, progressY, progressW, 7.7f, progress, true);
-        lastProgressRect = Rectangle.ofXYWH(progressX, progressY - 10, progressW, 27);
-        clickAreas.add(new ClickArea(progressX, progressY - 10, progressW, 27, () -> dragTarget = DragTarget.PROGRESS));
-
-        String current = timestamp(player.getCurrentPositionMs());
-        String total = timestamp(song == null ? 0 : song.duration);
-        GlHelper.drawText(current, progressX, progressY + 15, SMALL_FONT, MUTED);
-        GlHelper.drawText(total, progressX + progressW - measure(total, SMALL_FONT), progressY + 15, SMALL_FONT, MUTED);
-
-        float controlsY = 399.0f;
-        float center = DESIGN_W * 0.5f;
-        drawControl(ctx, center - 74, controlsY + 3, 34, 38, ICON_PREV, false, mouseX, mouseY, this::prevSong);
-        drawControl(ctx, center - 25, controlsY - 4, 50, 50,
-                player.getState() == AudioPlayer.State.PLAYING ? ICON_PAUSE : ICON_PLAY,
-                true, mouseX, mouseY, player.getState() == AudioPlayer.State.LOADING ? null : player::togglePause);
-        drawControl(ctx, center + 40, controlsY + 3, 34, 38, ICON_NEXT, false, mouseX, mouseY, this::nextSong);
-
-        GlHelper.drawText(ICON_VOLUME, DESIGN_W - 154, controlsY + 22, ICON_FONT, MUTED);
-        float volumeX = DESIGN_W - 124;
-        float volume = dragTarget == DragTarget.VOLUME && pendingVolume >= 0 ? pendingVolume : player.getVolume();
-        drawSlider(ctx, volumeX, controlsY + 20, 88, volume);
-        lastVolumeRect = Rectangle.ofXYWH(volumeX, controlsY + 10, 88, 20);
-        clickAreas.add(new ClickArea(volumeX, controlsY + 10, 88, 20, () -> dragTarget = DragTarget.VOLUME));
-
-        if (player.getState() == AudioPlayer.State.LOADING) {
-            GlHelper.drawText("Loading", center - measure("Loading", SMALL_FONT) * 0.5f, controlsY - 22, SMALL_FONT, DIM);
+        long lineStart = line.timeMs();
+        long span = Math.max(1L, lineEndMs - lineStart);
+        int dimColor = withAlpha(DIM, alpha);
+        int litColor = withAlpha(CREAM, alpha);
+        float cursor = x;
+        for (int i = 0; i < count; i++) {
+            String glyph = String.valueOf(text.charAt(i));
+            // 这个字唱完的时刻。有逐字数据时 lineProgress 已经把整体进度算准了，这里按行内位置均摊足够。
+            long charEnd = lineStart + span * (i + 1) / count;
+            float lift = -2.0f * lyricLiftK((positionMs - charEnd) / 1000.0);
+            boolean lit = (i + 1) / (float) count <= progress;
+            GlHelper.drawText(glyph, cursor, rowY + lift, font, lit ? litColor : dimColor);
+            cursor += measure(glyph, font);
         }
     }
 
@@ -1213,16 +1689,25 @@ public class MusicPlayerScreen extends Screen {
     }
 
     private void drawAlbum(DrawContext ctx, SongInfo song, float x, float y, float size, float radius) {
+        drawAlbum(ctx, song, x, y, size, radius, BERRY, ACCENT);
+    }
+
+    /**
+     * @param placeholder 封面没加载出来时的占位底色
+     * @param iconColor   占位图标颜色
+     */
+    private void drawAlbum(DrawContext ctx, SongInfo song, float x, float y, float size, float radius,
+                           int placeholder, int iconColor) {
         if (song != null && song.id == albumSongId && albumTexture != null) {
             org.joml.Matrix4f pose = ctx.getPoseStack().last().pose();
             DrawContext.getRoundedRectShader().drawTextured(pose, x, y, x + size, y + size,
                     radius, radius, radius, radius, 0xFFFFFFFF, albumTexture.getGlId(), 0, 0, 1, 1);
             return;
         }
-        // 封面还没加载出来时的占位。用主题色而不是写死的土黄，这样跟着换歌配色一起变。
-        ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(x, y, size, size, radius), new Paint().setColor(BERRY));
+        // 封面还没加载出来时的占位。
+        ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(x, y, size, size, radius), new Paint().setColor(placeholder));
         float iconY = y + (size - ICON_LARGE.getMetrics().capHeight()) * 0.5f + 8.0f;
-        drawCentered(ICON_MUSIC, x, iconY, size, ICON_LARGE, ACCENT);
+        drawCentered(ICON_MUSIC, x, iconY, size, ICON_LARGE, iconColor);
     }
 
     private List<SongInfo> recommendations() {
@@ -1290,6 +1775,8 @@ public class MusicPlayerScreen extends Screen {
         }
         double designX = toDesignX(mouseX);
         double designY = toDesignY(mouseY);
+        // 先记下按到了哪个沉浸式页按钮（按下状态要撑到松手），再走通用的点击区
+        pressPlayerButton(mouseX, mouseY);
         for (int i = clickAreas.size() - 1; i >= 0; i--) {
             ClickArea area = clickAreas.get(i);
             if (!area.contains(designX, designY)) {
@@ -1324,6 +1811,11 @@ public class MusicPlayerScreen extends Screen {
 
     @Override
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        // 松手就把按下的弹簧放回去，图标会弹一下
+        if (playerPressedButton >= 0) {
+            playerBtnPress[playerPressedButton].setTarget(0.0);
+            playerPressedButton = -1;
+        }
         if (button == 0 && dragTarget == DragTarget.PROGRESS && pendingProgress >= 0) {
             commitProgress(pendingProgress);
             pendingProgress = -1;
@@ -1473,7 +1965,12 @@ public class MusicPlayerScreen extends Screen {
                 System.err.println("[MusicPlayer] No playable URL for " + song.name);
                 return;
             }
-            if (song.duration <= 0 && result.size() > 0) {
+            // 优先用播放地址接口顺带返回的准确时长（网易的 time 字段）。
+            // 搜索接口经常不给时长，之前只能拿文件大小去估，进度条和倒计时会一直是错的；
+            // 而网易官方 source 那边 size 恒为 0，连估都估不出来。
+            if (result.durationMs() > 0) {
+                song.duration = result.durationMs();
+            } else if (song.duration <= 0 && result.size() > 0) {
                 song.duration = result.size() * 1000L / 40000;
             }
             startPlayback(song, url, request, autoAdvance);
@@ -1540,6 +2037,10 @@ public class MusicPlayerScreen extends Screen {
             if (result == null || result.url() == null || result.url().isBlank()
                     || MusicPlayer.AUDIO_PLAYER.isPreloadedFor(nextSong)) {
                 return;
+            }
+            // 预加载时顺手把时长补上，轮到这首歌时进度条不至于从 0 开始
+            if (result.durationMs() > 0 && nextSong.duration <= 0) {
+                nextSong.duration = result.durationMs();
             }
             MusicPlayer.AUDIO_PLAYER.preloadNext(nextSong, result.url());
         });
@@ -1690,23 +2191,6 @@ public class MusicPlayerScreen extends Screen {
 
     private static void drawCentered(String text, float x, float y, float width, FontRenderer font, int color) {
         GlHelper.drawText(text, x + (width - GlHelper.getStringWidth(text, font)) * 0.5f, y, font, color);
-    }
-
-    /**
-     * 取能放进给定宽度的最长前缀。
-     *
-     * <p>和 {@link #ellipsize} 的区别是**不加省略号** —— 卡拉OK已唱部分只该取字，
-     * 补个 "..." 会在扫光头部多出三个点。
-     */
-    private static String prefixFitting(String value, FontRenderer font, float maxWidth) {
-        if (value == null || maxWidth <= 0.0f) {
-            return "";
-        }
-        int end = value.length();
-        while (end > 0 && measure(value.substring(0, end), font) > maxWidth) {
-            end--;
-        }
-        return value.substring(0, end);
     }
 
     private static int withAlpha(int color, float alpha) {

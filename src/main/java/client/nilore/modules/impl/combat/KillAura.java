@@ -467,7 +467,7 @@ public class KillAura extends Module {
         this.prevBestHit = this.currentBestHit;
         this.currentBestHit = null;
         if (aimingTarget != null) {
-            this.currentBestHit = RotationUtil.getBestHit(aimingTarget);
+            this.currentBestHit = RotationUtil.getBestHit(aimingTarget, this.shouldIgnoreBlocks(aimingTarget));
             if (this.currentBestHit != null && this.currentBestHit.rotation() != null) {
                 Rotation from = RotationHandler.prevRotation != null
                         ? RotationHandler.prevRotation
@@ -503,7 +503,7 @@ public class KillAura extends Module {
                     this.targetIndex = 0;
                 }
                 Entity nextTarget = targetList.get(this.targetIndex);
-                RotationUtil.BestHitInfo nextHit = RotationUtil.getBestHit(nextTarget);
+                RotationUtil.BestHitInfo nextHit = RotationUtil.getBestHit(nextTarget, this.shouldIgnoreBlocks(nextTarget));
                 if (nextHit != null && nextHit.distance() < 3.0) {
                     break;
                 }
@@ -667,13 +667,27 @@ public class KillAura extends Module {
         // When "Through Walls" is on and the target is close enough, the check is
         // skipped so you can attack through thin walls at close range.
         if (mc.level != null) {
-            boolean skipWallCheck = this.throughWalls.getValue()
-                    && dist <= this.throughWallsRange.getValue().floatValue();
+            boolean skipWallCheck = this.ignoreBlocksAt(dist);
             if (!skipWallCheck && !RotationUtil.canSeeAnyPoint(entity)) {
                 return false;
             }
         }
         return true;
+    }
+
+    /** Through Walls 的生效条件(按"眼睛到碰撞箱最近点"的距离)。 */
+    private boolean ignoreBlocksAt(double dist) {
+        return this.throughWalls.getValue()
+                && dist <= this.throughWallsRange.getValue().floatValue();
+    }
+
+    private boolean shouldIgnoreBlocks(Entity entity) {
+        if (entity == null || mc.player == null) {
+            return false;
+        }
+        double dist = RotationUtil.closestPoint(mc.player.getEyePosition(), entity.getBoundingBox())
+                .distanceTo(mc.player.getEyePosition());
+        return this.ignoreBlocksAt(dist);
     }
 
     private double predictDistance(Entity entity) {

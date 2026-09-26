@@ -63,6 +63,14 @@ implements Closeable {
     private static final ExecutorService EXECUTOR = Executors.newCachedThreadPool();
     private final Object2ObjectMap<ResourceLocation, ObjectList<CustomFont.GlyphEntry>> glyphPageMap = new Object2ObjectOpenHashMap();
     private final float fontSize;
+    /** 是否用合成粗体。字体文件没有 Bold 变体时（中文基本都没有）靠它把笔画撑粗。 */
+    private final boolean bold;
+    /** 合成粗体在纹理里的水平偏移量。随 guiScale 变化，所以每次 initFont 重算。 */
+    private int boldPx;
+    /** 主字体画不出来的字符交给它们兜底（西文字体 + 中文字体混排就靠这个）。 */
+    private final Font[] fallbackFonts;
+    /** 按当前 guiScale 派生过的兜底字体，字形光栅化用的是这一组。 */
+    private Font[] scaledFallbacks = new Font[0];
     private final ObjectList<GlyphPage> glyphPages = new ObjectArrayList();
     private final Char2ObjectArrayMap<Glyph> glyphCache = new Char2ObjectArrayMap();
     private final int pageSize;
@@ -79,6 +87,17 @@ implements Closeable {
     private FontMetricsImpl fontMetrics;
 
     public CustomFont(Font font, float fontSize, int pageSize, int charsPerPage, @Nullable String preloadChars) {
+        this(font, fontSize, pageSize, charsPerPage, preloadChars, false, null);
+    }
+
+    public CustomFont(Font font, float fontSize, int pageSize, int charsPerPage, @Nullable String preloadChars, boolean bold) {
+        this(font, fontSize, pageSize, charsPerPage, preloadChars, bold, null);
+    }
+
+    public CustomFont(Font font, float fontSize, int pageSize, int charsPerPage, @Nullable String preloadChars,
+                      boolean bold, @Nullable Font[] fallbacks) {
+        this.bold = bold;
+        this.fallbackFonts = fallbacks == null ? new Font[0] : fallbacks;
         this.fontSize = fontSize;
         this.pageSize = pageSize;
         this.charsPerPage = charsPerPage;
@@ -87,8 +106,28 @@ implements Closeable {
         this.initFont(font, fontSize);
     }
 
+    /**
+     * 字形图集的分页大小。
+     *
+     * <p>光栅化是**整页**做的：第一次用到某页里任何一个字符，就会把这一页的字符全部渲染出来。
+     * 原来取 256，碰上中文歌词（每个字都可能落在不同的 256 区间）一次要渲染 256 个字形，
+     * 表现就是歌词一出来卡一下。降到 64 之后单次渲染量减少到四分之一，
+     * 而一行歌词通常还挤在同一页里，页数不会涨太多。
+     *
+     * <p>彻底不卡得改成逐字形按需光栅化（像 STB 那样），那是另一个量级的改动。
+     */
+    private static final int DEFAULT_PAGE_SIZE = 64;
+
     public CustomFont(Font font, float fontSize) {
-        this(font, fontSize, 256, 5, null);
+        this(font, fontSize, DEFAULT_PAGE_SIZE, 5, null, false, null);
+    }
+
+    public CustomFont(Font font, float fontSize, boolean bold) {
+        this(font, fontSize, DEFAULT_PAGE_SIZE, 5, null, bold, null);
+    }
+
+    public CustomFont(Font font, float fontSize, boolean bold, @Nullable Font[] fallbacks) {
+        this(font, fontSize, DEFAULT_PAGE_SIZE, 5, null, bold, fallbacks);
     }
 
     private static int alignToPageBoundary(int value, int pageSize) {
@@ -124,6 +163,14 @@ implements Closeable {
         this.initialized = true;
         this.guiScaleCache = (int)ClientBase.mc.getWindow().getGuiScale();
         this.scale = Math.max(2, this.guiScaleCache * 2);
+        // 屏幕上想粗大约 0.5px，但字形是按 scale 倍光栅化进纹理的，
+        // 所以偏移量要按同一个倍率折算成纹理像素。
+        this.boldPx = this.bold ? Math.max(1, Math.round(this.scale * 0.5f)) : 0;
+        // 兜底字体也要按同一个倍率派生，否则中文和西文的笔画粗细、大小会对不上
+        this.scaledFallbacks = new Font[this.fallbackFonts.length];
+        for (int i = 0; i < this.fallbackFonts.length; i++) {
+            this.scaledFallbacks[i] = this.fallbackFonts[i].deriveFont(fontSize * (float) this.scale);
+        }
         this.scaledFont = font.deriveFont(fontSize * (float)this.scale);
         this.fontMetrics = new FontMetricsImpl(this.scaledFont);
         if (this.preloadChars != null && !this.preloadChars.isEmpty()) {
@@ -142,7 +189,8 @@ implements Closeable {
     }
 
     private GlyphPage createGlyphPage(char startChar, char endChar) {
-        GlyphPage glyphPage = new GlyphPage(startChar, endChar, this.scaledFont, CustomFont.getTempResourceLocation(), this.charsPerPage);
+        GlyphPage glyphPage = new GlyphPage(startChar, endChar, this.scaledFont, CustomFont.getTempResourceLocation(),
+                this.charsPerPage, this.boldPx, this.scaledFallbacks);
         this.glyphPages.add(glyphPage);
         return glyphPage;
     }

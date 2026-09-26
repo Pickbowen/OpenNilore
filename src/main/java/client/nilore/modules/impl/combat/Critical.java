@@ -36,7 +36,7 @@ public class Critical extends Module {
     }
     public boolean isReleaseWindow() {
         // res 对齐: 击退收放(Velocity/NoXZ Alink)进行中 Critical 停手, 避免松疾跑打断放包
-        if (!NoXZMode.handlingVelocity) return false;
+        if (NoXZMode.handlingVelocity) return false;
         if (mc.player == null) return false;
         Entity target = KillAura.target;
         if (!(target instanceof LivingEntity living)) {

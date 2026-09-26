@@ -28,6 +28,7 @@ import client.nilore.event.impl.Render2DEvent;
 import client.nilore.event.impl.RenderEvent;
 import client.nilore.modules.Category;
 import client.nilore.modules.Module;
+import client.nilore.modules.impl.render.esp.SkeletonCache;
 import client.nilore.settings.impl.BooleanSetting;
 import client.nilore.settings.impl.ModeSetting;
 import client.nilore.utils.game.EntityUtil;
@@ -53,6 +54,7 @@ public class ESP extends Module {
     private final BooleanSetting animalsSetting = new BooleanSetting("Animals", false);
     private final BooleanSetting itemsSetting = new BooleanSetting("Items", false);
     private final BooleanSetting arrowsSetting = new BooleanSetting("Arrows", true);
+    private final BooleanSetting skeletonSetting = new BooleanSetting("Skeleton", false);
     private final Map<Entity, Pair<Vector4d, Boolean>> entityBoxPositions = new HashMap<>();
     private final BooleanSetting showHealthBarSetting = new BooleanSetting("Show Health Bar", true);
     private final ModeSetting healthBarPositionSetting = new ModeSetting("Health Bar Position", "Bottom", "Top", "Left", "Right").withDefault("Left");
@@ -84,6 +86,7 @@ public class ESP extends Module {
     protected void onDisable() {
         this.entityBoxPositions.clear();
         this.visibleEntities.clear();
+        SkeletonCache.clear();
         super.onDisable();
     }
 
@@ -95,6 +98,13 @@ public class ESP extends Module {
         return entity instanceof ItemEntity && this.itemsSetting.getValue();
     }
 
+    /** Whether the bones of this entity should be captured for the Skeleton overlay. */
+    public boolean shouldTrackSkeleton(Entity entity) {
+        if (mc.player == null || mc.level == null) return false;
+        if (!this.isEnabled() || !this.skeletonSetting.getValue()) return false;
+        return this.shouldShowEntity(entity) && this.isInRange(entity);
+    }
+
     private boolean isInRange(Entity entity) {
         double distSq = mc.player.distanceToSqr(entity);
         return distSq < 10000.0;
@@ -102,6 +112,7 @@ public class ESP extends Module {
 
     @EventTarget
     public void onRender(RenderEvent renderEvent) {
+        SkeletonCache.render();
         if (mc.level == null || mc.player == null) return;
         if (!"Outlined 2D".equals(this.modeSetting.getValue())) {
             this.entityBoxPositions.clear();

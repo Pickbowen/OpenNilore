@@ -31,8 +31,10 @@ final class NeteaseSource implements MusicSource {
 
     @Override
     public CompletableFuture<SongUrlResult> songUrl(long songId) {
-        return NeteaseOfficialApi.songUrl(songId, false).thenApply(url ->
-                url == null ? null : new SongUrlResult(url, 0L));
+        return NeteaseOfficialApi.songUrl(songId, false).thenApply(result ->
+                result == null || result.url() == null
+                        ? null
+                        : new SongUrlResult(result.url(), 0L, result.durationMs()));
     }
 
     @Override

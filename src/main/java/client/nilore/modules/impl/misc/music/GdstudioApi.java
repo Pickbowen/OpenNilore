@@ -83,7 +83,7 @@ public final class GdstudioApi {
                             ? obj.get("url").getAsString() : null;
                     long size = obj.has("size") ? obj.get("size").getAsLong() : 0;
                     System.out.println("[MusicPlayer] Song URL: " + url + " size=" + size);
-                    return url != null ? new MusicSource.SongUrlResult(url, size) : null;
+                    return url != null ? new MusicSource.SongUrlResult(url, size, 0L) : null;
                 });
     }
 

@@ -7,22 +7,35 @@ public final class FontRenderer {
     private final String fontName;
     @Getter
     private final float size;
+    /** 是否使用合成粗体（字形重复绘制撑粗）。 */
+    @Getter
+    private final boolean bold;
     private CustomFont customFont;
 
     public FontRenderer(String var1, float var2) {
+        this(var1, var2, false);
+    }
+
+    public FontRenderer(String var1, float var2, boolean var3) {
         this.fontName = var1;
         this.size = var2;
+        this.bold = var3;
     }
 
     public FontRenderer(CustomFont var1, float var2) {
+        this(var1, var2, false);
+    }
+
+    public FontRenderer(CustomFont var1, float var2, boolean var3) {
         this.fontName = null;
         this.size = var2;
         this.customFont = var1;
+        this.bold = var3;
     }
 
     public CustomFont getFont() {
         if (this.customFont == null && this.fontName != null) {
-            this.customFont = Fonts.getCustomFont(this.fontName, this.size);
+            this.customFont = Fonts.getCustomFont(this.fontName, this.size, this.bold);
         }
 
         return this.customFont;

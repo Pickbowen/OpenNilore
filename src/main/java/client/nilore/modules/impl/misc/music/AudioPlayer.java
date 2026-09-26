@@ -12,6 +12,8 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.URI;
 import java.util.Arrays;
+import client.nilore.modules.impl.misc.music.dsp.AutomixPlanner;
+import client.nilore.modules.impl.misc.music.dsp.BeatDetector;
 import client.nilore.modules.impl.misc.music.dsp.ChorusDetector;
 import client.nilore.modules.impl.misc.music.dsp.PitchGlide;
 import java.nio.ByteBuffer;
@@ -278,6 +280,11 @@ public class AudioPlayer {
                         ChorusDetector.Result r = ChorusDetector.detect(mono, sampleRate);
                         chorusStart = r.chorusStartSec;
                         chorusDur = r.chorusDurationSec;
+                        // 顺手把节拍网格也算出来（同一份 mono 数据，不额外解码）。
+                        // automix 靠它把切歌点落在小节线上；分析不出来也不影响播放。
+                        song.beat = BeatDetector.detect(mono, sampleRate);
+                        // automix：跳过前奏的入口。比「跳副歌」更接近真实混音的做法。
+                        song.introEndSec = AutomixPlanner.introEntryMs(mono, sampleRate) / 1000.0f;
                     } catch (Exception e) {
                         System.err.println("[MusicPlayer] Chorus detect failed: " + e.getMessage());
                     }
@@ -328,20 +335,20 @@ public class AudioPlayer {
         this.seekDisplayMs = -1;
         // jump the incoming track to its chorus entrance instead of 00:00 so the
         // seamless transition lands on the peak of the next song
-        long chorusOffset = computeChorusByteOffset(track, fadeMs);
-        this.crossfadeStartOffset = chorusOffset;
-        if (chorusOffset > 0L && track.format != null) {
+        long startOffset = computeStartByteOffset(track, fadeMs);
+        this.crossfadeStartOffset = startOffset;
+        if (startOffset > 0L && track.format != null) {
             byte[] glided = buildGlidedPcm(track.pcm, track.format.getChannels(),
-                    (long) track.format.getSampleRate(), chorusOffset);
+                    (long) track.format.getSampleRate(), startOffset);
             track = new PreloadedTrack(track.song, track.url, track.format, glided,
                     track.chorusStartSec, track.chorusDurationSec);
             this.preloaded = track;   // playInternal resumes from the same array after the fade
-            long chorusMs = chorusOffset * 1000L
+            long startMs = startOffset * 1000L
                     / ((long) track.format.getSampleRate() * track.format.getFrameSize());
-            // clock starts at the chorus so the progress bar / lyrics align immediately
-            this.playStartMs = System.currentTimeMillis() - chorusMs;
-            System.out.println("[MusicPlayer] Crossfade starts next track at chorus "
-                    + chorusMs + "ms (offset=" + chorusOffset + "B)");
+            // 时钟直接从切入点开始算，进度条和歌词立刻对齐
+            this.playStartMs = System.currentTimeMillis() - startMs;
+            System.out.println("[MusicPlayer] Automix切入下一首 @" + startMs
+                    + "ms (offset=" + startOffset + "B)");
         }
         Runnable notifier = onCrossfadeTrackListener;
         if (notifier != null) {
@@ -358,20 +365,48 @@ public class AudioPlayer {
     // Byte offset of the chorus entrance (frame-aligned). Valid only when the
     // chorus leaves room for a 1s glide head and enough audio after it to finish
     // the fade — otherwise a mid-fade EOF would trip the failure-restore path.
-    private long computeChorusByteOffset(PreloadedTrack track, long fadeMs) {
+    private long computeStartByteOffset(PreloadedTrack track, long fadeMs) {
         if (track == null || track.format == null || track.pcm == null) return 0L;
         int sampleRate = (int) track.format.getSampleRate();
         int frameSize = track.format.getFrameSize();
-        if (sampleRate <= 0 || frameSize <= 0 || track.chorusStartSec <= 0f) return 0L;
-        // clamp into [0, MAX_CHORUS_JUMP_SEC]: keep the detected chorus position
-        // as-is when it is inside the window, and land on the nearest allowed
-        // boundary when it overshoots.
-        float chorusStart = Math.max(0f, Math.min(track.chorusStartSec, MAX_CHORUS_JUMP_SEC));
-        long offset = (long) (chorusStart * sampleRate) * frameSize;
+        if (sampleRate <= 0 || frameSize <= 0) return 0L;
+        // automix 算出来的「跳过前奏」入口优先；没有就退回副歌检测的位置。
+        // 前者是人声/主歌起点（从那儿进最自然），后者只是「高潮在哪」。
+        float startSec = track.song != null && track.song.introEndSec > 0f
+                ? track.song.introEndSec
+                : track.chorusStartSec;
+        if (startSec <= 0f) return 0L;
+        startSec = Math.max(0f, Math.min(startSec, MAX_CHORUS_JUMP_SEC));
+        // 吸附到小节线：automix 的入口本来就是按 B 的小节线算的，
+        // 副歌位置则靠这一下对齐，免得切在一句中间。
+        BeatDetector.BeatGrid grid = track.song == null ? null : track.song.beat;
+        if (grid != null && grid.bpm > 0f) {
+            startSec = Math.max(0f, grid.snapToBar(startSec * 1000f) / 1000f);
+        }
+        long offset = (long) (startSec * sampleRate) * frameSize;
         long headBytes = (long) (GLIDE_HEAD_SEC * sampleRate) * frameSize;
         long fadeBytes = (fadeMs * sampleRate * frameSize) / 1000L;
         if (offset < 0L || offset + headBytes + fadeBytes > track.pcm.length) return 0L;
         return offset;
+    }
+
+    /**
+     * 把淡出时长凑成整小节，让淡出起点落在小节线上。
+     *
+     * <p>歌曲一般收在小节线上，所以「结束时刻 − 整数个小节」自然还是小节线。
+     * 这样 A 是被完整走完一个乐句才交出去，而不是半句硬切。
+     */
+    private static long alignFadeToBar(SongInfo song, long fadeMs) {
+        BeatDetector.BeatGrid grid = song == null ? null : song.beat;
+        if (grid == null || grid.bpm <= 0f) {
+            return fadeMs;
+        }
+        float barMs = grid.barPeriodMs();
+        if (barMs <= 0f || barMs > fadeMs) {
+            return fadeMs;
+        }
+        long bars = Math.max(1L, Math.round(fadeMs / barMs));
+        return Math.max(500L, Math.round(bars * barMs));
     }
 
     // New array: pcm[0..offset) untouched + chorus entrance 1s glided 0.94 -> 1.0
@@ -905,6 +940,7 @@ public class AudioPlayer {
                     }
                     if (remaining <= transitionMs) {
                         long fadeMs = Math.max(500, Math.min(transitionMs, remaining));
+                        fadeMs = alignFadeToBar(song, fadeMs);
                         startCrossfade(preloaded, generation, fadeMs);
                     }
                 }
