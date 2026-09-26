@@ -242,12 +242,14 @@ public final class NeteaseOfficialApi {
     /**
      * 请求的音频编码。
      *
-     * <p>同一个 {@code exhigh} 档，配 mp3 是 320kbps、配 aac 是 256kbps——
-     * aac 在同等听感下码率更低、效率更高，所以走 aac。
-     * 项目依赖里有 jlayer + mp3spi，走 mp3 一定解得了；aac 靠 JDK 自带解码器，
-     * 万一某个环境没带，把这里改成 "mp3" 即可。
+     * <p><b>只能用 mp3</b>：播放侧走 JDK 的 {@code AudioSystem}，而这个环境里只装了
+     * jlayer + mp3spi（见 build.gradle），解不了 aac——换成 "aac" 的表现就是
+     * 每播一段突然静音（解码器中途失败，不是彻底没声音）。
+     *
+     * <p>代价是同档位的码率：{@code exhigh} 配 mp3 是 320kbps，配 aac 是 256kbps。
+     * 想再往上只能走 {@code lossless}，但那是 FLAC，得额外加一个 FLAC 解码库。
      */
-    private static final String ENCODE_TYPE = "aac";
+    private static final String ENCODE_TYPE = "mp3";
 
     /** 播放地址 + 时长。 */
     public record PlayerUrl(String url, long durationMs) {
