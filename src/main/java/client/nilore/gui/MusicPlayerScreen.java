@@ -1965,10 +1965,10 @@ public class MusicPlayerScreen extends Screen {
                 System.err.println("[MusicPlayer] No playable URL for " + song.name);
                 return;
             }
-            // 优先用播放地址接口顺带返回的准确时长（网易的 time 字段）。
-            // 搜索接口经常不给时长，之前只能拿文件大小去估，进度条和倒计时会一直是错的；
-            // 而网易官方 source 那边 size 恒为 0，连估都估不出来。
-            if (result.durationMs() > 0) {
+            // 这个值只用来兜底，不能覆盖已有的时长。
+            // 解码过整首 PCM 的歌已经有准确值了，而网易在这个接口偶尔会返回试听片段的长度——
+            // 采纳它的话，界面会以为歌已经播完，播到那儿就自动跳下一首。
+            if (song.duration <= 0 && result.durationMs() > 0) {
                 song.duration = result.durationMs();
             } else if (song.duration <= 0 && result.size() > 0) {
                 song.duration = result.size() * 1000L / 40000;

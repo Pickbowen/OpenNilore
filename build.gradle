@@ -257,6 +257,11 @@ tasks.named('jar', Jar).configure {
 // The DLL loader only embeds a single JAR — dependencies must be baked in.
 tasks.named('shadowJar', com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar).configure {
     configurations = [project.configurations.bundle]
+    // jlayer / mp3spi 是靠 SPI 注册的（META-INF/services/javax.sound.sampled.spi.AudioFileReader
+    // 之类的文件），zxing 也有自己的 service 文件。shadow 默认遇到同名文件是覆盖而不是合并，
+    // 打包时这些注册声明会被丢掉一部分——解码器就注册不全，表现为能解开头、读到后面失败
+    // （runClient 走 minecraftLibrary 直挂 classpath，不经过这一步，所以那边一直正常）。
+    mergeServiceFiles()
     archiveClassifier.set('')
     // Merge into the same file as jar so reobfJar and obfuscateClasses see it
     destinationDirectory.set(jar.archiveFile.get().asFile.parentFile)

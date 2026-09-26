@@ -6,6 +6,9 @@ import javax.sound.sampled.AudioSystem;
 import javax.sound.sampled.DataLine;
 import javax.sound.sampled.FloatControl;
 import javax.sound.sampled.SourceDataLine;
+import javazoom.spi.mpeg.sampled.file.MpegAudioFileReader;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.io.BufferedInputStream;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -58,6 +61,8 @@ public class AudioPlayer {
     private volatile boolean usePreload;
 
     // crossfade: overlap fade-out/fade-in between current and preloaded next track
+    private static final Logger LOGGER = LoggerFactory.getLogger("OpenZen/Music");
+
     private volatile long crossfadeMs = 12000;
     private volatile boolean crossfadeActive;
     private volatile boolean glideEnabled = true;
@@ -232,10 +237,37 @@ public class AudioPlayer {
         thread.start();
     }
 
+    /**
+     * 打开音频流。
+     *
+     * <p>先走标准路径：{@code AudioSystem} 通过 SPI（{@code META-INF/services}）找解码器。
+     *
+     * <p><b>为什么必须留兜底</b>：DLL 注入时 mod 挂在自定义 ClassLoader 上，
+     * 那些 service 文件未必会被 ServiceLoader 扫到，{@code AudioSystem} 于是直接抛
+     * {@code UnsupportedAudioFileException}。兜底换成 jlayer 的 reader 直接建流，
+     * 完全绕开 ServiceLoader。
+     *
+     * <p><b>失败原因用 LOGGER 而不是 println</b>：注入版没有控制台，
+     * {@code System.out} 会被丢掉，只有走 logger 才能落进 {@code logs/latest.log}。
+     */
+    private static AudioInputStream openAudioStream(String url) throws Exception {
+        try {
+            return AudioSystem.getAudioInputStream(
+                    new BufferedInputStream(MusicHttp.getInputStream(URI.create(url)).body()));
+        } catch (Exception first) {
+            LOGGER.warn("[Music] AudioSystem 打不开音频流，url={}，原因={}", url, first.toString());
+            try {
+                return new MpegAudioFileReader().getAudioInputStream(
+                        new BufferedInputStream(MusicHttp.getInputStream(URI.create(url)).body()));
+            } catch (Exception second) {
+                LOGGER.error("[Music] jlayer 直解也失败，url={}，原因={}", url, second.toString());
+                throw second;
+            }
+        }
+    }
+
     private PreloadedTrack decodePreload(SongInfo song, String url, long generation) throws Exception {
-        MusicHttp.StreamResponse response = MusicHttp.getInputStream(URI.create(url));
-        BufferedInputStream bis = new BufferedInputStream(response.body());
-        AudioInputStream rawStream = AudioSystem.getAudioInputStream(bis);
+        AudioInputStream rawStream = openAudioStream(url);
         try {
             AudioFormat baseFormat = rawStream.getFormat();
             AudioFormat decoded = new AudioFormat(
@@ -285,6 +317,13 @@ public class AudioPlayer {
                         song.beat = BeatDetector.detect(mono, sampleRate);
                         // automix：跳过前奏的入口。比「跳副歌」更接近真实混音的做法。
                         song.introEndSec = AutomixPlanner.introEntryMs(mono, sampleRate) / 1000.0f;
+                        // 解码出来的 PCM 长度才是最准的时长。
+                        // 搜索接口和播放地址接口给的值都可能是试听片段的长度（未登录/无 VIP 时），
+                        // 那个值一旦偏小，界面会以为歌已经播完，立刻跳下一首。
+                        long exactMs = mono.length * 1000L / sampleRate;
+                        if (exactMs > 0L) {
+                            song.duration = exactMs;
+                        }
                     } catch (Exception e) {
                         System.err.println("[MusicPlayer] Chorus detect failed: " + e.getMessage());
                     }
@@ -742,9 +781,7 @@ public class AudioPlayer {
                 }
             }
             if (decoded == null) {
-                MusicHttp.StreamResponse response = MusicHttp.getInputStream(URI.create(url));
-                BufferedInputStream bis = new BufferedInputStream(response.body());
-                rawStream = AudioSystem.getAudioInputStream(bis);
+                rawStream = openAudioStream(url);
                 AudioFormat baseFormat = rawStream.getFormat();
 
                 decoded = new AudioFormat(
