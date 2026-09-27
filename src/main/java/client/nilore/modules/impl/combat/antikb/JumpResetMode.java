@@ -118,7 +118,6 @@ public class JumpResetMode extends AntiKBMode {
         if (motion.getId() != player.getId()) return;
         this.knockbackPacket = motion;
 
-        // 计算击退方向旋转(可选)
         boolean wantRotate = AntiKB.INSTANCE.rotate.getValue() || AntiKB.INSTANCE.followDirection.getValue();
         if (wantRotate) {
             float xMotion = (float) (motion.getXa() / 8000.0);
@@ -134,7 +133,6 @@ public class JumpResetMode extends AntiKBMode {
             }
         }
 
-        // 只在地面才跳(jump reset)
         if (player.onGround()) {
             isJumping = true;
             this.jumpTicks = 1;

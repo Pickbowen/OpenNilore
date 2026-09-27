@@ -5,6 +5,7 @@ import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
 import lombok.Generated;
@@ -15,6 +16,8 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.projectile.ProjectileUtil;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.EntityHitResult;
@@ -24,6 +27,7 @@ import client.nilore.ClientBase;
 import client.nilore.utils.math.MathUtil;
 import client.nilore.utils.rotation.Rotation;
 import client.nilore.utils.rotation.RotationHandler;
+import client.nilore.utils.rotation.RotationSmoother;
 
 public final class RotationUtil
 extends ClientBase {
@@ -553,9 +557,38 @@ extends ClientBase {
     private static boolean isHitValid(Vec3 eyePos, HitResult hitResult, Entity entity) {
         if (hitResult.getType() == HitResult.Type.ENTITY && ((EntityHitResult)hitResult).getEntity() == entity) {
             Vec3 hitLocation = hitResult.getLocation();
-            return RotationUtil.isInsideAABB(RotationUtil.getEntityBB(entity), eyePos) || hitLocation.distanceTo(eyePos) <= 3.0;
+            return RotationUtil.isInsideAABB(RotationUtil.getEntityBB(entity), eyePos) || hitLocation.distanceTo(eyePos) <= reachLimit;
         }
         return false;
+    }
+
+    // ------------------------------------------------------------------
+    // 攻击距离(reach)口径
+    // ------------------------------------------------------------------
+
+    /**
+     * 攻击距离上限(眼睛 → 碰撞箱最近点), 单位格。
+     *
+     * 这是服务端/反作弊的判定口径(vanilla 生存 3.0), 客户端必须按同一把尺子卡,
+     * 否则就会出现"客户端认为能打、服务端认为超范围"。默认 3.0, 由 KillAura 的
+     * Reach 设置每 tick 同步进来。
+     */
+    private static double reachLimit = 3.0;
+
+    public static void setReachLimit(double reach) {
+        reachLimit = reach;
+    }
+
+    public static double getReachLimit() {
+        return reachLimit;
+    }
+
+    public static boolean isWithinReach(Entity entity) {
+        if (entity == null || mc.player == null) {
+            return false;
+        }
+        Vec3 eyePos = mc.player.getEyePosition(1.0f);
+        return RotationUtil.closestPoint(eyePos, entity.getBoundingBox()).distanceTo(eyePos) <= reachLimit;
     }
 
     /**
@@ -683,6 +716,171 @@ extends ClientBase {
         float cosPitch = (float)(-Math.cos(-rotation.getPitch() * ((float)Math.PI / 180)));
         float sinPitch = (float)Math.sin(-rotation.getPitch() * ((float)Math.PI / 180));
         return new Vec3(sinYaw * cosPitch, sinPitch, cosYaw * cosPitch);
+    }
+
+    // ------------------------------------------------------------------
+    // 参考端(package_074)转动链路: 瞄准点搜索 + 限速前进 + GCD 量化
+    // ------------------------------------------------------------------
+
+    /** 身体采样高度分数(参考端 јсхoѕ 的 {0.75, 0.5, 0.3, 0.1})。 */
+    private static final double[] AIM_HEIGHT_FRACTIONS = {0.75, 0.5, 0.3, 0.1};
+
+    /**
+     * 由"眼睛 → 目标点"算 rotation(参考端 oeo/aje)。
+     *
+     * yaw 相对当前 rotation 取最短增量: 参考端拿 mc.player.getYRot() 当基准, 是因为它的
+     * RotationManager 会把 rotation 同步写进玩家; nilore 是静默转头, 语义等价物是上一 tick
+     * 真正发出去的 rotation({@link RotationHandler#prevRotation})。
+     */
+    public static Rotation rotationToPoint(Vec3 from, Vec3 to) {
+        Vec3 delta = to.subtract(from);
+        double horizontalDist = Math.hypot(delta.x, delta.z);
+        float yaw = (float)(Math.toDegrees(Math.atan2(delta.z, delta.x)) - 90.0);
+        float pitch = (float)(-Math.toDegrees(Math.atan2(delta.y, horizontalDist)));
+        Rotation current = RotationHandler.prevRotation;
+        float baseYaw = current != null
+                ? current.getYaw()
+                : (mc.player != null ? mc.player.getYRot() : 0.0f);
+        yaw = baseYaw + Mth.wrapDegrees(yaw - baseYaw);
+        return new Rotation(yaw, Mth.clamp(pitch, -90.0f, 90.0f));
+    }
+
+    /** 每轴最多走 step 度(参考端 jһіеоa); step <= 0 时原地不动。 */
+    private static Rotation stepTowards(Rotation from, Rotation to, double step) {
+        if (from == null || to == null) {
+            return to;
+        }
+        if (step <= 0.0) {
+            return from;
+        }
+        float limit = (float)step;
+        float yawDelta = Mth.clamp(Mth.wrapDegrees(to.getYaw() - from.getYaw()), -limit, limit);
+        float pitchDelta = Mth.clamp(to.getPitch() - from.getPitch(), -limit, limit);
+        return new Rotation(from.getYaw() + yawDelta,
+                Mth.clamp(from.getPitch() + pitchDelta, -90.0f, 90.0f));
+    }
+
+    /**
+     * 参考端 рshхһ: 每轴限速前进, 再锚定在上一次发出的 rotation 上做灵敏度 GCD 量化。
+     * 角误差小于 0.05° 时直接到位(参考端的收敛短路), 避免在死区里反复量化。
+     */
+    public static Rotation smoothRotationTo(Rotation from, Rotation to, double speed) {
+        if (from == null || to == null) {
+            return to;
+        }
+        double yawDiff = to.getYaw() - from.getYaw();
+        double pitchDiff = to.getPitch() - from.getPitch();
+        if (Math.hypot(yawDiff, pitchDiff) < 0.05) {
+            return to;
+        }
+        return RotationSmoother.patchConstantRotation(RotationUtil.stepTowards(from, to, speed), from);
+    }
+
+    /**
+     * 参考端 јсхoѕ(): 在目标身上找一个"raytrace 真能打到"的瞄准点。
+     *
+     * 顺序是 眼睛 → 沿身体高度的 0.75/0.5/0.3/0.1(水平坐标取"自己眼睛"在目标箱体内
+     * clamp 0.05) → 目标中心列, 每一步都用 {@link #canHitPoint} 验收。全都打不到时返回
+     * 眼睛点交给上层处理(上层还有 reach 门兜着, 不会因此打出去)。
+     */
+    public static Vec3 findAimPoint(Entity entity, double range) {
+        if (entity == null || mc.player == null || mc.level == null) {
+            return null;
+        }
+        Vec3 eyePoint = entity.getEyePosition();
+        // 眼位埋在细雪里时目标真实可打的是上半身, 参考端改用 position + eyeHeight*0.3
+        Vec3 fallback = mc.level.getBlockState(BlockPos.containing(eyePoint)).is(Blocks.POWDER_SNOW)
+                ? entity.position().add(0.0, entity.getEyeHeight() * 0.3, 0.0)
+                : eyePoint;
+        if (RotationUtil.canHitPoint(entity, fallback, range)) {
+            return fallback;
+        }
+        AABB aABB = entity.getBoundingBox();
+        Vec3 myEye = mc.player.getEyePosition();
+        double x = Mth.clamp(myEye.x, aABB.minX + 0.05, aABB.maxX - 0.05);
+        double z = Mth.clamp(myEye.z, aABB.minZ + 0.05, aABB.maxZ - 0.05);
+        double height = aABB.maxY - aABB.minY;
+        for (double fraction : AIM_HEIGHT_FRACTIONS) {
+            double y = aABB.minY + height * fraction;
+            Vec3 clampedPoint = new Vec3(x, y, z);
+            if (RotationUtil.canHitPoint(entity, clampedPoint, range)) {
+                return clampedPoint;
+            }
+            Vec3 columnPoint = new Vec3(entity.getX(), y, entity.getZ());
+            if (RotationUtil.canHitPoint(entity, columnPoint, range)) {
+                return columnPoint;
+            }
+        }
+        return fallback;
+    }
+
+    /** 参考端 іxhx(): 从自己眼睛朝该点算 rotation, raytrace 命中目标本身才算数。 */
+    private static boolean canHitPoint(Entity entity, Vec3 point, double range) {
+        Rotation rotation = RotationUtil.rotationToPoint(mc.player.getEyePosition(), point);
+        return RotationUtil.rayTraceForAim(rotation, range) instanceof EntityHitResult hit
+                && hit.getEntity() == entity;
+    }
+
+    /**
+     * 参考端 еaес(): 从眼睛沿 rotation 走 range, 方块 clip(OUTLINE, 不裁剪流体) + 手写实体
+     * 拾取, 取近者。实体只按 {@code getPickRadius()} 膨胀 —— 参考端传的额外膨胀是 0.0f,
+     * 这里保持一致: 多一分膨胀就是多一分超范围命中。
+     */
+    public static HitResult rayTraceForAim(Rotation rotation, double range) {
+        if (mc.player == null || mc.level == null || rotation == null) {
+            return null;
+        }
+        Vec3 eyePos = mc.player.getEyePosition(1.0f);
+        Vec3 lookVec = RotationUtil.directionFromRotation(rotation);
+        Vec3 endPos = eyePos.add(lookVec.scale(range));
+
+        BlockHitResult blockHit = mc.level.clip(new ClipContext(eyePos, endPos,
+                ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, mc.player));
+        double blockDist = blockHit.getType() == HitResult.Type.MISS
+                ? range
+                : blockHit.getLocation().distanceTo(eyePos);
+
+        Entity hitEntity = null;
+        Vec3 hitVec = null;
+        double bestDist = blockDist;
+        AABB searchBox = mc.player.getBoundingBox().expandTowards(lookVec.scale(range)).inflate(1.0);
+        List<Entity> candidates = mc.level.getEntities(mc.player, searchBox,
+                candidate -> !candidate.isSpectator() && candidate.isPickable());
+        for (Entity candidate : candidates) {
+            AABB box = candidate.getBoundingBox().inflate(candidate.getPickRadius());
+            Optional<Vec3> clip = box.clip(eyePos, endPos);
+            if (box.contains(eyePos)) {
+                if (bestDist < 0.0) {
+                    continue;
+                }
+                hitEntity = candidate;
+                hitVec = clip.orElse(eyePos);
+                bestDist = 0.0;
+                continue;
+            }
+            if (clip.isEmpty()) {
+                continue;
+            }
+            double dist = eyePos.distanceTo(clip.get());
+            if (dist >= bestDist && bestDist != 0.0) {
+                continue;
+            }
+            if (candidate.getRootVehicle() == mc.player.getRootVehicle()) {
+                if (bestDist != 0.0) {
+                    continue;
+                }
+                hitEntity = candidate;
+                hitVec = clip.get();
+                continue;
+            }
+            hitEntity = candidate;
+            hitVec = clip.get();
+            bestDist = dist;
+        }
+        if (hitEntity != null && (bestDist < blockDist || blockHit.getType() == HitResult.Type.MISS)) {
+            return new EntityHitResult(hitEntity, hitVec);
+        }
+        return blockHit;
     }
 
     @Generated

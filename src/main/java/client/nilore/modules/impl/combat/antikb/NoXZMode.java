@@ -29,7 +29,6 @@ import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
@@ -46,6 +45,7 @@ import client.nilore.event.impl.TickEvent;
 import client.nilore.modules.impl.combat.AntiKB;
 import client.nilore.modules.impl.combat.KillAura;
 import client.nilore.modules.impl.player.Stuck;
+import client.nilore.utils.game.RotationUtil;
 import client.nilore.utils.misc.ChatUtil;
 import client.nilore.utils.render.RenderUtil;
 
@@ -75,19 +75,10 @@ public class NoXZMode
         return this.velocityHandled;
     }
 
-    /**
-     * 抄参考端: NoXZ 处理期(击退包挂起 / 攻击序列进行中)内疾跑由 NoXZ 自己管理,
-     * KillAura 的停疾跑逻辑不得介入(挂起期停疾跑会破坏"落地时疾跑中才放行"的释放条件)。
-     */
     public static boolean isBusy() {
         return handlingVelocity || velocityHandled || isAttacking;
     }
 
-    /**
-     * 抄参考端 xcаohoi > 0 攻击窗口(此时参考端用 priority 0 cancel KillAura 攻击事件):
-     * 仅在攻击序列进行中 KillAura 让位, 保证单一攻击源; 击退包挂起期(handlingVelocity)
-     * 不算窗口, KillAura 照常出刀(参考端攻击门对 pending 显式豁免)。
-     */
     public static boolean isInAttackWindow() {
         return isAttacking || attackCount > 0;
     }
@@ -158,7 +149,6 @@ public class NoXZMode
             return;
         }
         if (this.isSuspending) {
-            // Alink 收放包: 暂缓服务器→客户端包, 放行自己的 Move 包
             if (packet instanceof ClientboundMoveEntityPacket move && move.getEntity(mc.level) == mc.player) {
                 return;
             }
@@ -195,7 +185,6 @@ public class NoXZMode
                 if (this.sprintBoostCounter >= 100) {
                     this.shouldJump = true;
                 }
-                // res 对齐: 收击退包瞬间不 gate 疾跑(res VelocityModule 收包一律暂缓), 疾跑只在落地放行当闸
                 boolean canAttack = this.isValidTarget(target = this.getAttackTarget());
                 if (!mc.player.onGround()) {
                     this.enterSuspension(motionPacket);
@@ -256,17 +245,11 @@ public class NoXZMode
         }
         if (this.isSuspending) {
             ++this.delayTicks;
-            // 抄参考端联合协议: 挂起期疾跑由 NoXZ 接管强制维持。释放条件要求"落地时
-            // 疾跑中", 而 KillAura KeepSprint 在交火期会把疾跑停掉 —— 参考端靠 caѕһa
-            // 的击退模式例外短路 + 每 tick 压键的 Sprint 模块在窗口内重新起跑; 这里
-            // 直接每 tick 强制, 不依赖鼠标帧触发的 Sprint 模块。W 未按下或正在使用
-            // 物品时不强制, 避免发出服务端会判非法的 START_SPRINTING。
             if (mc.player.input != null && mc.player.input.hasForwardImpulse()
                     && !mc.player.isUsingItem() && !mc.player.isSprinting()) {
                 mc.options.keySprint.setDown(true);
                 mc.player.setSprinting(true);
             }
-            // Alink 超时: 暂缓太久直接放弃, 放行全部暂缓包并重置
             if (this.delayTicks >= AntiKB.INSTANCE.maxDelayTicks.getValue().intValue()) {
                 if (AntiKB.INSTANCE.debugLog.getValue()) {
                     ChatUtil.print("Alink Timeout");
@@ -292,7 +275,6 @@ public class NoXZMode
                 boolean canAttack = this.isValidTarget(target);
                 boolean sprinting = mc.player.isSprinting();
                 if (canAttack && sprinting) {
-                    // 放: 异步放行暂缓的服务器→客户端包(含击退包)
                     this.flushQueue();
                     this.attackTarget = target;
                     this.attacksRemaining = this.getAttackCount(this.knockbackPacket);
@@ -310,14 +292,11 @@ public class NoXZMode
                         this.delayTicks = 0;
                     }
                 } else if (!canAttack) {
-                    // 目标无效: 取消 Alink, 放行暂缓包
                     this.release();
                     if (instantAttackEnabled) {
                         this.instantAttackProgress = 0.0f;
                     }
                 } else {
-                    // res eppоре 对齐: 落地但不在疾跑时不取消 Alink, 保持暂缓等待(超时兜底)
-                    // 疾跑由 onStrafe 在击退窗口内保持, 等恢复疾跑再放行
                 }
                 return;
             }
@@ -346,7 +325,6 @@ public class NoXZMode
         }
         if (this.hitCounter > 0) {
             strafeEvent.setForward(1.0f);
-            // res soіhр 对齐: 击退窗口内保持疾跑, 避免落地时 sprinting=false 导致 Alink 被取消
             if (mc.player.isSprinting() && mc.player.hurtTime <= 9) {
                 strafeEvent.setSprinting(true);
             }
@@ -374,10 +352,8 @@ public class NoXZMode
         float barX = width / 2.0f - barWidth / 2.0f;
         float barY = height / 2.0f + height * 0.10f;
 
-        // 灰黑色背景(整条)
         RenderUtil.drawFilledRect(event.poseStack(), barX, barY, barWidth, barHeight,
                 new Color(30, 30, 36, 180).getRGB());
-        // 青蓝色进度
         float progress = Math.min(1.0f,
                 (float) this.delayTicks / Math.max(1, AntiKB.INSTANCE.maxDelayTicks.getValue().intValue()));
         if (progress > 0.0f) {
@@ -469,18 +445,6 @@ public class NoXZMode
         return 5;
     }
 
-    private double getAABBDistance(Entity entity) {
-        if (mc.player == null) {
-            return Double.MAX_VALUE;
-        }
-        Vec3 eyePos = mc.player.getEyePosition(1.0f);
-        AABB box = entity.getBoundingBox();
-        double clampedX = Math.max(box.minX, Math.min(eyePos.x, box.maxX));
-        double clampedY = Math.max(box.minY, Math.min(eyePos.y, box.maxY));
-        double clampedZ = Math.max(box.minZ, Math.min(eyePos.z, box.maxZ));
-        return eyePos.distanceTo(new Vec3(clampedX, clampedY, clampedZ));
-    }
-
     private Entity getHitResultEntity() {
         Entity hitEntity;
         if (mc.hitResult != null && mc.hitResult.getType() == HitResult.Type.ENTITY && (hitEntity = ((EntityHitResult)mc.hitResult).getEntity()) instanceof LivingEntity && hitEntity != mc.player && hitEntity.isAlive() && !hitEntity.isSpectator()) {
@@ -504,8 +468,7 @@ public class NoXZMode
         if (entity instanceof LivingEntity && ((livingEntity = (LivingEntity)entity).isDeadOrDying() || livingEntity.getHealth() <= 0.0f)) {
             return false;
         }
-        double maxReach = 3.7f;
-        return !(this.getAABBDistance(entity) > maxReach);
+        return RotationUtil.isWithinReach(entity);
     }
 
     private void doAttackSequence(TickEvent tickEvent) {
@@ -513,8 +476,7 @@ public class NoXZMode
             this.clearTarget();
             return;
         }
-        double maxReach = 3.7f;
-        if (this.getAABBDistance(this.attackTarget) > maxReach) {
+        if (!RotationUtil.isWithinReach(this.attackTarget)) {
             this.clearTarget();
             return;
         }
@@ -550,7 +512,7 @@ public class NoXZMode
         mc.player.swing(InteractionHand.MAIN_HAND);
         if (wasSprinting) {
             Vec3 velocity = mc.player.getDeltaMovement();
-            mc.player.setDeltaMovement(velocity.x * 0.61, velocity.y, velocity.z * 0.61);
+            mc.player.setDeltaMovement(velocity.x * 0.6, velocity.y, velocity.z * 0.6);
         }
         if (!AntiKB.INSTANCE.instantAttack.getValue()) {
             if (AntiKB.INSTANCE.debugLog.getValue()) {

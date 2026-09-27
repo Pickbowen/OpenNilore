@@ -69,12 +69,10 @@ import client.nilore.utils.game.EntityUtil;
 import client.nilore.utils.game.ItemUtil;
 import client.nilore.utils.game.RotationUtil;
 import client.nilore.utils.math.MathUtil;
-import client.nilore.utils.misc.ChatUtil;
 import client.nilore.utils.misc.Assets;
 import client.nilore.utils.render.RenderUtil;
 import client.nilore.utils.rotation.Rotation;
 import client.nilore.utils.rotation.RotationHandler;
-import client.nilore.utils.rotation.RotationSmoother;
 import client.nilore.event.EventTarget;
 
 public class KillAura extends Module {
@@ -96,20 +94,15 @@ public class KillAura extends Module {
     public final BooleanSetting infSwitch       = new BooleanSetting("Infinity Switch", false);
     public final BooleanSetting preferBaby      = new BooleanSetting("Prefer Baby", false);
     public final BooleanSetting morePart        = new BooleanSetting("More Particles", false);
-    /**
-     * 抄参考端(package_012)同名选项的语义: KeepSprint = "交火(目标3.5格内)主动停疾跑
-     * + 疾跑中不出刀"。vanilla 在疾跑命中时服务端会 sprint-slash 结算(攻击者自身速度
-     * *0.6 + 服务端重置疾跑), 客户端在疾跑状态下攻击必然与预测分歧 → Grim 模拟 VL;
-     * 停疾跑后攻击发生在非疾跑状态, 根本不触发该结算, 表现为"全程连续出刀、从不停手"
-     * (停疾跑只发生在进入交火的那一个 tick)。关闭时不做任何疾跑操纵, 走 vanilla 行为。
-     */
+
     public final BooleanSetting keepSprint = new BooleanSetting("Keep Sprint", true);
     public final BooleanSetting throughWalls    = new BooleanSetting("Through Walls", false);
     public final NumberSetting throughWallsRange = new NumberSetting("Through Walls Range", 3.0, 1.0, 6.0, 0.1,
             () -> (Boolean) this.throughWalls.getValue());
     public final BooleanSetting ignoreSkipTicks = new BooleanSetting("Ignore skip ticks", false);
     public final BooleanSetting fakeAutoBlock   = new BooleanSetting("Fake AutoBlock", true);
-    public final NumberSetting aimRange    = new NumberSetting("Aim Range", 3.0, 1.0, 6.0, 0.1);
+
+    public final NumberSetting reach       = new NumberSetting("Reach", 3.0, 2.9, 6.0, 0.05);
     public final NumberSetting maxAps      = new NumberSetting("Max APS", 12.0, 1.0, 20.0, 1.0);
     public final NumberSetting minAps      = new NumberSetting("Min APS", 9.0, 1.0, 20.0, 1.0);
     public final NumberSetting switchSize  = new NumberSetting("Switch Size", 1.0, 1.0, 5.0, 1.0,
@@ -122,20 +115,12 @@ public class KillAura extends Module {
     public final ModeSetting priorityMode = new ModeSetting("Priority", "Distance", "FoV", "Health", "None").withDefault("FoV");
     public final ModeSetting targetEsp    = new ModeSetting("Target ESP", "None", "Spiral", "Box", "Tab", "NurikZapen").withDefault("NurikZapen");
 
-    public final BooleanSetting predictionEnabled  = new BooleanSetting("Prediction", true);
-    public final NumberSetting enemyDelayThreshold = new NumberSetting("Enemy Delay Ticks", 4, 1, 5, 1,
-            () -> (Boolean) this.predictionEnabled.getValue());
-    public final NumberSetting selfDelayThreshold  = new NumberSetting("Self Delay Ticks", 2, 1, 5, 1,
-            () -> (Boolean) this.predictionEnabled.getValue());
+    public final NumberSetting rotationSpeed = new NumberSetting("Rotation Speed", 180, 1, 180, 1);
 
-    // Rotation Speed 的量纲是"度/tick": 角误差在它以内一次到位, 超过之后每 tick 至少走这么多。
-    // 有效区间大约 0-90, 所以上限压到 90、步长给到 1(0-30 才是真正"平滑"的档位)。
-    public final NumberSetting rotationSpeed = new NumberSetting("Rotation Speed", 25, 0, 90, 1);
-    public final NumberSetting rotationDrift = new NumberSetting("Drift", 0.1, 0, 5, 0.1);
-    public final NumberSetting rotationJitter = new NumberSetting("Jitter", 0.02, 0, 1, 0.01);
+    public final NumberSetting rotationDrift = new NumberSetting("Drift", 1.0, 0, 3, 0.1);
 
-    private RotationUtil.BestHitInfo currentBestHit;
-    private RotationUtil.BestHitInfo prevBestHit;
+    public final NumberSetting rotationJitter = new NumberSetting("Jitter", 1.0, 0, 3, 0.1);
+
     private int attackTimes;
     private float attacks;
     private int targetIndex;
@@ -143,15 +128,9 @@ public class KillAura extends Module {
     public Rotation rotation;
 
     private Random organicRandom;
-    private double organicTimeAccumulator;
-    /** 漂移/抖动攒下来的、还不足一个灵敏度步长的零头。 */
-    private double organicResidualYaw;
-    private double organicResidualPitch;
-    private double orgFreqYaw1, orgFreqYaw2, orgFreqPitch1, orgFreqPitch2;
-    private double orgPhaseYaw1, orgPhaseYaw2, orgPhasePitch1, orgPhasePitch2;
 
-    /** 转头平滑(惯性+波动)与 GCD 量化, 与 Scaffold 共用同一实现。 */
-    private final RotationSmoother rotSmoother = new RotationSmoother(new Random());
+    private float organicYawOffset;
+    private float organicPitchOffset;
 
     public KillAura() {
         super("KillAura", Category.COMBAT);
@@ -162,7 +141,6 @@ public class KillAura extends Module {
     public void onEnable() {
         this.rotation = null;
         this.reinitOrganicModel();
-        this.rotSmoother.reset();
         this.targetIndex = 0;
         this.attacks = 0.0f;
         target = null;
@@ -174,7 +152,6 @@ public class KillAura extends Module {
     @Override
     public void onDisable() {
         this.attacks = 0.0f;
-        this.rotSmoother.reset();
         target = null;
         aimingTarget = null;
         this.sprintTickCounter = 0;
@@ -185,76 +162,38 @@ public class KillAura extends Module {
 
     private void reinitOrganicModel() {
         this.organicRandom = new Random(System.nanoTime());
-        this.organicTimeAccumulator = 0.0;
-        this.organicResidualYaw = 0.0;
-        this.organicResidualPitch = 0.0;
-        this.orgFreqYaw1 = this.organicRandom.nextDouble() * 0.3 + 0.1;
-        this.orgFreqYaw2 = this.organicRandom.nextDouble() * 0.5 + 0.5;
-        this.orgFreqPitch1 = this.organicRandom.nextDouble() * 0.3 + 0.1;
-        this.orgFreqPitch2 = this.organicRandom.nextDouble() * 0.5 + 0.5;
-        this.orgPhaseYaw1 = this.organicRandom.nextDouble() * Math.PI * 2;
-        this.orgPhaseYaw2 = this.organicRandom.nextDouble() * Math.PI * 2;
-        this.orgPhasePitch1 = this.organicRandom.nextDouble() * Math.PI * 2;
-        this.orgPhasePitch2 = this.organicRandom.nextDouble() * Math.PI * 2;
+        this.organicYawOffset = 0.0f;
+        this.organicPitchOffset = 0.0f;
     }
 
-    private Rotation applyOrganicRotation(Rotation from, Rotation to, float timeDelta) {
-        float rawYawDelta = Mth.wrapDegrees(to.getYaw() - from.getYaw());
-        float rawPitchDelta = to.getPitch() - from.getPitch();
+    private Rotation computeRotation(Entity target, Rotation from, double speed, double range) {
+        Vec3 aimPoint = RotationUtil.findAimPoint(target, range);
+        if (aimPoint == null) {
+            return null;
+        }
+        Rotation base = RotationUtil.rotationToPoint(mc.player.getEyePosition(), aimPoint);
 
-        // Rotation Speed 单位是"度/tick"。先夹回设置自身的上下限, 免得旧配置里还存着超出
-        // 当前范围的值(Setting#setValue 不做钳制)。
-        double speed = Mth.clamp(this.rotationSpeed.getValue().doubleValue(),
-                this.rotationSpeed.getMin().doubleValue(),
-                this.rotationSpeed.getMax().doubleValue());
-        double driftIntensity = this.rotationDrift.getValue().doubleValue();
-        double jitterIntensity = this.rotationJitter.getValue().doubleValue();
+        this.organicYawOffset += (float) ((this.organicRandom.nextDouble() - 0.5)
+                * this.rotationDrift.getValue().doubleValue());
+        this.organicPitchOffset += (float) ((this.organicRandom.nextDouble() - 0.5) * 2.0
+                * this.rotationJitter.getValue().doubleValue());
 
-        // speed=0: 瞬转，不加漂移抖动
-        if (speed <= 0) {
-            return to;
+        Rotation jittered = new Rotation(base.getYaw() + this.organicYawOffset,
+                Mth.clamp(base.getPitch() + this.organicPitchOffset, -90.0f, 90.0f));
+        HitResult probe = RotationUtil.rayTraceForAim(jittered, range);
+        if (!(probe instanceof EntityHitResult hit) || hit.getEntity() != target) {
+            this.organicYawOffset = 0.0f;
+            this.organicPitchOffset = 0.0f;
+            jittered = base;
         }
 
-        float deltaYaw = rawYawDelta * timeDelta;
-        float deltaPitch = rawPitchDelta * timeDelta;
-
-        // 两轴各自独立收敛(人手 yaw/pitch 的肌肉速度本来就不一样, 把两轴锁在同一个步长
-        // 比例上反而是"直线插值"的机器特征)。速度语义与旧实现完全一致 —— speed 以内一步
-        // 到位, 超过之后每 tick 至少收敛掉误差的 TURN_RATIO, 所以调 Rotation Speed 的
-        // 手感不变, 平均速度也不变。实现见 RotationSmoother(与 Scaffold 共用)。
-        deltaYaw = (float) this.rotSmoother.smoothAxisDelta(deltaYaw, speed, true);
-        deltaPitch = (float) this.rotSmoother.smoothAxisDelta(deltaPitch, speed, false);
-
-        this.organicTimeAccumulator += timeDelta;
-
-        double sinYaw = Math.sin(this.organicTimeAccumulator * this.orgFreqYaw1 + this.orgPhaseYaw1)
-                + (this.organicRandom.nextDouble() * 0.1 + 0.45) * Math.sin(this.organicTimeAccumulator * this.orgFreqYaw2 + this.orgPhaseYaw2);
-        double sinPitch = Math.sin(this.organicTimeAccumulator * this.orgFreqPitch1 + this.orgPhasePitch1)
-                + (this.organicRandom.nextDouble() * 0.1 + 0.45) * Math.sin(this.organicTimeAccumulator * this.orgFreqPitch2 + this.orgPhasePitch2);
-        double driftYaw = sinYaw * driftIntensity * timeDelta;
-        double driftPitch = sinPitch * driftIntensity * timeDelta;
-
-        double jitterYaw = (this.organicRandom.nextDouble() * 2 - 1) * jitterIntensity * timeDelta;
-        double jitterPitch = (this.organicRandom.nextDouble() * 2 - 1) * jitterIntensity * timeDelta;
-
-        // 漂移/抖动先攒进残差, 攒够一个灵敏度步长才真的走一格。
-        // 旧实现每 tick 对总和四舍五入, 默认灵敏度下步长 0.15° 而 Drift 只有 0.1°、Jitter
-        // 只有 0.02°, 于是两者几乎全被抹成 0。攒格不丢量, 也不会产生亚步长的"非人手"增量;
-        // 累积出来的偏移最终被主运动的回拉限制在几个步长内, 表现为 ±0.2° 量级的手部微晃。
-        double step = RotationSmoother.sensitivityStep();
-        this.organicResidualYaw += driftYaw + jitterYaw;
-        this.organicResidualPitch += driftPitch + jitterPitch;
-        float organicYaw = RotationSmoother.quantizeToStep(this.organicResidualYaw, step);
-        float organicPitch = RotationSmoother.quantizeToStep(this.organicResidualPitch, step);
-        this.organicResidualYaw -= organicYaw;
-        this.organicResidualPitch -= organicPitch;
-
-        float moveYaw = deltaYaw + organicYaw;
-        float movePitch = deltaPitch + organicPitch;
-
-        float finalYaw = from.getYaw() + moveYaw;
-        float finalPitch = Mth.clamp(from.getPitch() + movePitch, -90.0f, 90.0f);
-        return RotationSmoother.patchConstantRotation(new Rotation(finalYaw, finalPitch), from);
+        Rotation smoothed = RotationUtil.smoothRotationTo(from, jittered, speed);
+        if (smoothed == null
+                || Float.isNaN(smoothed.getYaw()) || Float.isNaN(smoothed.getPitch())
+                || Float.isInfinite(smoothed.getYaw()) || Float.isInfinite(smoothed.getPitch())) {
+            return jittered;
+        }
+        return smoothed;
     }
 
     @EventTarget
@@ -413,6 +352,10 @@ public class KillAura extends Module {
         if (!NiloreClient.isReady()) {
             return;
         }
+        double reach = Mth.clamp(this.reach.getValue().doubleValue(),
+                this.reach.getMin().doubleValue(),
+                this.reach.getMax().doubleValue());
+        RotationUtil.setReachLimit(reach);
         if (mc.screen instanceof AbstractContainerScreen
                 || ItemUtil.hasServerItem()
                 || (Scaffold.INSTANCE != null && Scaffold.INSTANCE.isEnabled())
@@ -424,9 +367,7 @@ public class KillAura extends Module {
                 || this.isWebPlacing()) {
             target = null;
             aimingTarget = null;
-            this.currentBestHit = null;
             this.rotation = null;
-            this.prevBestHit = null;
             targetList.clear();
             this.sprintTickCounter = 0;
             this.attacks = 0.0f;
@@ -438,27 +379,16 @@ public class KillAura extends Module {
                 || this.multiAttack.getValue();
         this.updateTargets();
         aimingTarget = this.getTarget();
-        this.prevBestHit = this.currentBestHit;
-        this.currentBestHit = null;
-        if (aimingTarget != null) {
-            this.currentBestHit = RotationUtil.getBestHit(aimingTarget, this.shouldIgnoreBlocks(aimingTarget));
-            if (this.currentBestHit != null && this.currentBestHit.rotation() != null) {
-                Rotation from = RotationHandler.prevRotation != null
-                        ? RotationHandler.prevRotation
-                        : new Rotation(mc.player.getYRot(), mc.player.getXRot());
-                Rotation organic = this.applyOrganicRotation(from, this.currentBestHit.rotation(), 1.0f);
-                this.rotation = (organic != null
-                        && !Float.isNaN(organic.getYaw())
-                        && !Float.isNaN(organic.getPitch())
-                        && !Float.isInfinite(organic.getYaw())
-                        && !Float.isInfinite(organic.getPitch()))
-                        ? organic
-                        : this.currentBestHit.rotation();
-            } else {
-                this.rotation = null;
-            }
-        } else {
+        double speed = Mth.clamp(this.rotationSpeed.getValue().doubleValue(),
+                this.rotationSpeed.getMin().doubleValue(),
+                this.rotationSpeed.getMax().doubleValue());
+        if (aimingTarget == null) {
             this.rotation = null;
+        } else if (speed > 0) {
+            Rotation from = RotationHandler.prevRotation != null
+                    ? RotationHandler.prevRotation
+                    : new Rotation(mc.player.getYRot(), mc.player.getXRot());
+            this.rotation = this.computeRotation(aimingTarget, from, speed, reach);
         }
         if (targetList.isEmpty()) {
             target = null;
@@ -469,16 +399,14 @@ public class KillAura extends Module {
         }
         if (targetList.size() > 1
                 && (this.attackTimes >= this.switchDelay.getValue().intValue()
-                || (this.currentBestHit != null && this.currentBestHit.distance() > 3.0))) {
+                || !RotationUtil.isWithinReach(aimingTarget))) {
             this.attackTimes = 0;
             for (int i = 0; i < targetList.size(); ++i) {
                 ++this.targetIndex;
                 if (this.targetIndex > targetList.size() - 1) {
                     this.targetIndex = 0;
                 }
-                Entity nextTarget = targetList.get(this.targetIndex);
-                RotationUtil.BestHitInfo nextHit = RotationUtil.getBestHit(nextTarget, this.shouldIgnoreBlocks(nextTarget));
-                if (nextHit != null && nextHit.distance() < 3.0) {
+                if (RotationUtil.isWithinReach(targetList.get(this.targetIndex))) {
                     break;
                 }
             }
@@ -487,7 +415,6 @@ public class KillAura extends Module {
             this.targetIndex = 0;
         }
         target = targetList.get(this.targetIndex);
-        // 1.9 模式: 攻击冷却未满时不累积攻击计数, 等冷却回满再攻击
         if (this.delayMode.is("1.9") && mc.player.getAttackStrengthScale(0.0f) < 0.95f) {
             this.attacks = 0.0f;
             return;
@@ -511,18 +438,11 @@ public class KillAura extends Module {
             this.attacks = 0.0f;
             return;
         }
-        // 抄参考端 VelocityModule сeoj(priority 0): 仅在 NoXZ 攻击序列窗口内让位,
-        // 保证单一攻击源。击退包挂起期(handlingVelocity)不在此列 —— 参考端的攻击门
-        // 对 pending 显式豁免, 挂起期 KillAura 照常出刀, 否则接击退频繁时会大段停手。
         if (NoXZMode.isInAttackWindow()) {
             this.attacks = 0.0f;
             return;
         }
         if (this.keepSprint.getValue() && !NoXZMode.handlingVelocity) {
-            // 抄参考端 eеxі(): 疾跑中不出刀(挂起期豁免, 对齐 !cјхіср)。必须用停疾跑
-            // "之前"的状态判定: 首个交火 tick 只发 STOP_SPRINTING 不攻击, 等服务端疾跑
-            // 同步完, 下一 tick 才开刀 —— 否则攻击包带着疾跑状态出去, 服务端走
-            // sprint-slash 而客户端没走, 模拟直接偏移。
             if (mc.player.isSprinting()) {
                 if (shouldStopSprint()) {
                     mc.options.keySprint.setDown(false);
@@ -532,31 +452,48 @@ public class KillAura extends Module {
                 return;
             }
         }
-        if (mc.player.getUseItem().isEmpty()
-                && mc.screen == null
-                && (this.ignoreSkipTicks.getValue() || ClientBase.delayPackets.isEmpty()
-                || (Critical.INSTANCE != null && Critical.INSTANCE.isEnabled()))) {
-            while (this.attacks >= 1.0f) {
-                this.doAttack();
-                this.attacks -= 1.0f;
-            }
-        } else {
+        if (!this.canAttackNow()) {
             this.attacks = 0.0f;
+            return;
+        }
+        while (this.attacks >= 1.0f) {
+            this.doAttack();
+            this.attacks -= 1.0f;
         }
     }
 
-    /**
-     * 抄参考端 саѕһa(): 近战交火停疾跑的前置条件。Sprint 模块据此在交火期间不再压疾跑键,
-     * 否则疾跑每 tick 都会被重新压上, "非疾跑攻击"永远不成立。
-     */
+    private boolean canAttackNow() {
+        if (mc.player == null || mc.screen != null || mc.player.isUsingItem()) {
+            return false;
+        }
+        if (target == null || !targetList.contains(target)) {
+            return false;
+        }
+        if (!(mc.hitResult instanceof EntityHitResult hit) || hit.getEntity() != target) {
+            double dist = RotationUtil.closestPoint(mc.player.getEyePosition(), target.getBoundingBox())
+                    .distanceTo(mc.player.getEyePosition());
+            if (!this.ignoreBlocksAt(dist)) {
+                return false;
+            }
+        }
+        if (this.delayMode.is("1.9") && mc.player.getAttackStrengthScale(0.0f) < 0.95f) {
+            return false;
+        }
+        if (!(this.ignoreSkipTicks.getValue() || ClientBase.delayPackets.isEmpty()
+                || (Critical.INSTANCE != null && Critical.INSTANCE.isEnabled()))) {
+            return false;
+        }
+        return RotationUtil.isWithinReach(target);
+    }
+
     public static boolean shouldStopSprint() {
         KillAura aura = INSTANCE;
         if (aura == null || !aura.isEnabled() || !aura.keepSprint.getValue()) return false;
         if (mc.player == null || target == null) return false;
         if (mc.player.isUsingItem()) return false;
-        // 对齐参考端 xcаohoi == 0: NoXZ 击退收放期疾跑由 soіhр/onStrafe 负责维持
         if (NoXZMode.isBusy()) return false;
-        return target.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) <= 12.25;
+        if (target.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) > 12.25) return false;
+        return !mc.player.onGround() || !mc.options.keySprint.isDown();
     }
 
     public boolean doAttack() {
@@ -567,38 +504,19 @@ public class KillAura extends Module {
         if (targetList.isEmpty()) return false;
         if (this.rotation == null) return false;
 
-        HitResult hitResult = mc.hitResult;
-        if (hitResult != null && hitResult.getType() == HitResult.Type.ENTITY) {
-            Entity hitEntity = ((EntityHitResult) hitResult).getEntity();
-            if (AntiBots.isBot(hitEntity)) {
-                ChatUtil.print("Skipped attack on suspected bot");
-                return false;
-            }
-        }
         if (this.multiAttack.getValue()) {
             int attacked = 0;
-            Rotation aimRot = this.currentBestHit != null && this.currentBestHit.rotation() != null
-                    ? this.currentBestHit.rotation()
-                    : RotationHandler.targetRotation;
-            if (aimRot == null) {
-                aimRot = new Rotation(mc.player.getYRot(), mc.player.getXRot());
-            }
             for (Entity entity : targetList) {
                 if (mc.player == null) break;
-                if (RotationUtil.getHitDistance(entity, mc.player.getEyePosition(), aimRot) >= 3.0) continue;
+                if (!RotationUtil.isWithinReach(entity)) continue;
                 if (this.attackEntity(entity)) {
                     attacked++;
                 }
                 if (attacked >= 2) break;
             }
             return attacked > 0;
-        } else if (hitResult != null && hitResult.getType() == HitResult.Type.ENTITY) {
-            Entity hitEntity = ((EntityHitResult) hitResult).getEntity();
-            return this.attackEntity(hitEntity);
-        } else if (target != null && targetList.contains(target)) {
-            return this.attackEntity(target);
         }
-        return false;
+        return target != null && targetList.contains(target) && this.attackEntity(target);
     }
 
     public Entity getTarget() {
@@ -656,23 +574,14 @@ public class KillAura extends Module {
         if (entity instanceof LivingEntity le && le.hurtTime > this.hurtTime.getValue().intValue()) {
             return false;
         }
-        Vec3 vec3 = RotationUtil.closestPoint(mc.player.getEyePosition(), entity.getBoundingBox());
-        double dist = vec3.distanceTo(mc.player.getEyePosition());
-        float aimRange = this.aimRange.getValue().floatValue();
-        if (dist <= aimRange) {
-        } else if (dist > 5.0) {
+        double dist = RotationUtil.closestPoint(mc.player.getEyePosition(), entity.getBoundingBox())
+                .distanceTo(mc.player.getEyePosition());
+        if (dist > RotationUtil.getReachLimit()) {
             return false;
-        } else {
-            if (!(Boolean) this.predictionEnabled.getValue()
-                    || this.predictDistance(entity) >= aimRange) {
-                return false;
-            }
         }
         if (!RotationUtil.isEntityInFov(entity, this.fov.getValue().floatValue() / 2.0f)) {
             return false;
         }
-        // Wall check — 只要碰撞箱上还有任何一个点能打到就放行, 不再要求"离眼睛最近的那个点"
-        // 必须畅通。上半身被方块堵住、下半身露在外面的情况(半砖、蜘蛛网等)因此能正常攻击。
         // When "Through Walls" is on and the target is close enough, the check is
         // skipped so you can attack through thin walls at close range.
         if (mc.level != null) {
@@ -684,71 +593,15 @@ public class KillAura extends Module {
         return true;
     }
 
-    /** Through Walls 的生效条件(按"眼睛到碰撞箱最近点"的距离)。 */
     private boolean ignoreBlocksAt(double dist) {
         return this.throughWalls.getValue()
                 && dist <= this.throughWallsRange.getValue().floatValue();
-    }
-
-    private boolean shouldIgnoreBlocks(Entity entity) {
-        if (entity == null || mc.player == null) {
-            return false;
-        }
-        double dist = RotationUtil.closestPoint(mc.player.getEyePosition(), entity.getBoundingBox())
-                .distanceTo(mc.player.getEyePosition());
-        return this.ignoreBlocksAt(dist);
-    }
-
-    private double predictDistance(Entity entity) {
-        double selfDelayMs = 0.0;
-        if (mc.getConnection() != null
-                && mc.getConnection().getPlayerInfo(mc.player.getUUID()) != null) {
-            selfDelayMs = mc.getConnection().getPlayerInfo(mc.player.getUUID()).getLatency();
-        }
-        double selfDelayTicks = Math.min(selfDelayMs / 50.0, this.selfDelayThreshold.getValue().doubleValue());
-
-        double enemyDelayMs = 0.0;
-        if (entity instanceof Player player) {
-            if (mc.getConnection() != null
-                    && mc.getConnection().getPlayerInfo(player.getUUID()) != null) {
-                enemyDelayMs = mc.getConnection().getPlayerInfo(player.getUUID()).getLatency();
-            }
-        }
-        double enemyDelayTicks = Math.min(enemyDelayMs / 50.0, this.enemyDelayThreshold.getValue().doubleValue());
-
-        double totalTicks = 2.0 + selfDelayTicks + enemyDelayTicks;
-
-        double playerVelX = mc.player.getX() - mc.player.xOld;
-        double playerVelZ = mc.player.getZ() - mc.player.zOld;
-        double enemyVelX = entity.getX() - entity.xOld;
-        double enemyVelZ = entity.getZ() - entity.zOld;
-
-        double predictedPlayerX = mc.player.getX() + playerVelX * totalTicks;
-        double predictedPlayerZ = mc.player.getZ() + playerVelZ * totalTicks;
-        double predictedEnemyX = entity.getX() + enemyVelX * totalTicks;
-        double predictedEnemyZ = entity.getZ() + enemyVelZ * totalTicks;
-
-        double dx = predictedEnemyX - predictedPlayerX;
-        double dz = predictedEnemyZ - predictedPlayerZ;
-        return Math.sqrt(dx * dx + dz * dz);
     }
 
     public boolean attackEntity(Entity entity) {
         if (mc.player == null || mc.gameMode == null) return false;
         if (this.isWebPlacing()) return false;
 
-        float currentYaw = mc.player.getYRot();
-        float currentPitch = mc.player.getXRot();
-        if (RotationHandler.targetRotation != null) {
-            mc.player.setYRot(RotationHandler.targetRotation.getYaw());
-            mc.player.setXRot(RotationHandler.targetRotation.getPitch());
-        }
-
-        // 抄参考端 hahoсј(): 攻击就是裸的 gameMode.attack + swing, 不操纵疾跑状态。
-        // 疾跑管理全部在 onPreMotion/shouldStopSprint 完成(攻击前疾跑已停), 旧的
-        // "暴击前发 STOP_SPRINTING 打完拉回/发 START"同 tick 包序是 vanilla 客户端
-        // 不可能产生的(疾跑命令由 LocalPlayer.tick 对比 wasSprinting 发出, 一 tick
-        // 至多一条), 正是攻击爆模拟 VL 的来源之一, 已随参考端语义移除。
         ++this.attackTimes;
         int attackKey = mc.options.keyAttack.getKey().getValue();
         mc.gameMode.attack(mc.player, entity);
@@ -760,9 +613,6 @@ public class KillAura extends Module {
             mc.player.magicCrit(entity);
             mc.player.crit(entity);
         }
-
-        mc.player.setYRot(currentYaw);
-        mc.player.setXRot(currentPitch);
         return true;
     }
 
