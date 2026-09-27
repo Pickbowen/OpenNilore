@@ -25,9 +25,7 @@ import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
-import net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket;
 import net.minecraft.world.InteractionHand;
-import net.minecraft.world.effect.MobEffects;
 import net.minecraftforge.client.ForgeHooksClient;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
@@ -73,10 +71,10 @@ import client.nilore.utils.game.RotationUtil;
 import client.nilore.utils.math.MathUtil;
 import client.nilore.utils.misc.ChatUtil;
 import client.nilore.utils.misc.Assets;
-import client.nilore.utils.misc.PacketUtil;
 import client.nilore.utils.render.RenderUtil;
 import client.nilore.utils.rotation.Rotation;
 import client.nilore.utils.rotation.RotationHandler;
+import client.nilore.utils.rotation.RotationSmoother;
 import client.nilore.event.EventTarget;
 
 public class KillAura extends Module {
@@ -98,6 +96,13 @@ public class KillAura extends Module {
     public final BooleanSetting infSwitch       = new BooleanSetting("Infinity Switch", false);
     public final BooleanSetting preferBaby      = new BooleanSetting("Prefer Baby", false);
     public final BooleanSetting morePart        = new BooleanSetting("More Particles", false);
+    /**
+     * 抄参考端(package_012)同名选项的语义: KeepSprint = "交火(目标3.5格内)主动停疾跑
+     * + 疾跑中不出刀"。vanilla 在疾跑命中时服务端会 sprint-slash 结算(攻击者自身速度
+     * *0.6 + 服务端重置疾跑), 客户端在疾跑状态下攻击必然与预测分歧 → Grim 模拟 VL;
+     * 停疾跑后攻击发生在非疾跑状态, 根本不触发该结算, 表现为"全程连续出刀、从不停手"
+     * (停疾跑只发生在进入交火的那一个 tick)。关闭时不做任何疾跑操纵, 走 vanilla 行为。
+     */
     public final BooleanSetting keepSprint = new BooleanSetting("Keep Sprint", true);
     public final BooleanSetting throughWalls    = new BooleanSetting("Through Walls", false);
     public final NumberSetting throughWallsRange = new NumberSetting("Through Walls Range", 3.0, 1.0, 6.0, 0.1,
@@ -129,9 +134,6 @@ public class KillAura extends Module {
     public final NumberSetting rotationDrift = new NumberSetting("Drift", 0.1, 0, 5, 0.1);
     public final NumberSetting rotationJitter = new NumberSetting("Jitter", 0.02, 0, 1, 0.01);
 
-    /** 角误差超过 2×Rotation Speed 之后, 每 tick 至少收敛掉误差的这个比例(等效指数收敛)。 */
-    private static final double TURN_RATIO = 0.5;
-
     private RotationUtil.BestHitInfo currentBestHit;
     private RotationUtil.BestHitInfo prevBestHit;
     private int attackTimes;
@@ -148,6 +150,9 @@ public class KillAura extends Module {
     private double orgFreqYaw1, orgFreqYaw2, orgFreqPitch1, orgFreqPitch2;
     private double orgPhaseYaw1, orgPhaseYaw2, orgPhasePitch1, orgPhasePitch2;
 
+    /** 转头平滑(惯性+波动)与 GCD 量化, 与 Scaffold 共用同一实现。 */
+    private final RotationSmoother rotSmoother = new RotationSmoother(new Random());
+
     public KillAura() {
         super("KillAura", Category.COMBAT);
         INSTANCE = this;
@@ -157,6 +162,7 @@ public class KillAura extends Module {
     public void onEnable() {
         this.rotation = null;
         this.reinitOrganicModel();
+        this.rotSmoother.reset();
         this.targetIndex = 0;
         this.attacks = 0.0f;
         target = null;
@@ -168,6 +174,7 @@ public class KillAura extends Module {
     @Override
     public void onDisable() {
         this.attacks = 0.0f;
+        this.rotSmoother.reset();
         target = null;
         aimingTarget = null;
         this.sprintTickCounter = 0;
@@ -191,20 +198,6 @@ public class KillAura extends Module {
         this.orgPhasePitch2 = this.organicRandom.nextDouble() * Math.PI * 2;
     }
 
-    /**
-     * 一次鼠标移动对应的角度步长(度)。真实鼠标产生的旋转增量永远是它的整数倍, 所以发出去的
-     * rotation 增量也必须落在同一张网格上, 否则就是"非人手"的旋转。
-     */
-    private static double sensitivityStep() {
-        double sensitivity = mc.options.sensitivity().get().floatValue() * 0.6 + 0.2;
-        return sensitivity * sensitivity * sensitivity * 8.0 * 0.15;
-    }
-
-    /** 把角度增量取整到灵敏度步长的整数倍。 */
-    private static float quantizeToStep(double delta, double step) {
-        return (float)(Math.round(delta / step) * step);
-    }
-
     private Rotation applyOrganicRotation(Rotation from, Rotation to, float timeDelta) {
         float rawYawDelta = Mth.wrapDegrees(to.getYaw() - from.getYaw());
         float rawPitchDelta = to.getPitch() - from.getPitch();
@@ -225,20 +218,12 @@ public class KillAura extends Module {
         float deltaYaw = rawYawDelta * timeDelta;
         float deltaPitch = rawPitchDelta * timeDelta;
 
-        double distance = Math.sqrt(deltaYaw * deltaYaw + deltaPitch * deltaPitch);
-
-        // 单 tick 步长上限: speed 以内一步到位, 超过之后按 TURN_RATIO 收缩。
-        // 这条同时管住了"换目标瞬移" —— 180° 换目标会走成 180→90→45→… 的减速段。
-        double allowed = Math.min(distance, Math.max(speed, distance * TURN_RATIO));
-
-        if (distance > 0) {
-            double ratioYaw = Math.abs(deltaYaw) / distance;
-            double ratioPitch = Math.abs(deltaPitch) / distance;
-            float maxYaw = (float)(allowed * ratioYaw);
-            float maxPitch = (float)(allowed * ratioPitch);
-            deltaYaw = Mth.clamp(deltaYaw, -maxYaw, maxYaw);
-            deltaPitch = Mth.clamp(deltaPitch, -maxPitch, maxPitch);
-        }
+        // 两轴各自独立收敛(人手 yaw/pitch 的肌肉速度本来就不一样, 把两轴锁在同一个步长
+        // 比例上反而是"直线插值"的机器特征)。速度语义与旧实现完全一致 —— speed 以内一步
+        // 到位, 超过之后每 tick 至少收敛掉误差的 TURN_RATIO, 所以调 Rotation Speed 的
+        // 手感不变, 平均速度也不变。实现见 RotationSmoother(与 Scaffold 共用)。
+        deltaYaw = (float) this.rotSmoother.smoothAxisDelta(deltaYaw, speed, true);
+        deltaPitch = (float) this.rotSmoother.smoothAxisDelta(deltaPitch, speed, false);
 
         this.organicTimeAccumulator += timeDelta;
 
@@ -256,11 +241,11 @@ public class KillAura extends Module {
         // 旧实现每 tick 对总和四舍五入, 默认灵敏度下步长 0.15° 而 Drift 只有 0.1°、Jitter
         // 只有 0.02°, 于是两者几乎全被抹成 0。攒格不丢量, 也不会产生亚步长的"非人手"增量;
         // 累积出来的偏移最终被主运动的回拉限制在几个步长内, 表现为 ±0.2° 量级的手部微晃。
-        double step = sensitivityStep();
+        double step = RotationSmoother.sensitivityStep();
         this.organicResidualYaw += driftYaw + jitterYaw;
         this.organicResidualPitch += driftPitch + jitterPitch;
-        float organicYaw = quantizeToStep(this.organicResidualYaw, step);
-        float organicPitch = quantizeToStep(this.organicResidualPitch, step);
+        float organicYaw = RotationSmoother.quantizeToStep(this.organicResidualYaw, step);
+        float organicPitch = RotationSmoother.quantizeToStep(this.organicResidualPitch, step);
         this.organicResidualYaw -= organicYaw;
         this.organicResidualPitch -= organicPitch;
 
@@ -269,18 +254,7 @@ public class KillAura extends Module {
 
         float finalYaw = from.getYaw() + moveYaw;
         float finalPitch = Mth.clamp(from.getPitch() + movePitch, -90.0f, 90.0f);
-        return patchConstantRotation(new Rotation(finalYaw, finalPitch), from);
-    }
-
-    /**
-     * GCD 对齐：将旋转增量取整到灵敏度步长的整数倍，锚定在上一次发出的 rotation 上。
-     * 于是网格随目标一起漂移，不会把瞄准点吸到固定格点上；收到攻击时横竖都是整数倍步长。
-     */
-    private static Rotation patchConstantRotation(Rotation rotation, Rotation prevRotation) {
-        double step = sensitivityStep();
-        float yaw = prevRotation.getYaw() + quantizeToStep(rotation.getYaw() - prevRotation.getYaw(), step);
-        float pitch = Mth.clamp(prevRotation.getPitch() + quantizeToStep(rotation.getPitch() - prevRotation.getPitch(), step), -90.0f, 90.0f);
-        return new Rotation(yaw, pitch);
+        return RotationSmoother.patchConstantRotation(new Rotation(finalYaw, finalPitch), from);
     }
 
     @EventTarget
@@ -537,6 +511,27 @@ public class KillAura extends Module {
             this.attacks = 0.0f;
             return;
         }
+        // 抄参考端 VelocityModule сeoj(priority 0): 仅在 NoXZ 攻击序列窗口内让位,
+        // 保证单一攻击源。击退包挂起期(handlingVelocity)不在此列 —— 参考端的攻击门
+        // 对 pending 显式豁免, 挂起期 KillAura 照常出刀, 否则接击退频繁时会大段停手。
+        if (NoXZMode.isInAttackWindow()) {
+            this.attacks = 0.0f;
+            return;
+        }
+        if (this.keepSprint.getValue() && !NoXZMode.handlingVelocity) {
+            // 抄参考端 eеxі(): 疾跑中不出刀(挂起期豁免, 对齐 !cјхіср)。必须用停疾跑
+            // "之前"的状态判定: 首个交火 tick 只发 STOP_SPRINTING 不攻击, 等服务端疾跑
+            // 同步完, 下一 tick 才开刀 —— 否则攻击包带着疾跑状态出去, 服务端走
+            // sprint-slash 而客户端没走, 模拟直接偏移。
+            if (mc.player.isSprinting()) {
+                if (shouldStopSprint()) {
+                    mc.options.keySprint.setDown(false);
+                    mc.player.setSprinting(false);
+                }
+                this.attacks = 0.0f;
+                return;
+            }
+        }
         if (mc.player.getUseItem().isEmpty()
                 && mc.screen == null
                 && (this.ignoreSkipTicks.getValue() || ClientBase.delayPackets.isEmpty()
@@ -548,6 +543,20 @@ public class KillAura extends Module {
         } else {
             this.attacks = 0.0f;
         }
+    }
+
+    /**
+     * 抄参考端 саѕһa(): 近战交火停疾跑的前置条件。Sprint 模块据此在交火期间不再压疾跑键,
+     * 否则疾跑每 tick 都会被重新压上, "非疾跑攻击"永远不成立。
+     */
+    public static boolean shouldStopSprint() {
+        KillAura aura = INSTANCE;
+        if (aura == null || !aura.isEnabled() || !aura.keepSprint.getValue()) return false;
+        if (mc.player == null || target == null) return false;
+        if (mc.player.isUsingItem()) return false;
+        // 对齐参考端 xcаohoi == 0: NoXZ 击退收放期疾跑由 soіhр/onStrafe 负责维持
+        if (NoXZMode.isBusy()) return false;
+        return target.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) <= 12.25;
     }
 
     public boolean doAttack() {
@@ -735,29 +744,17 @@ public class KillAura extends Module {
             mc.player.setXRot(RotationHandler.targetRotation.getPitch());
         }
 
-        // KeepSprint: 这一刀能打出暴击(1.5 倍伤害)时, 攻击前把疾跑停掉——服务端也要在
-        // "攻击那一刻没在疾跑"才会结算暴击, 所以必须显式发 STOP_SPRINTING(vanilla 的疾跑包
-        // 在玩家 tick 里才发, 那已经排在 ATTACK 后面了), 打完立刻恢复。
-        boolean keepSprinting = this.keepSprint.getValue() && mc.player.isSprinting();
-        boolean critSprintBypass = keepSprinting && this.canCriticalAttack(entity);
-        if (critSprintBypass) {
-            this.sendSprintState(false);
-        }
-
+        // 抄参考端 hahoсј(): 攻击就是裸的 gameMode.attack + swing, 不操纵疾跑状态。
+        // 疾跑管理全部在 onPreMotion/shouldStopSprint 完成(攻击前疾跑已停), 旧的
+        // "暴击前发 STOP_SPRINTING 打完拉回/发 START"同 tick 包序是 vanilla 客户端
+        // 不可能产生的(疾跑命令由 LocalPlayer.tick 对比 wasSprinting 发出, 一 tick
+        // 至多一条), 正是攻击爆模拟 VL 的来源之一, 已随参考端语义移除。
         ++this.attackTimes;
         int attackKey = mc.options.keyAttack.getKey().getValue();
         mc.gameMode.attack(mc.player, entity);
         ForgeHooksClient.onMouseButtonPre(attackKey, 1, 0);
         mc.player.swing(InteractionHand.MAIN_HAND);
         ForgeHooksClient.onMouseButtonPost(attackKey, 1, 0);
-
-        // 打完恢复: 暴击分支自己发过 STOP, 必须补一个 START 把服务端同步回疾跑;
-        // 非暴击分支只是补回 vanilla 疾跑攻击后自己 setSprinting(false) 掉的状态。
-        if (critSprintBypass) {
-            this.sendSprintState(true);
-        } else if (keepSprinting) {
-            mc.player.setSprinting(true);
-        }
 
         if (this.morePart.getValue()) {
             mc.player.magicCrit(entity);
@@ -767,31 +764,6 @@ public class KillAura extends Module {
         mc.player.setYRot(currentYaw);
         mc.player.setXRot(currentPitch);
         return true;
-    }
-
-    /**
-     * 这一刀是否具备出暴击的条件。与 vanilla {@code Player#attack} 的判定一致:
-     * 下落中(fallDistance>0)、不在方块上、不爬梯、不在水里、不处于失明、不在乘骑,
-     * 且目标是 LivingEntity。"未疾跑"这一条由调用方在停疾跑之后满足。
-     */
-    private boolean canCriticalAttack(Entity entity) {
-        if (mc.player == null || !(entity instanceof LivingEntity)) {
-            return false;
-        }
-        return mc.player.fallDistance > 0.0f
-                && !mc.player.onGround()
-                && !mc.player.onClimbable()
-                && !mc.player.isInWater()
-                && !mc.player.hasEffect(MobEffects.BLINDNESS)
-                && !mc.player.isPassenger();
-    }
-
-    /** 切换疾跑状态并发包同步给服务端。 */
-    private void sendSprintState(boolean sprinting) {
-        mc.player.setSprinting(sprinting);
-        PacketUtil.send(new ServerboundPlayerCommandPacket(mc.player, sprinting
-                ? ServerboundPlayerCommandPacket.Action.START_SPRINTING
-                : ServerboundPlayerCommandPacket.Action.STOP_SPRINTING));
     }
 
     private boolean isWebPlacing() {

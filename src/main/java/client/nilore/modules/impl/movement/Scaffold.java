@@ -6,6 +6,7 @@ import com.mojang.blaze3d.vertex.BufferBuilder;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.Tesselator;
 import java.util.List;
+import java.util.Random;
 import java.util.concurrent.CopyOnWriteArrayList;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.core.BlockPos;
@@ -59,6 +60,7 @@ import client.nilore.utils.render.RenderUtil;
 
 import client.nilore.utils.rotation.Rotation;
 import client.nilore.utils.rotation.RotationHandler;
+import client.nilore.utils.rotation.RotationSmoother;
 import client.nilore.event.EventTarget;
 
 public class Scaffold extends Module {
@@ -92,6 +94,10 @@ public class Scaffold extends Module {
 
     public Rotation rots = new Rotation();
     public Rotation lastRots = new Rotation();
+    /** 转头平滑(惯性+波动), 与 KillAura 共用同一实现。 */
+    private final RotationSmoother rotSmoother = new RotationSmoother(new Random());
+    /** 调试: 最近一次目标旋转来自哪个分支(配合 Log 设置定位大增量来源)。 */
+    private String aimBranch = "none";
     public int targetYLevel = -1;
     public int velocityDelay = 0;
 
@@ -140,6 +146,7 @@ public class Scaffold extends Module {
             this.lastC05Position = null;
             this.packetBatches.clear();
             this.packetBatches.add(new CopyOnWriteArrayList<>());
+            this.rotSmoother.reset();
         }
         this.shelfHudInitialized = mc.player != null;
         this.shelfInitialBlocks = this.shelfHudInitialized ? this.getBlockSlot() : 0;
@@ -164,6 +171,7 @@ public class Scaffold extends Module {
             }
             this.canBuildNow = true;
             this.lastC05Position = null;
+            this.rotSmoother.reset();
             ClientBase.delayPackets.clear();
         }
         super.onDisable();
@@ -299,8 +307,10 @@ public class Scaffold extends Module {
             boolean useC06 = this.onTickRot.getValue() || !this.canBuildNow;
             if (useC06) {
                 // C06 模式：不转头，让 onPreMotion 中的 c06Place 处理放置
+                this.aimBranch = "C06-real-cam";
                 this.rots.setYawPitch(mc.player.getYRot(), mc.player.getXRot());
                 RotationHandler.setTargetRotation(this.rots);
+                logLargeDelta(this.rots);
                 this.rotationDelay++;
             } else {
                 Vec3 targetVec = getFaceCenter(this.currentPlacement.position, this.currentPlacement.facing);
@@ -336,17 +346,21 @@ public class Scaffold extends Module {
 
             // SkipTicks 结束后无论 onTickRot 设置如何，都发 C06 恢复服务端旋转追踪
             if (wasInRescue) {
+                this.aimBranch = "resume-jitter";
+                Rotation resumeRot = new Rotation(mc.player.getYRot() + rotationJitter(), mc.player.getXRot() + rotationJitter());
+                logLargeDelta(resumeRot);
                 mc.getConnection().send(new ServerboundMovePlayerPacket.PosRot(
                         mc.player.getX(), mc.player.getY(), mc.player.getZ(),
-                        mc.player.getYRot() + rotationJitter(),
-                        mc.player.getXRot() + rotationJitter(),
+                        resumeRot.getYaw(), resumeRot.getPitch(),
                         mc.player.onGround()
                 ));
             }
 
             if (this.onTickRot.getValue()) {
                 // OnTickRot: 不转头, 保持当前视角, 只靠 C06 发包欺骗
+                this.aimBranch = "C06-real-cam";
                 this.rots.setYawPitch(mc.player.getYRot(), mc.player.getXRot());
+                logLargeDelta(this.rots);
             } else {
                 this.calculateTargetRotation();
             }
@@ -669,32 +683,72 @@ public class Scaffold extends Module {
         }
 
         float yaw = realYaw - 180.0f;
-        float pitch = 75.5f;
+        float idealPitch = 75.5f;
+        float currentPitch = this.rots.getPitch();
 
-
-        // 2. Raycast验证：当前旋转能否命中目标放置面
-        Rotation testRot = new Rotation(yaw, pitch);
-        if (isRotationValidForPlacement(testRot)) {
-            applyRotationWithSpeed(yaw, pitch);
+        // 2. 理想 pitch 优先: 直线搭路时 75.5° 全程有效, 旋转恒定 = 最流畅状态。
+        this.aimBranch = "ideal-75.5";
+        if (isRotationValidForPlacement(new Rotation(yaw, idealPitch))) {
+            applyRotationWithSpeed(yaw, idealPitch);
             return;
         }
 
-        // 3. 微调pitch，找到能命中放置面的有效旋转
-        Float optimalPitch = findValidPitch(yaw);
-        if (optimalPitch != null) {
-            applyRotationWithSpeed(yaw, optimalPitch);
+        // 3. 75.5 失效: 当前 pitch 仍能命中就原地不动 —— 不要在理想角和就近角之间来回
+        //    横跳(调试证实 75.5↔83~88 每 tick 乒乓, 这就是"放一次甩一次"的直接原因),
+        //    只在几何真正变化时移动。
+        this.aimBranch = "keep-current";
+        if (isRotationValidForPlacement(new Rotation(yaw, currentPitch))) {
+            applyRotationWithSpeed(yaw, currentPitch);
             return;
         }
 
-        // 4. 同时微调yaw和pitch
+        // 4. 当前 pitch 也失效: 从当前 pitch 双向外扩, 取最小修正步。
+        this.aimBranch = "nearest-from-current";
+        Float nearest = findValidPitchNear(yaw, currentPitch);
+        if (nearest != null) {
+            applyRotationWithSpeed(yaw, nearest);
+            return;
+        }
+
+        // 5. 当前邻域彻底无解: 从理想角就近找, 把旋转拉回基准。
+        this.aimBranch = "nearest-to-ideal";
+        Float towardIdeal = findValidPitchNear(yaw, idealPitch);
+        if (towardIdeal != null) {
+            applyRotationWithSpeed(yaw, towardIdeal);
+            return;
+        }
+
+        // 6. pitch 无解(yaw 偏了) -> yaw+pitch 全搜
+        this.aimBranch = "optimal-search";
         Rotation optimal = findOptimalRotation(yaw);
         if (optimal != null) {
             applyRotationWithSpeed(optimal.getYaw(), optimal.getPitch());
             return;
         }
 
-        // 5. 回退方案
-        applyRotationWithSpeed(yaw, pitch);
+        // 7. 全部失败: 保持当前旋转。绝不明知 raytrace 无效还把 75.5 发出去。
+        this.aimBranch = "hold";
+        applyRotationWithSpeed(yaw, currentPitch);
+    }
+
+    /**
+     * 调试: Log 设置开启时, 单 tick 转动超过 5° 就打印来源分支与放置目标,
+     * 用于定位 ACA "very high variance" 的大增量来源。
+     */
+    private void logLargeDelta(Rotation rotation) {
+        if (!print_log.getValue()) return;
+        Rotation prev = RotationHandler.prevRotation;
+        if (prev == null) return;
+        float dYaw = Math.abs(Mth.wrapDegrees(rotation.getYaw() - prev.getYaw()));
+        float dPitch = Math.abs(rotation.getPitch() - prev.getPitch());
+        float magnitude = (float) Math.hypot(dYaw, dPitch);
+        if (magnitude <= 5.0f) return;
+        String targetInfo = this.currentPlacement != null
+                ? this.currentPlacement.position.toShortString() + "@" + this.currentPlacement.facing
+                : "null";
+        ChatUtil.print(true, "§7[scaffold] " + this.aimBranch
+                + String.format(" Δ%.1f° (Δyaw %.1f Δpitch %.1f) target=%s",
+                magnitude, dYaw, dPitch, targetInfo));
     }
 
     private boolean isRotationValidForPlacement(Rotation rotation) {
@@ -702,16 +756,21 @@ public class Scaffold extends Module {
         return RayTraceUtil.canRayTrace(rotation, this.currentPlacement.facing, this.currentPlacement.position, true);
     }
 
-    private Float findValidPitch(float yaw) {
+    /**
+     * 从 center(理想 pitch)向两侧对称外扩(向下最多 30°, 向上直到 90°), 取距 center
+     * 最近的有效 pitch。以理想角为中心而不是当前 pitch, 保证偏离后始终被拉回基准。
+     */
+    private Float findValidPitchNear(float yaw, float center) {
         if (this.currentPlacement == null) return null;
-        float lastPitch = this.rots.getPitch();
 
-        for (float pitch = Math.max(lastPitch - 30.0f, -90.0f);
-             pitch <= Math.min(lastPitch + 20.0f, 90.0f);
-             pitch += 0.3f) {
-            Rotation test = new Rotation(yaw, pitch);
-            if (isRotationValidForPlacement(test)) {
-                return pitch;
+        for (float offset = 0.0f; offset <= 30.0f; offset += 0.3f) {
+            float down = Mth.clamp(center - offset, -90.0f, 90.0f);
+            if (isRotationValidForPlacement(new Rotation(yaw, down))) {
+                return down;
+            }
+            float up = center + offset;
+            if (up <= 90.0f && isRotationValidForPlacement(new Rotation(yaw, up))) {
+                return up;
             }
         }
         return null;
@@ -768,12 +827,19 @@ public class Scaffold extends Module {
             if (current == null) {
                 current = new Rotation(mc.player.getYRot(), mc.player.getXRot());
             }
-            float yawDiff = Mth.wrapDegrees(rotation.getYaw() - current.getYaw());
-            float pitchDiff = rotation.getPitch() - current.getPitch();
-            float yawChange = Mth.clamp(yawDiff, -speed, speed);
-            float pitchChange = Mth.clamp(pitchDiff, -speed, speed);
-            rotation = new Rotation(current.getYaw() + yawChange, current.getPitch() + pitchChange);
+            // 惯性+波动平滑, 代替旧的 clamp(diff, ±speed) 方波 —— Grim 的 DuplicateRotPlace
+            // 专抓"相邻两次放置时 yaw 增量完全相同", 匀速转头正是它的靶子。
+            // speed 语义不变: 度/tick 上限, speed 以内一步到位。
+            rotation = this.rotSmoother.tick(current, rotation, speed);
         }
+        // GCD 对齐: 增量取整到灵敏度步长, 锚定在上一次发出的 rotation 上。Scaffold 之前
+        // 从不量化, Grim AimProcessor 用连续增量 GCD 反推灵敏度时推不出稳定值, 和真人
+        // 一眼就能区分。量化误差 <= 半个步长(默认灵敏度 0.075°), 相对方块面的角尺寸可忽略。
+        Rotation anchor = RotationHandler.prevRotation != null
+                ? RotationHandler.prevRotation
+                : new Rotation(mc.player.getYRot(), mc.player.getXRot());
+        rotation = RotationSmoother.patchConstantRotation(rotation, anchor);
+        logLargeDelta(rotation);
 
         this.rots.setYawPitch(rotation.getYaw(), rotation.getPitch());
         RotationHandler.setTargetRotation(this.rots);
@@ -907,9 +973,11 @@ public class Scaffold extends Module {
         // SkipTicks时每次放置前都发送对准目标方块面的C05. Fix By StarSky
         if (!this.canBuildNow && this.clutch.getValue() && !this.currentPlacement.position.equals(this.lastC05Position)) {
             this.lastC05Position = this.currentPlacement.position;
+            this.aimBranch = "c05-snap";
             Vec3 c05Target = getFaceCenter(this.currentPlacement.position, this.currentPlacement.facing);
             Vec3 c05Eye = new Vec3(mc.player.getX() + mc.player.getDeltaMovement().x, mc.player.getY() + mc.player.getEyeHeight() + mc.player.getDeltaMovement().y, mc.player.getZ() + mc.player.getDeltaMovement().z);
             Rotation c05Rotation = RotationUtil.rotationFromPoints(c05Target.x, c05Target.y, c05Target.z, c05Eye.x, c05Eye.y, c05Eye.z);
+            logLargeDelta(c05Rotation);
             float yaw = c05Rotation.getYaw();
             if (yaw > -360.0f && yaw < 360.0f) {
                 yaw += 720.0f;

@@ -75,6 +75,23 @@ public class NoXZMode
         return this.velocityHandled;
     }
 
+    /**
+     * 抄参考端: NoXZ 处理期(击退包挂起 / 攻击序列进行中)内疾跑由 NoXZ 自己管理,
+     * KillAura 的停疾跑逻辑不得介入(挂起期停疾跑会破坏"落地时疾跑中才放行"的释放条件)。
+     */
+    public static boolean isBusy() {
+        return handlingVelocity || velocityHandled || isAttacking;
+    }
+
+    /**
+     * 抄参考端 xcаohoi > 0 攻击窗口(此时参考端用 priority 0 cancel KillAura 攻击事件):
+     * 仅在攻击序列进行中 KillAura 让位, 保证单一攻击源; 击退包挂起期(handlingVelocity)
+     * 不算窗口, KillAura 照常出刀(参考端攻击门对 pending 显式豁免)。
+     */
+    public static boolean isInAttackWindow() {
+        return isAttacking || attackCount > 0;
+    }
+
     public NoXZMode() {
         super("NoXZ");
         INSTANCE = this;
@@ -239,6 +256,16 @@ public class NoXZMode
         }
         if (this.isSuspending) {
             ++this.delayTicks;
+            // 抄参考端联合协议: 挂起期疾跑由 NoXZ 接管强制维持。释放条件要求"落地时
+            // 疾跑中", 而 KillAura KeepSprint 在交火期会把疾跑停掉 —— 参考端靠 caѕһa
+            // 的击退模式例外短路 + 每 tick 压键的 Sprint 模块在窗口内重新起跑; 这里
+            // 直接每 tick 强制, 不依赖鼠标帧触发的 Sprint 模块。W 未按下或正在使用
+            // 物品时不强制, 避免发出服务端会判非法的 START_SPRINTING。
+            if (mc.player.input != null && mc.player.input.hasForwardImpulse()
+                    && !mc.player.isUsingItem() && !mc.player.isSprinting()) {
+                mc.options.keySprint.setDown(true);
+                mc.player.setSprinting(true);
+            }
             // Alink 超时: 暂缓太久直接放弃, 放行全部暂缓包并重置
             if (this.delayTicks >= AntiKB.INSTANCE.maxDelayTicks.getValue().intValue()) {
                 if (AntiKB.INSTANCE.debugLog.getValue()) {
@@ -523,7 +550,7 @@ public class NoXZMode
         mc.player.swing(InteractionHand.MAIN_HAND);
         if (wasSprinting) {
             Vec3 velocity = mc.player.getDeltaMovement();
-            mc.player.setDeltaMovement(velocity.x * 0.6, velocity.y, velocity.z * 0.6);
+            mc.player.setDeltaMovement(velocity.x * 0.61, velocity.y, velocity.z * 0.61);
         }
         if (!AntiKB.INSTANCE.instantAttack.getValue()) {
             if (AntiKB.INSTANCE.debugLog.getValue()) {
