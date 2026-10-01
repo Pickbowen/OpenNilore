@@ -245,11 +245,6 @@ public class NoXZMode
         }
         if (this.isSuspending) {
             ++this.delayTicks;
-            if (mc.player.input != null && mc.player.input.hasForwardImpulse()
-                    && !mc.player.isUsingItem() && !mc.player.isSprinting()) {
-                mc.options.keySprint.setDown(true);
-                mc.player.setSprinting(true);
-            }
             if (this.delayTicks >= AntiKB.INSTANCE.maxDelayTicks.getValue().intValue()) {
                 if (AntiKB.INSTANCE.debugLog.getValue()) {
                     ChatUtil.print("Alink Timeout");
@@ -320,21 +315,6 @@ public class NoXZMode
 
     @Override
     public void onStrafe(StrafeEvent strafeEvent) {
-        if (mc.player == null) {
-            return;
-        }
-        if (this.hitCounter > 0) {
-            strafeEvent.setForward(1.0f);
-            if (mc.player.isSprinting() && mc.player.hurtTime <= 9) {
-                strafeEvent.setSprinting(true);
-            }
-        }
-        if (this.shouldJump) {
-            this.shouldJump = false;
-            if (mc.player.onGround() && mc.player.isSprinting() && !mc.player.hasEffect(MobEffects.JUMP) && !this.shouldIgnore()) {
-                strafeEvent.setSprinting(true);
-            }
-        }
     }
 
     @Override

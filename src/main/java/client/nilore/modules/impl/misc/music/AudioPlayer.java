@@ -52,7 +52,6 @@ public class AudioPlayer {
     private volatile long seekDisplayMs = -1;
     private volatile long bytesConsumedFromStream = 0;
 
-    // melodify seamless next-track preloading
     public static final long PRELOAD_LEAD_MS = 30000;
     private volatile boolean melodifyEnabled;
     private volatile Runnable nearEndListener;

@@ -227,9 +227,9 @@ extends ClientBase {
         DrawContext drawContext = GlHelper.getCanvas();
         drawContext.save();
         drawContext.clip(Rectangle.ofXYWH(panelX, (float)panelY + headerHeight, panelWidth, (float)panelHeight - headerHeight));
-        // Recaf used +2*scale here, but the deobfuscated GlyphMetrics flips the ascent sign so
-        // GlHelper.drawText draws ~7*scale ABOVE drawY — at +2 the first row's text top slips out
-        // of the clip. +8 leaves ~1*scale headroom under the clip top.
+        // GlyphMetrics has a flipped ascent sign, so GlHelper.drawText draws ~7*scale ABOVE
+        // drawY — at +2 the first row's text top slips out of the clip. +8 leaves ~1*scale
+        // headroom under the clip top.
         int rowY = panelY + (int)headerHeight + (int)(8.0f * scale);
         if (modules != null) {
             this.totalContentHeight = modules.size() * Math.round(18.0f * scale);

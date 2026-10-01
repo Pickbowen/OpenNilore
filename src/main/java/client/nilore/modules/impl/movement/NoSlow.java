@@ -20,6 +20,7 @@ import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket;
 import net.minecraft.network.protocol.game.ClientboundRespawnPacket;
 import net.minecraft.network.protocol.game.ClientboundSetEquipmentPacket;
 import net.minecraft.network.protocol.game.ServerboundContainerClosePacket;
+import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
 import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
 import net.minecraft.network.protocol.game.ServerboundUseItemOnPacket;
 import net.minecraft.network.protocol.game.ServerboundUseItemPacket;
@@ -54,10 +55,7 @@ public class NoSlow extends Module {
 
     private enum Step { NONE, ARMED, EATING }
 
-    // Ticks to wait after the local use ends before swapping the hands back. The server starts
-    // eating about one round-trip after the client does, so swapping back the instant the local
-    // use finishes bites off the last bites of the food.
-    private static final int FOOD_SWAP_BACK_GRACE = 5;
+    private static final int FOOD_SWAP_BACK_TIMEOUT = 20;
 
     private final Queue<Packet<ClientGamePacketListener>> inboundQueue = new ArrayDeque<>();
     private InteractionHand useHand     = InteractionHand.MAIN_HAND;
@@ -75,12 +73,12 @@ public class NoSlow extends Module {
     private boolean hasSwapped = false;
     private boolean swapInArmed = false;
     private int noUseTicks = 0;
-    private boolean bowActive;   // res apheһһ: 弓类使用中, onSlowdown 取消减速
-    private boolean bowDelay;    // res xhc: 弓类使用期间延迟入站包
-    // res xhc: while eating/drinking, hold server->client packets in the queue (reference
-    // jсоijсі(false) -> shie()) and let them through once the use finishes. Being able to
-    // sprint through the eat makes the server send position/speed corrections; queueing them
-    // keeps that noise from tearing the use sequence apart.
+    private boolean bowActive;
+    private boolean bowDelay;
+    // While eating/drinking, hold server->client packets in the queue and let them through
+    // once the use finishes. Being able to sprint through the eat makes the server send
+    // position/speed corrections; queueing them keeps that noise from tearing the use
+    // sequence apart.
     private boolean foodDelay;
     // True while the food-swap eat is in flight (main hand food swapped to the off hand, server
     // eating from there). Only cleared once the eat finished and the hands were swapped back.
@@ -127,19 +125,16 @@ public class NoSlow extends Module {
         if (mc.player == null || !mc.player.isUsingItem()) return;
         ItemStack stack = mc.player.getUseItem();
         if (stack.isEmpty()) return;
-        // 食物/药水/盾牌: 不依赖 Bow 开关, 始终取消减速(vanilla 吃, 不换手, 否则快吃完时换手打断最后几口吃不上)
-        if (this.isEatOrDrink(stack) || stack.getUseAnimation() == UseAnim.BLOCK) {
+        if (this.isEatOrDrink(stack) && !this.isStew(stack)) {
             event.setSlowDown(false);
             mc.player.setSprinting(true);
-            // res jсоijсі(false) -> shie(): queue inbound packets for the duration of the eat.
-            // BLOCK (shield) is left alone -- it is a sustained state, not a timed use.
-            if (this.isEatOrDrink(stack) && !this.foodDelay) {
+            // Queue inbound packets for the duration of the eat.
+            if (!this.foodDelay) {
                 this.foodDelay = true;
                 this.inboundQueue.clear();
             }
             return;
         }
-        // res 弓: 弓类使用中(bowActive)由状态机取消减速
         if (this.bowActive) {
             event.setSlowDown(false);
             mc.player.setSprinting(true);
@@ -153,7 +148,6 @@ public class NoSlow extends Module {
             this.stopBlink();
             return;
         }
-        // 桌面 һoе: Scaffold 开启或主手持末影珍珠时 NoSlow 不干预(避免冲突), 复位
         if ((step != Step.NONE || this.bowActive || this.foodDelay)
                 && ((Scaffold.INSTANCE != null && Scaffold.INSTANCE.isEnabled())
                     || mc.player.getMainHandItem().is(Items.ENDER_PEARL))) {
@@ -163,21 +157,20 @@ public class NoSlow extends Module {
         if (this.isBlinking) {
             ++this.blinkTicks;
         }
-        // res 弓兜底: 不再使用弓类(或已松开) -> 结束延迟, 重放入站包
         if (this.bowActive && (mc.player.getUseItem().isEmpty()
                 || !this.isBowLike(mc.player.getUseItem().getUseAnimation()))) {
             this.bowActive = false;
             this.bowDelay = false;
             this.flushInboundQueue();
         }
-        // res food delay teardown: the eat finished or was interrupted -> release the queue.
-        // Both cases mean we are no longer using an item, which is exactly the reference's
-        // сіpхcj -> (pѕe|csаeјјр) transition trigger.
+        // Food delay teardown: the eat finished or was interrupted -> release the queue.
+        // Both cases mean we are no longer using an item, which is exactly the trigger
+        // for the transition.
         if (this.foodDelay && !mc.player.isUsingItem()) {
             this.foodDelay = false;
             this.flushInboundQueue();
         }
-        // NoC0FNoSlow: offhand state machine tick logic
+        // Offhand state machine tick logic
         if (step != Step.NONE && step != Step.EATING) {
             mc.options.keyUse.setDown(false);
         }
@@ -204,13 +197,8 @@ public class NoSlow extends Module {
             } else if (step == Step.EATING) {
                 if (mc.player.isUsingItem()) {
                     noUseTicks = 0;
-                } else {
-                    // Local use ended: wait out the round-trip before swapping the hands back,
-                    // the server still has a few ticks of eating left.
-                    noUseTicks++;
-                    if (noUseTicks >= FOOD_SWAP_BACK_GRACE) {
-                        release();
-                    }
+                } else if (++noUseTicks >= FOOD_SWAP_BACK_TIMEOUT) {
+                    release();
                 }
             } else {
                 noUseTicks = 0;
@@ -270,14 +258,18 @@ public class NoSlow extends Module {
         Packet<?> p = event.getPacket();
 
         if (!event.isIncoming()) {
-            // Send packet handling - NoC0F: use incoming C0F as trigger, not outgoing pong
+            if (p instanceof ServerboundMovePlayerPacket
+                    && this.step == Step.EATING && !mc.player.isUsingItem()) {
+                this.release();
+                return;
+            }
+            // Send packet handling: use the incoming ping as trigger, not the outgoing pong
             if (p instanceof ServerboundPlayerActionPacket action
                     && action.getAction() == ServerboundPlayerActionPacket.Action.RELEASE_USE_ITEM) {
                 // Food: never swap back from here. Vanilla emits RELEASE_USE_ITEM the moment it
                 // sees keyUse released, and swapping hands back stops the server's use -- acting
                 // on this packet is what cut the eat short. Step.EATING decides on its own once
                 // the local use really ends.
-                // res 弓: 松开弓类 -> 结束延迟, 重放入站包
                 if (this.bowActive) {
                     this.bowActive = false;
                     this.bowDelay = false;
@@ -285,7 +277,7 @@ public class NoSlow extends Module {
                 }
             }
         } else {
-                // NoC0F: intercept C0F (ClientboundPingPacket) as swap timing signal + queue for replay
+                // Intercept the ping packet (ClientboundPingPacket) as swap timing signal + queue for replay
                 if (step != Step.NONE && p instanceof ClientboundPingPacket) {
                     event.setCancelled(true);
                     queueInboundPacket(p);
@@ -327,11 +319,11 @@ public class NoSlow extends Module {
             PacketUtil.sendQueued(new ServerboundUseItemOnPacket(other, useOnPacket.getHitResult(), useOnPacket.getSequence()));
         }
         if (event.getPacket() instanceof ServerboundUseItemPacket usePacket) {
-            if (this.didSwapHand || this.releaseTicksRemaining > 0) {
+            if (this.didSwapHand || this.releaseTicksRemaining > 0 || this.foodSwapping) {
                 event.setCancelled(true);
             } else {
                 ItemStack handStack = mc.player.getItemInHand(usePacket.getHand());
-                // res һesсјјp food branch: cancel the main-hand UseItem, swap the food into the
+                // Food branch: cancel the main-hand UseItem, swap the food into the
                 // off hand and re-send the packet for that hand, so the server records the eat
                 // on the off hand while the main hand stays free.
                 //
@@ -349,7 +341,7 @@ public class NoSlow extends Module {
                     this.noUseTicks = 0;
                     return;
                 }
-                // res һesсјјp bow branch (jсоijсі(false)): bows don't swap hands, they only
+                // Bow branch: bows don't swap hands, they only
                 // cancel slowdown + delay inbound packets and let the UseItem packet through.
                 if (this.isBowLike(handStack.getUseAnimation())) {
                     this.handleBowUseItem(handStack);
@@ -418,19 +410,10 @@ public class NoSlow extends Module {
         return false;
     }
 
-    // ===== NoC0FNoSlow methods =====
-
     public static boolean isProcessing() {
         return INSTANCE != null && INSTANCE.step != Step.NONE;
     }
 
-    /**
-     * NoSlow 是否正在实际处理使用物品(而非仅开启模块): NoC0F 换手状态机
-     * (吃食物/药水/盾牌)、弓类延迟入站包期间、或换手/释放收尾中。
-     * 供 InventoryManager 等判定是否暂停其它发包行为——NoSlow 工作时会发
-     * SWAP_ITEM_WITH_OFFHAND/RELEASE_USE_ITEM 并延迟入站包,整理 click 与之
-     * 同 tick 会触发反作弊,且 NoSlow 工作期间保持疾跑,与整理压疾跑冲突。
-     */
     public static boolean isActive() {
         if (INSTANCE == null) return false;
         return INSTANCE.step != Step.NONE
@@ -483,7 +466,7 @@ public class NoSlow extends Module {
         return action == UseAnim.EAT || action == UseAnim.DRINK || action == UseAnim.SPEAR;
     }
 
-    // res food-swap eligibility: main hand holds a food/potion (not a stew/shield/bow), we are
+    // Food-swap eligibility: main hand holds a food/potion (not a stew/shield/bow), we are
     // not looking at an interactable block, the off hand is free and the swap is meaningful.
     private boolean shouldFoodSwap(InteractionHand hand, ItemStack stack) {
         if (hand != InteractionHand.MAIN_HAND) return false;
@@ -493,14 +476,19 @@ public class NoSlow extends Module {
         if (anim == UseAnim.BLOCK || this.isBowLike(anim)) return false;
         if (this.isStew(stack)) return false;
         if (this.isLookingAtInteractableBlock()) return false;
-        // Off hand must be empty. With anything in it we leave the vanilla path alone (slowdown
-        // is already cancelled by onSlowdown), otherwise eat -> swap back -> eat -> swap again
-        // would loop forever.
-        if (!mc.player.getOffhandItem().isEmpty()) return false;
+        if (this.isConsumable(mc.player.getMainHandItem()) && this.isConsumable(mc.player.getOffhandItem())) {
+            return false;
+        }
         return this.canSwapHands();
     }
 
-    // NoC0F hand-swap drives spears only. Food/potions are excluded on purpose: that path swaps
+    private boolean isConsumable(ItemStack stack) {
+        if (stack.isEmpty()) return false;
+        UseAnim anim = stack.getUseAnimation();
+        return anim == UseAnim.EAT || anim == UseAnim.DRINK;
+    }
+
+    // The hand-swap path drives spears only. Food/potions are excluded on purpose: that path swaps
     // hands (ARMED -> SWAP -> wait for ClientboundContainerSetSlot), and a hand swap cannot
     // coexist with the foodDelay queue -- the queue holds the very Ping/ContainerSetSlot
     // packets ARMED uses as its rhythm, so both stall and the client swaps hands forever.
@@ -519,7 +507,6 @@ public class NoSlow extends Module {
         BlockPos pos = blockHit.getBlockPos();
         BlockState state = minecraft.level.getBlockState(pos);
 
-        // 通过方块标签检测可交互方块家族
         if (state.is(BlockTags.DOORS) || state.is(BlockTags.FENCE_GATES)
                 || state.is(BlockTags.BUTTONS) || state.is(BlockTags.TRAPDOORS)
                 || state.is(BlockTags.SHULKER_BOXES) || state.is(BlockTags.ANVIL)
@@ -527,7 +514,6 @@ public class NoSlow extends Module {
             return true;
         }
 
-        // 检测已知的可交互方块
         Block block = state.getBlock();
         return block == Blocks.CHEST
                 || block == Blocks.TRAPPED_CHEST
@@ -570,12 +556,10 @@ public class NoSlow extends Module {
         return anim == UseAnim.EAT || anim == UseAnim.DRINK || item instanceof PotionItem;
     }
 
-    // res pјіеoc 弓类判定: BOW/CROSSBOW/SPEAR
     private boolean isBowLike(UseAnim anim) {
         return anim == UseAnim.BOW || anim == UseAnim.CROSSBOW || anim == UseAnim.SPEAR;
     }
 
-    // res һoіo: 煲类(不换手)
     private boolean isStew(ItemStack stack) {
         if (stack.isEmpty()) return false;
         Item item = stack.getItem();
@@ -583,7 +567,6 @@ public class NoSlow extends Module {
                 || item == Items.BEETROOT_SOUP || item == Items.SUSPICIOUS_STEW;
     }
 
-    // res һesсјјp 弓分支(jсоijсі(false)): 弓类不换手, 只标记取消减速 + 延迟入站包, UseItem 放行
     private void handleBowUseItem(ItemStack stack) {
         if (stack.getItem() instanceof CrossbowItem && CrossbowItem.isCharged(stack)) {
             this.shouldReleaseItem = false;

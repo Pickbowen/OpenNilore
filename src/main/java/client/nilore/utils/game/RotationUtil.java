@@ -719,18 +719,18 @@ extends ClientBase {
     }
 
     // ------------------------------------------------------------------
-    // 参考端(package_074)转动链路: 瞄准点搜索 + 限速前进 + GCD 量化
+    // 转动链路: 瞄准点搜索 + 限速前进 + GCD 量化
     // ------------------------------------------------------------------
 
-    /** 身体采样高度分数(参考端 јсхoѕ 的 {0.75, 0.5, 0.3, 0.1})。 */
+    /** 身体采样高度分数({0.75, 0.5, 0.3, 0.1})。 */
     private static final double[] AIM_HEIGHT_FRACTIONS = {0.75, 0.5, 0.3, 0.1};
 
     /**
-     * 由"眼睛 → 目标点"算 rotation(参考端 oeo/aje)。
+     * 由"眼睛 → 目标点"算 rotation。
      *
-     * yaw 相对当前 rotation 取最短增量: 参考端拿 mc.player.getYRot() 当基准, 是因为它的
-     * RotationManager 会把 rotation 同步写进玩家; nilore 是静默转头, 语义等价物是上一 tick
-     * 真正发出去的 rotation({@link RotationHandler#prevRotation})。
+     * yaw 相对当前 rotation 取最短增量: mc.player.getYRot() 只有在 rotation 被同步写进
+     * 玩家时才等价; nilore 是静默转头, 语义等价物是上一 tick 真正发出去的 rotation
+     * ({@link RotationHandler#prevRotation})。
      */
     public static Rotation rotationToPoint(Vec3 from, Vec3 to) {
         Vec3 delta = to.subtract(from);
@@ -745,7 +745,7 @@ extends ClientBase {
         return new Rotation(yaw, Mth.clamp(pitch, -90.0f, 90.0f));
     }
 
-    /** 每轴最多走 step 度(参考端 jһіеоa); step <= 0 时原地不动。 */
+    /** 每轴最多走 step 度; step <= 0 时原地不动。 */
     private static Rotation stepTowards(Rotation from, Rotation to, double step) {
         if (from == null || to == null) {
             return to;
@@ -761,8 +761,8 @@ extends ClientBase {
     }
 
     /**
-     * 参考端 рshхһ: 每轴限速前进, 再锚定在上一次发出的 rotation 上做灵敏度 GCD 量化。
-     * 角误差小于 0.05° 时直接到位(参考端的收敛短路), 避免在死区里反复量化。
+     * 每轴限速前进, 再锚定在上一次发出的 rotation 上做灵敏度 GCD 量化。
+     * 角误差小于 0.05° 时直接到位(收敛短路), 避免在死区里反复量化。
      */
     public static Rotation smoothRotationTo(Rotation from, Rotation to, double speed) {
         if (from == null || to == null) {
@@ -777,7 +777,7 @@ extends ClientBase {
     }
 
     /**
-     * 参考端 јсхoѕ(): 在目标身上找一个"raytrace 真能打到"的瞄准点。
+     * 在目标身上找一个"raytrace 真能打到"的瞄准点。
      *
      * 顺序是 眼睛 → 沿身体高度的 0.75/0.5/0.3/0.1(水平坐标取"自己眼睛"在目标箱体内
      * clamp 0.05) → 目标中心列, 每一步都用 {@link #canHitPoint} 验收。全都打不到时返回
@@ -788,8 +788,8 @@ extends ClientBase {
             return null;
         }
         Vec3 eyePoint = entity.getEyePosition();
-        // 眼位埋在细雪里时目标真实可打的是上半身, 参考端改用 position + eyeHeight*0.3
-        Vec3 fallback = mc.level.getBlockState(BlockPos.containing(eyePoint)).is(Blocks.POWDER_SNOW)
+        // 眼位埋在蜘蛛网里时目标真实可打的是上半身, 改用 position + eyeHeight*0.3
+        Vec3 fallback = mc.level.getBlockState(BlockPos.containing(eyePoint)).is(Blocks.COBWEB)
                 ? entity.position().add(0.0, entity.getEyeHeight() * 0.3, 0.0)
                 : eyePoint;
         if (RotationUtil.canHitPoint(entity, fallback, range)) {
@@ -814,7 +814,7 @@ extends ClientBase {
         return fallback;
     }
 
-    /** 参考端 іxhx(): 从自己眼睛朝该点算 rotation, raytrace 命中目标本身才算数。 */
+    /** 从自己眼睛朝该点算 rotation, raytrace 命中目标本身才算数。 */
     private static boolean canHitPoint(Entity entity, Vec3 point, double range) {
         Rotation rotation = RotationUtil.rotationToPoint(mc.player.getEyePosition(), point);
         return RotationUtil.rayTraceForAim(rotation, range) instanceof EntityHitResult hit
@@ -822,9 +822,9 @@ extends ClientBase {
     }
 
     /**
-     * 参考端 еaес(): 从眼睛沿 rotation 走 range, 方块 clip(OUTLINE, 不裁剪流体) + 手写实体
-     * 拾取, 取近者。实体只按 {@code getPickRadius()} 膨胀 —— 参考端传的额外膨胀是 0.0f,
-     * 这里保持一致: 多一分膨胀就是多一分超范围命中。
+     * 从眼睛沿 rotation 走 range, 方块 clip(OUTLINE, 不裁剪流体) + 手写实体拾取, 取近者。
+     * 实体只按 {@code getPickRadius()} 膨胀, 额外膨胀保持 0.0f: 多一分膨胀就是多一分
+     * 超范围命中。
      */
     public static HitResult rayTraceForAim(Rotation rotation, double range) {
         if (mc.player == null || mc.level == null || rotation == null) {

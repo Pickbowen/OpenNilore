@@ -102,7 +102,7 @@ public class KillAura extends Module {
     public final BooleanSetting ignoreSkipTicks = new BooleanSetting("Ignore skip ticks", false);
     public final BooleanSetting fakeAutoBlock   = new BooleanSetting("Fake AutoBlock", true);
 
-    public final NumberSetting reach       = new NumberSetting("Reach", 3.0, 2.9, 6.0, 0.05);
+    public final NumberSetting reach       = new NumberSetting("Reach", 5.0, 3.0, 6.0, 0.1);
     public final NumberSetting maxAps      = new NumberSetting("Max APS", 12.0, 1.0, 20.0, 1.0);
     public final NumberSetting minAps      = new NumberSetting("Min APS", 9.0, 1.0, 20.0, 1.0);
     public final NumberSetting switchSize  = new NumberSetting("Switch Size", 1.0, 1.0, 5.0, 1.0,
@@ -415,8 +415,7 @@ public class KillAura extends Module {
             this.targetIndex = 0;
         }
         target = targetList.get(this.targetIndex);
-        if (this.delayMode.is("1.9") && mc.player.getAttackStrengthScale(0.0f) < 0.95f) {
-            this.attacks = 0.0f;
+        if (!this.canAttackNow()) {
             return;
         }
         float apsValue = this.maxAps.getValue().floatValue();
@@ -479,6 +478,9 @@ public class KillAura extends Module {
         if (this.delayMode.is("1.9") && mc.player.getAttackStrengthScale(0.0f) < 0.95f) {
             return false;
         }
+        if (this.critHold()) {
+            return false;
+        }
         if (!(this.ignoreSkipTicks.getValue() || ClientBase.delayPackets.isEmpty()
                 || (Critical.INSTANCE != null && Critical.INSTANCE.isEnabled()))) {
             return false;
@@ -493,7 +495,11 @@ public class KillAura extends Module {
         if (mc.player.isUsingItem()) return false;
         if (NoXZMode.isBusy()) return false;
         if (target.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) > 12.25) return false;
-        return !mc.player.onGround() || !mc.options.keySprint.isDown();
+        return !mc.player.onGround() || !mc.options.keyJump.isDown();
+    }
+
+    private boolean critHold() {
+        return Critical.INSTANCE != null && Critical.INSTANCE.holdAttack(target);
     }
 
     public boolean doAttack() {

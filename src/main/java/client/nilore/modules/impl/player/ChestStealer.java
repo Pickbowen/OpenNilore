@@ -526,7 +526,7 @@ extends Module {
         if (this.pendingMenu != null && this.pendingSlot >= 0) {
             clickDelayMs = this.clickDelaySetting.getValue().longValue();
             if (clickMode.is("Packet")) {
-                // 对齐 res Stealer clickSlot / handleInventoryMouseClick: 先本地应用点击
+                // 先本地应用点击
                 // (同步容器槽位/光标状态), 再以 Packet 形式发出 —— 避免裸发包导致本地容器
                 // 状态失步, 使后续 Smart 判空/连点选中与实际一致。stateId 需在 clicked() 之后读
                 // (clicked 会推进本地 stateId), 与 vanilla 发包时序一致。

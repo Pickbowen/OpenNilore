@@ -24,9 +24,11 @@ extends Module {
         if (InventoryManager.isPerformingAction) {
             return;
         }
-        // 抄参考端: KillAura stopSprint 交火停疾跑期间不再压疾跑键, 否则疾跑每 tick
+        // KillAura stopSprint 交火停疾跑期间不再压疾跑键, 否则疾跑每 tick
         // 都被这里重新压上, "非疾跑攻击"永远不成立(NoXZ 击退收放期由 isBusy() 放行)
         if (KillAura.shouldStopSprint()) {
+            mc.options.keySprint.setDown(false);
+            mc.player.setSprinting(false);
             return;
         }
         mc.options.toggleSprint().set(false);
