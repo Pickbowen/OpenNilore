@@ -1,9 +1,12 @@
 package client.nilore.modules.impl.combat;
 
+import net.minecraft.core.BlockPos;
+import net.minecraft.util.Mth;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import client.nilore.event.EventTarget;
@@ -11,6 +14,7 @@ import client.nilore.event.impl.TickEvent;
 import client.nilore.modules.Category;
 import client.nilore.modules.Module;
 import client.nilore.modules.impl.combat.antikb.NoXZMode;
+import client.nilore.settings.impl.BooleanSetting;
 import client.nilore.settings.impl.ModeSetting;
 import client.nilore.settings.impl.NumberSetting;
 
@@ -19,10 +23,13 @@ public class Critical extends Module {
 
     public final ModeSetting mode = new ModeSetting("Mode", "Stuck", "1.9+");
 
-    public final NumberSetting targetTicks = new NumberSetting("Target Ticks", 1.0, 1.0, 3.0, 1.0,
+    public final NumberSetting waitTicks = new NumberSetting("WaitTicks", 1.0, 1.0, 3.0, 1.0,
             () -> this.mode.is("Stuck"));
 
-    public final NumberSetting tolerance = new NumberSetting("Tolerance", 2.0, 0.1, 3.0, 0.1,
+    public final BooleanSetting fallDistance = new BooleanSetting("FallDistance", false,
+            () -> this.mode.is("Stuck"));
+
+    public final NumberSetting targetTicks = new NumberSetting("TargetTicks", 2.0, 0.1, 3.0, 1.0,
             () -> this.mode.is("1.9+"));
 
     private float lastCritDamage;
@@ -60,7 +67,7 @@ public class Critical extends Module {
         if (mc.player.isPassenger()) return false;
         if (mc.player.onClimbable()) return false;
         if (mc.player.hasEffect(MobEffects.BLINDNESS)) return false;
-        if (mc.player.hasEffect(MobEffects.MOVEMENT_SLOWDOWN)) return false;
+        if (mc.player.hasEffect(MobEffects.SLOW_FALLING)) return false;
         if (mc.player.hasEffect(MobEffects.LEVITATION)) return false;
         int hurtTime = living.hurtTime;
         return hurtTime >= 7 || hurtTime <= 3;
@@ -70,8 +77,8 @@ public class Critical extends Module {
         if (!this.isEnabled() || !this.mode.is("1.9+") || mc.player == null) {
             return false;
         }
-        if (mc.player.isSprinting() || mc.player.isPassenger()
-                || mc.player.getAbilities().flying || mc.player.isFallFlying()) {
+        if (mc.player.isSprinting() || mc.player.isPassenger() || mc.player.isInWater()
+                || mc.player.onClimbable() || mc.player.isFallFlying()) {
             return false;
         }
         if (!(entity instanceof LivingEntity living)) {
@@ -92,7 +99,7 @@ public class Critical extends Module {
         float chargeGap = Math.max(0.0f, (0.95f - mc.player.getAttackStrengthScale(0.5f))
                 * mc.player.getCurrentItemAttackStrengthDelay());
         float window = Math.max(chargeGap, (float) (velocityY / 0.08));
-        if (window > this.tolerance.getValue().floatValue()) {
+        if (window > this.targetTicks.getValue().floatValue()) {
             return false;
         }
         return !this.blockedAhead((int) (window * 1.3f));
@@ -129,7 +136,7 @@ public class Critical extends Module {
             return true;
         }
         if (mc.player.hasEffect(MobEffects.BLINDNESS)
-                || mc.player.hasEffect(MobEffects.MOVEMENT_SLOWDOWN)
+                || mc.player.hasEffect(MobEffects.SLOW_FALLING)
                 || mc.player.hasEffect(MobEffects.LEVITATION)) {
             return true;
         }
@@ -140,7 +147,25 @@ public class Critical extends Module {
         if (!allowAir && mc.player.onGround()) {
             return true;
         }
-        return mc.player.onClimbable();
+        if (mc.player.onClimbable()) {
+            return true;
+        }
+        return this.inCobweb();
+    }
+
+    private boolean inCobweb() {
+        if (mc.player == null || mc.level == null) {
+            return false;
+        }
+        AABB box = mc.player.getBoundingBox();
+        for (BlockPos pos : BlockPos.betweenClosed(
+                Mth.floor(box.minX), Mth.floor(box.minY), Mth.floor(box.minZ),
+                Mth.floor(box.maxX), Mth.floor(box.maxY), Mth.floor(box.maxZ))) {
+            if (mc.level.getBlockState(pos).is(Blocks.COBWEB)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean blockedAhead(int ticks) {

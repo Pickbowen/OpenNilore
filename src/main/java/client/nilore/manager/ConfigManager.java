@@ -20,6 +20,7 @@ import client.nilore.config.ValuesConfig;
 public class ConfigManager {
     public static final Logger LOGGER = LogManager.getLogger("ConfigManager");
     public static final File CONFIG_DIR = new File(NiloreClient.configDir, "configs");
+    public static final File SAVED_CONFIGS_DIR = new File(NiloreClient.configDir, "saved_configs");
     private final List<Config> configs;
 
     public ConfigManager() {

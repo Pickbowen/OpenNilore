@@ -5,6 +5,7 @@ import com.mojang.datafixers.util.Pair;
 import java.util.ArrayDeque;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -83,6 +84,9 @@ public class NoSlow extends Module {
     // True while the food-swap eat is in flight (main hand food swapped to the off hand, server
     // eating from there). Only cleared once the eat finished and the hands were swapped back.
     private boolean foodSwapping;
+    private boolean useSuppressed;
+    private boolean forwardReleased;
+    private int forwardRestoreTicks;
     private final Queue<Packet<?>> cached = new ConcurrentLinkedQueue<>();
 
     public NoSlow() {
@@ -100,6 +104,9 @@ public class NoSlow extends Module {
         this.bowDelay = false;
         this.foodDelay = false;
         this.foodSwapping = false;
+        this.useSuppressed = false;
+        this.forwardReleased = false;
+        this.forwardRestoreTicks = 0;
         super.onEnable();
     }
 
@@ -116,8 +123,18 @@ public class NoSlow extends Module {
         this.bowDelay = false;
         this.foodDelay = false;
         this.foodSwapping = false;
+        this.useSuppressed = false;
+        this.forwardReleased = false;
+        this.forwardRestoreTicks = 0;
+        this.restoreForwardKeyState();
         this.restoreUseKeyState();
         super.onDisable();
+    }
+
+    public static boolean isHandling() {
+        NoSlow noSlow = INSTANCE;
+        return noSlow != null
+                && (noSlow.step != Step.NONE || noSlow.bowActive || noSlow.foodDelay);
     }
 
     @EventTarget
@@ -126,6 +143,10 @@ public class NoSlow extends Module {
         ItemStack stack = mc.player.getUseItem();
         if (stack.isEmpty()) return;
         if (this.isEatOrDrink(stack) && !this.isStew(stack)) {
+            if (mc.player.getUsedItemHand() != InteractionHand.MAIN_HAND
+                    || !mc.player.getOffhandItem().isEmpty()) {
+                return;
+            }
             event.setSlowDown(false);
             mc.player.setSprinting(true);
             // Queue inbound packets for the duration of the eat.
@@ -147,6 +168,29 @@ public class NoSlow extends Module {
             this.release();
             this.stopBlink();
             return;
+        }
+        if (this.useSuppressed) {
+            if (this.isKeyPhysicallyDown(mc.options.keyUse)) {
+                this.releaseUseKey();
+            } else {
+                this.useSuppressed = false;
+            }
+        }
+        if (this.step == Step.EATING && mc.player.isUsingItem()
+                && mc.player.getUseItemRemainingTicks() <= 1) {
+            this.forwardReleased = true;
+        }
+        if (this.forwardReleased) {
+            boolean hold = mc.player.isUsingItem()
+                    || (this.hasSwapped && !mc.player.isDeadOrDying());
+            if (hold) {
+                this.forwardRestoreTicks = 0;
+                this.releaseForwardKey();
+            } else if (++this.forwardRestoreTicks >= 1) {
+                this.forwardReleased = false;
+                this.forwardRestoreTicks = 0;
+                this.restoreForwardKeyState();
+            }
         }
         if ((step != Step.NONE || this.bowActive || this.foodDelay)
                 && ((Scaffold.INSTANCE != null && Scaffold.INSTANCE.isEnabled())
@@ -302,7 +346,8 @@ public class NoSlow extends Module {
                     step = Step.EATING;
                 }
 
-            if (step != Step.NONE && p instanceof ClientboundPlayerPositionPacket) {
+            if (step != Step.NONE && !this.foodSwapping && step != Step.EATING
+                    && p instanceof ClientboundPlayerPositionPacket) {
                 release();
             }
         }
@@ -438,6 +483,7 @@ public class NoSlow extends Module {
         if (step == Step.NONE && cached.isEmpty() && !hasSwapped && !foodDelay) {
             return;
         }
+        boolean ate = step == Step.EATING;
         step = Step.NONE;
         noUseTicks = 0;
         swapInArmed = false;
@@ -459,6 +505,10 @@ public class NoSlow extends Module {
             // out took the queued path, so the swap back has to as well.
             this.sendSwapOffhand();
             hasSwapped = false;
+            if (ate) {
+                this.useSuppressed = true;
+                this.releaseUseKey();
+            }
         }
     }
 
@@ -471,6 +521,7 @@ public class NoSlow extends Module {
     private boolean shouldFoodSwap(InteractionHand hand, ItemStack stack) {
         if (hand != InteractionHand.MAIN_HAND) return false;
         if (this.foodSwapping) return false;
+        if (!mc.player.getOffhandItem().isEmpty()) return false;
         if (stack.isEmpty() || !this.isEatOrDrink(stack)) return false;
         UseAnim anim = stack.getUseAnimation();
         if (anim == UseAnim.BLOCK || this.isBowLike(anim)) return false;
@@ -608,7 +659,10 @@ public class NoSlow extends Module {
         if (packet instanceof ClientboundPlayerPositionPacket
                 || packet instanceof ClientboundLoginPacket
                 || packet instanceof ClientboundRespawnPacket) {
-            this.stopBlink();
+            boolean foodEat = this.foodDelay || this.foodSwapping || this.step == Step.EATING;
+            if (!foodEat || !(packet instanceof ClientboundPlayerPositionPacket)) {
+                this.stopBlink();
+            }
             return false;
         }
         if (packet instanceof ClientboundEntityEventPacket evt) {
@@ -671,12 +725,26 @@ public class NoSlow extends Module {
 
     private void restoreUseKeyState() {
         if (mc == null || mc.options == null || mc.getWindow() == null) return;
-        InputConstants.Key key = InputConstants.getKey(mc.options.keyUse.saveString());
+        mc.options.keyUse.setDown(!this.useSuppressed && this.isKeyPhysicallyDown(mc.options.keyUse));
+    }
+
+    private void releaseForwardKey() {
+        if (mc == null || mc.options == null) return;
+        mc.options.keyUp.setDown(false);
+    }
+
+    private void restoreForwardKeyState() {
+        if (mc == null || mc.options == null || mc.getWindow() == null) return;
+        mc.options.keyUp.setDown(this.isKeyPhysicallyDown(mc.options.keyUp));
+    }
+
+    private boolean isKeyPhysicallyDown(KeyMapping key) {
+        if (mc == null || mc.getWindow() == null || key == null) return false;
+        InputConstants.Key bound = InputConstants.getKey(key.saveString());
         long window = mc.getWindow().getWindow();
-        boolean down = key.getType() == InputConstants.Type.MOUSE
-                ? GLFW.glfwGetMouseButton(window, key.getValue()) == 1
-                : InputConstants.isKeyDown(window, key.getValue());
-        mc.options.keyUse.setDown(down);
+        return bound.getType() == InputConstants.Type.MOUSE
+                ? GLFW.glfwGetMouseButton(window, bound.getValue()) == 1
+                : InputConstants.isKeyDown(window, bound.getValue());
     }
 
     private Packet<?> createUseItemPacket(int sequence) {

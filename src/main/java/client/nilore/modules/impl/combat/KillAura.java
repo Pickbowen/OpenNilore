@@ -67,6 +67,7 @@ import client.nilore.settings.impl.ModeSetting;
 import client.nilore.settings.impl.NumberSetting;
 import client.nilore.utils.game.EntityUtil;
 import client.nilore.utils.game.ItemUtil;
+import client.nilore.utils.game.MotionSimulator;
 import client.nilore.utils.game.RotationUtil;
 import client.nilore.utils.math.MathUtil;
 import client.nilore.utils.misc.Assets;
@@ -420,7 +421,7 @@ public class KillAura extends Module {
         }
         float apsValue = this.maxAps.getValue().floatValue();
         float minApsValue = this.minAps.getValue().floatValue();
-        if (NoXZMode.isAttacking) {
+        if (NoXZMode.isCountering()) {
             int kbAttackAmount = AntiKB.INSTANCE != null
                     ? AntiKB.INSTANCE.attackAmount.getValue().intValue()
                     : 0;
@@ -485,6 +486,9 @@ public class KillAura extends Module {
                 || (Critical.INSTANCE != null && Critical.INSTANCE.isEnabled()))) {
             return false;
         }
+        if (NoXZMode.isCountering()) {
+            return false;
+        }
         return RotationUtil.isWithinReach(target);
     }
 
@@ -493,9 +497,17 @@ public class KillAura extends Module {
         if (aura == null || !aura.isEnabled() || !aura.keepSprint.getValue()) return false;
         if (mc.player == null || target == null) return false;
         if (mc.player.isUsingItem()) return false;
-        if (NoXZMode.isBusy()) return false;
+        if (NoXZMode.isCountering()) return false;
+        if (NoXZMode.isInDelayWindow() && shouldKeepSprintInDelayWindow()) return false;
         if (target.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) > 12.25) return false;
         return !mc.player.onGround() || !mc.options.keyJump.isDown();
+    }
+
+    private static boolean shouldKeepSprintInDelayWindow() {
+        if (mc.player == null || mc.level == null) return false;
+        if (mc.player.onGround() || NoXZMode.isCountering()) return true;
+        if (mc.player.getDeltaMovement().y > 0 || mc.player.hurtTime <= 0) return false;
+        return new MotionSimulator(mc.player).findLandingBlock(1) != null;
     }
 
     private boolean critHold() {
@@ -576,27 +588,7 @@ public class KillAura extends Module {
 
     public boolean isValidAttack(Entity entity) {
         if (mc.player == null) return false;
-        if (!this.isValidTarget(entity)) return false;
-        if (entity instanceof LivingEntity le && le.hurtTime > this.hurtTime.getValue().intValue()) {
-            return false;
-        }
-        double dist = RotationUtil.closestPoint(mc.player.getEyePosition(), entity.getBoundingBox())
-                .distanceTo(mc.player.getEyePosition());
-        if (dist > RotationUtil.getReachLimit()) {
-            return false;
-        }
-        if (!RotationUtil.isEntityInFov(entity, this.fov.getValue().floatValue() / 2.0f)) {
-            return false;
-        }
-        // When "Through Walls" is on and the target is close enough, the check is
-        // skipped so you can attack through thin walls at close range.
-        if (mc.level != null) {
-            boolean skipWallCheck = this.ignoreBlocksAt(dist);
-            if (!skipWallCheck && !RotationUtil.canSeeAnyPoint(entity)) {
-                return false;
-            }
-        }
-        return true;
+        return this.isValidTarget(entity);
     }
 
     private boolean ignoreBlocksAt(double dist) {
@@ -630,7 +622,9 @@ public class KillAura extends Module {
         if (mc.player == null || mc.level == null) {
             return new ArrayList<>();
         }
+        AABB box = mc.player.getBoundingBox().inflate(this.reach.getValue().floatValue());
         Stream<Entity> stream = StreamSupport.stream(mc.level.entitiesForRendering().spliterator(), true)
+                .filter(entity -> box.intersects(entity.getBoundingBox()))
                 .filter(this::isValidAttack);
         List<Entity> possibleTargets = stream.collect(Collectors.toList());
         if (this.priorityMode.is("Distance")) {

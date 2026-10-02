@@ -2,7 +2,6 @@ package client.nilore.utils.rotation;
 
 import client.nilore.NiloreClient;
 import net.minecraft.network.protocol.game.ServerboundChatPacket;
-import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
 import client.nilore.ClientBase;
 import client.nilore.event.impl.CameraPitchEvent;
 import client.nilore.event.impl.ChatEvent;
@@ -31,7 +30,6 @@ import client.nilore.modules.impl.player.Helper;
 import client.nilore.modules.impl.player.MidPearl;
 import client.nilore.utils.animation.TickTimer;
 import client.nilore.utils.game.MovementUtil;
-import client.nilore.utils.misc.ReflectionUtil;
 import client.nilore.event.EventTarget;
 
 public class RotationHandler
@@ -60,12 +58,6 @@ public class RotationHandler
 
     @EventTarget(value=0)
     public void onPacket(PacketEvent packetEvent) {
-        ServerboundMovePlayerPacket serverboundMovePlayerPacket;
-        Object object = packetEvent.getPacket();
-        if (object instanceof ServerboundMovePlayerPacket movePacket
-                && movePacket.getYRot(0.0f) < 360.0f && movePacket.getYRot(0.0f) > -360.0f) {
-            ReflectionUtil.setYRot(movePacket, movePacket.getYRot(0.0f) + 720.0f);
-        }
         Object packet2 = packetEvent.getPacket();
         if (packet2 instanceof ServerboundChatPacket chatPacket) {
             ChatEvent event = new ChatEvent(chatPacket.message());

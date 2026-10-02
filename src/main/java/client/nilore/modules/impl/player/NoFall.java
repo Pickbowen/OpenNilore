@@ -46,6 +46,10 @@ extends Module {
         if (mc.player == null || mc.isSingleplayer()) {
             return;
         }
+        if (mc.player.onClimbable()) {
+            this.fallDistanceReached = false;
+            return;
+        }
         if (!mc.player.onGround()) {
             // 空中下落, 记录下落距离是否达标
             if (mc.player.fallDistance >= this.fallDistanceSetting.getValue().floatValue()) {

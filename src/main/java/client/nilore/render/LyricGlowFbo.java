@@ -87,7 +87,7 @@ public final class LyricGlowFbo {
 
         quarterFbo.bind();
         clearBoundFbo();
-        BLUR.render(halfFbo.getTextureId(), 0.0f, 1.0f, halfFbo.getWidth(), halfFbo.getHeight(), radius);
+        BLUR.render(halfFbo.getTextureId(), 0.0f, 1.0f, halfFbo.getWidth(), halfFbo.getHeight(), radius * 0.5f);
 
         // 换回主画面。bindWrite(true) 会把 viewport 恢复成像素尺寸。
         Minecraft.getInstance().getMainRenderTarget().bindWrite(true);

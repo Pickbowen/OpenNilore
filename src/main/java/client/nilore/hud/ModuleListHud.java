@@ -316,8 +316,8 @@ public class ModuleListHud extends HudElement {
         this.setWidth(width);
         this.setHeight(height);
 
-        float drawX = this.getX();
-        float drawY = this.getY();
+        float drawX = this.snapToPixel(this.getX());
+        float drawY = this.snapToPixel(this.getY());
         Alignment alignment = this.resolveAlignment(drawX, width);
         Renderer.render(event.guiGraphics(), drawContext -> this.renderRows(drawContext, rows, drawX, drawY, width, alignment));
     }
@@ -479,8 +479,30 @@ public class ModuleListHud extends HudElement {
             if (rowIndex == 0) { tl = radius; tr = radius; }
             if (rowIndex == rowCount - 1) { br = radius; bl = radius; }
         }
-        return RoundedRectangle.ofXYWHRadii(layout.x, layout.y, layout.width, layout.visualHeight(false),
+        float snap = this.pixelSnap();
+        float y1 = Math.round(layout.y / snap) * snap;
+        float y2 = Math.round((layout.y + layout.visualHeight(false)) / snap) * snap;
+        if (y2 < y1 + snap) {
+            y2 = y1 + snap;
+        }
+        return RoundedRectangle.ofXYWHRadii(layout.x, y1, layout.width, y2 - y1,
                 new float[]{tl, tr, br, bl});
+    }
+
+    private float snapToPixel(float value) {
+        float snap = this.pixelSnap();
+        return Math.round(value / snap) * snap;
+    }
+
+    private float pixelSnap() {
+        if (mc == null || mc.getWindow() == null) {
+            return 1.0f;
+        }
+        double scale = mc.getWindow().getGuiScale();
+        if (scale <= 0.0) {
+            return 1.0f;
+        }
+        return (float) (1.0 / scale);
     }
 
     private RoundedRectangle expandedGlowBounds(RoundedRectangle bounds, float spread) {

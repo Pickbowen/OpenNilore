@@ -1,9 +1,10 @@
 package client.nilore.modules.impl.combat.antikb;
 
 import java.awt.Color;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.LinkedBlockingDeque;
 
-import client.nilore.NiloreClient;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ClientGamePacketListener;
 import net.minecraft.network.protocol.game.ClientboundAnimatePacket;
@@ -30,7 +31,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.EntityHitResult;
-import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.Vec3;
 import client.nilore.event.impl.DisconnectEvent;
 import client.nilore.event.impl.GameTickEvent;
@@ -44,6 +45,7 @@ import client.nilore.event.impl.StrafeEvent;
 import client.nilore.event.impl.TickEvent;
 import client.nilore.modules.impl.combat.AntiKB;
 import client.nilore.modules.impl.combat.KillAura;
+import client.nilore.modules.impl.movement.NoSlow;
 import client.nilore.modules.impl.player.Stuck;
 import client.nilore.utils.game.RotationUtil;
 import client.nilore.utils.misc.ChatUtil;
@@ -52,35 +54,33 @@ import client.nilore.utils.render.RenderUtil;
 public class NoXZMode
         extends AntiKBMode {
     public static NoXZMode INSTANCE;
-    public static boolean isAttacking;
     public static boolean handlingVelocity;
     public static boolean velocityHandled;
-    public static int attackCount;
-    private int attackCooldown = 0;
     private Entity attackTarget = null;
     private int attacksRemaining = 0;
-    private int flagCooldown = 0;
-    private boolean shouldJump = false;
-    private int sprintBoostCounter = 0;
-    private int hitCounter = 0;
     private boolean isSuspending = false;
+    private boolean seenTeleport = false;
+    private int noAimTicks = 0;
     private int delayTicks = 0;
     private ClientboundSetEntityMotionPacket knockbackPacket = null;
     private final LinkedBlockingDeque<Packet<ClientGamePacketListener>> packetQueue = new LinkedBlockingDeque();
-    private float instantAttackProgress = 0.0f;
-    private boolean isInstantAttacking = false;
+    private final Map<Entity, Vec3> positions = new HashMap<>();
 
     @Override
     public boolean isActive() {
         return this.velocityHandled;
     }
 
-    public static boolean isBusy() {
-        return handlingVelocity || velocityHandled || isAttacking;
+    public static boolean isInAttackWindow() {
+        return isCountering();
     }
 
-    public static boolean isInAttackWindow() {
-        return isAttacking || attackCount > 0;
+    public static boolean isInDelayWindow() {
+        return INSTANCE != null && INSTANCE.isSuspending;
+    }
+
+    public static boolean isCountering() {
+        return INSTANCE != null && INSTANCE.attacksRemaining > 0;
     }
 
     public NoXZMode() {
@@ -135,71 +135,49 @@ public class NoXZMode
             return;
         }
         if (packet instanceof ClientboundPlayerPositionPacket) {
-            if (this.isSuspending) {
-                this.release();
-            }
-            this.resetSuspension();
-            if (AntiKB.INSTANCE.debugLog.getValue()) {
-                ChatUtil.print("Flag Detected");
-            }
-            this.flagCooldown = 2;
-            return;
-        }
-        if (this.flagCooldown != 0) {
-            return;
-        }
-        if (this.isSuspending) {
-            if (packet instanceof ClientboundMoveEntityPacket move && move.getEntity(mc.level) == mc.player) {
-                return;
-            }
-            if (packet instanceof ClientboundMoveEntityPacket
-                    || packet instanceof ClientboundPingPacket
-                    || packet instanceof ClientboundTeleportEntityPacket) {
-                this.packetQueue.add(packet);
-                receivePacketEvent.setCancelled(true);
-            } else if (!this.isAllowedPacket(packet)) {
-                this.packetQueue.add(packet);
-                receivePacketEvent.setCancelled(true);
-            }
+            this.seenTeleport = true;
             return;
         }
         if (packet instanceof ClientboundSetEntityMotionPacket motionPacket) {
             if (motionPacket.getId() != mc.player.getId()) {
                 return;
             }
-            if (!this.canProcess()) {
-                if (AntiKB.INSTANCE.debugLog.getValue()) {
-                    ChatUtil.print("Alink Wait");
-                }
-                this.resetAll();
+            if (mc.player.isUsingItem() || NoSlow.isHandling()
+                    || mc.getConnection() == null || this.seenTeleport || KillAura.target == null) {
                 return;
             }
-            double dx = -motionPacket.getXa();
-            double dz = -motionPacket.getZa();
-            if (Math.abs(dx) > 0.01 || Math.abs(dz) > 0.01) {
-                this.hitCounter = 1;
+            this.enterSuspension(motionPacket);
+            receivePacketEvent.setCancelled(true);
+            return;
+        }
+        if (this.isSuspending) {
+            if (packet instanceof ClientboundMoveEntityPacket move && move.getEntity(mc.level) == mc.player) {
+                return;
             }
-            if (motionPacket.getYa() > 0) {
-                Entity target;
-                this.sprintBoostCounter = this.sprintBoostCounter % 100 + 100;
-                if (this.sprintBoostCounter >= 100) {
-                    this.shouldJump = true;
-                }
-                boolean canAttack = this.isValidTarget(target = this.getAttackTarget());
-                if (!mc.player.onGround()) {
-                    this.enterSuspension(motionPacket);
-                    receivePacketEvent.setCancelled(true);
-                } else if (canAttack) {
-                    this.attackTarget = target;
-                    this.attacksRemaining = this.getAttackCount(motionPacket);
-                } else {
-                    this.enterSuspension(motionPacket);
-                    receivePacketEvent.setCancelled(true);
-                    if (AntiKB.INSTANCE.debugLog.getValue()) {
-                        ChatUtil.print("Alink Wait");
+            if (packet instanceof ClientboundMoveEntityPacket move) {
+                Entity moved = move.getEntity(mc.level);
+                if (moved != null) {
+                    Vec3 base = this.positions.getOrDefault(moved,
+                            new Vec3(moved.getX(), moved.getY(), moved.getZ()));
+                    if (move.hasPosition()) {
+                        this.positions.put(moved, base.add((double)move.getXa() / 4096.0,
+                                (double)move.getYa() / 4096.0, (double)move.getZa() / 4096.0));
                     }
                 }
+                this.packetQueue.add(packet);
+                receivePacketEvent.setCancelled(true);
+            } else if (packet instanceof ClientboundTeleportEntityPacket teleport) {
+                Entity moved = mc.level.getEntity(teleport.getId());
+                if (moved != null) {
+                    this.positions.put(moved, new Vec3(teleport.getX(), teleport.getY(), teleport.getZ()));
+                }
+                this.packetQueue.add(packet);
+                receivePacketEvent.setCancelled(true);
+            } else if (packet instanceof ClientboundPingPacket || !this.isAllowedPacket(packet)) {
+                this.packetQueue.add(packet);
+                receivePacketEvent.setCancelled(true);
             }
+            return;
         }
     }
 
@@ -213,102 +191,55 @@ public class NoXZMode
         if (mc.player == null) {
             return;
         }
-        if (this.attackCooldown > 0) {
-            --this.attackCooldown;
-            if (this.attackCooldown <= 0) {
-                isAttacking = false;
-                attackCount = 0;
-                velocityHandled = false;
-            }
-        }
-        if (this.hitCounter > 0) {
-            ++this.hitCounter;
-            if (this.hitCounter > 2) {
-                this.hitCounter = 0;
-            }
+        if (this.shouldNotEngage() || this.noAimTicks >= 3) {
+            this.resetAll();
+            return;
         }
         if (mc.player.isDeadOrDying() || !mc.player.isAlive() || this.shouldIgnore()) {
             this.clearTarget();
             if (this.isSuspending) {
                 this.release();
             }
-            if (this.isInstantAttacking) {
-                this.isInstantAttacking = false;
-                this.instantAttackProgress = 0.0f;
-                NiloreClient.serverTickRate = 1.0f;
-            }
             return;
         }
-        if (this.flagCooldown > 0) {
-            --this.flagCooldown;
-            this.clearTarget();
-        }
         if (this.isSuspending) {
-            ++this.delayTicks;
             if (this.delayTicks >= AntiKB.INSTANCE.maxDelayTicks.getValue().intValue()) {
-                if (AntiKB.INSTANCE.debugLog.getValue()) {
-                    ChatUtil.print("Alink Timeout");
-                }
                 this.resetAll();
                 return;
             }
-            boolean instantAttackEnabled = AntiKB.INSTANCE.instantAttack.getValue();
-            if (instantAttackEnabled && this.instantAttackProgress < 3.0f) {
-                float tickRate;
-                NiloreClient.serverTickRate = tickRate = 0.5f;
-                this.instantAttackProgress += 1.0f - tickRate;
-                this.instantAttackProgress = Math.min(this.instantAttackProgress, 3.0f);
-            }
-            if (mc.player.onGround()) {
-                if (AntiKB.INSTANCE.debugLog.getValue()) {
-                    ChatUtil.print("ground");
-                }
-                if (instantAttackEnabled) {
-                    NiloreClient.serverTickRate = 1.0f;
-                }
-                Entity target = this.getAttackTarget();
-                boolean canAttack = this.isValidTarget(target);
-                boolean sprinting = mc.player.isSprinting();
-                if (canAttack && sprinting) {
-                    this.flushQueue();
-                    this.attackTarget = target;
-                    this.attacksRemaining = this.getAttackCount(this.knockbackPacket);
-                    if (instantAttackEnabled && this.instantAttackProgress > 0.0f) {
-                        this.attacksRemaining = (int)this.instantAttackProgress;
-                        this.isSuspending = false;
-                        handlingVelocity = false;
-                        this.delayTicks = 0;
-                        this.isInstantAttacking = true;
-                        NiloreClient.serverTickRate = 4.0f;
-                    } else {
-                        this.doAttackSequence(tickEvent);
-                        this.isSuspending = false;
-                        handlingVelocity = false;
-                        this.delayTicks = 0;
-                    }
-                } else if (!canAttack) {
-                    this.release();
-                    if (instantAttackEnabled) {
-                        this.instantAttackProgress = 0.0f;
-                    }
-                } else {
-                }
-                return;
+            ++this.delayTicks;
+            this.attacksRemaining = 0;
+            Entity target = this.getAttackTarget();
+            boolean canAttack = target != null
+                    && mc.hitResult instanceof EntityHitResult hit
+                    && hit.getEntity() == target;
+            if (canAttack && mc.player.isSprinting()) {
+                this.flushQueue();
+                this.noAimTicks = 0;
+                this.attackTarget = target;
+                this.attacksRemaining = this.getAttackCount(this.knockbackPacket);
+                this.doAttackSequence(tickEvent);
+                this.isSuspending = false;
+                handlingVelocity = false;
             }
             return;
         }
-        if (this.isInstantAttacking) {
-            this.instantAttackProgress -= 1.0f;
-            if (this.instantAttackProgress <= 0.0f) {
-                this.instantAttackProgress = 0.0f;
-                this.isInstantAttacking = false;
-                NiloreClient.serverTickRate = 1.0f;
-                if (AntiKB.INSTANCE.debugLog.getValue()) {
-                    ChatUtil.print("done");
-                }
-            }
-        }
         if (this.attacksRemaining > 0 && this.attackTarget != null) {
+            boolean aiming = mc.hitResult instanceof EntityHitResult hit
+                    && hit.getEntity() == this.attackTarget;
+            if (!aiming) {
+                ++this.noAimTicks;
+                if (AntiKB.INSTANCE.debugLog.getValue()) {
+                    ChatUtil.print("Failed (RayCast)");
+                }
+                return;
+            }
+            if (!mc.player.isSprinting()) {
+                if (AntiKB.INSTANCE.debugLog.getValue()) {
+                    ChatUtil.print("Failed (Sprint)");
+                }
+                return;
+            }
             this.doAttackSequence(tickEvent);
         }
     }
@@ -343,27 +274,28 @@ public class NoXZMode
     }
 
     private void enterSuspension(ClientboundSetEntityMotionPacket packet) {
+        if (!this.isSuspending) {
+            this.delayTicks = 0;
+        }
         this.isSuspending = true;
         handlingVelocity = true;
         velocityHandled = true;
-        this.delayTicks = 0;
         this.knockbackPacket = packet;
         this.packetQueue.add(packet);
     }
 
-    private boolean canProcess() {
-        return !AntiKB.INSTANCE.requireKillAura.getValue()
-                || (KillAura.INSTANCE != null && KillAura.INSTANCE.isEnabled());
+    private boolean shouldNotEngage() {
+        return mc.player == null || mc.player.isUsingItem() || NoSlow.isHandling()
+                || mc.getConnection() == null || this.seenTeleport || KillAura.target == null;
     }
 
     private void resetAll() {
         this.flushQueue();
         this.clearTarget();
-        this.flagCooldown = 0;
-        this.shouldJump = false;
-        this.sprintBoostCounter = 0;
-        this.hitCounter = 0;
+        this.positions.clear();
         this.resetSuspension();
+        this.seenTeleport = false;
+        this.noAimTicks = 0;
     }
 
     private void clearTarget() {
@@ -377,9 +309,6 @@ public class NoXZMode
         velocityHandled = false;
         this.delayTicks = 0;
         this.knockbackPacket = null;
-        this.instantAttackProgress = 0.0f;
-        this.isInstantAttacking = false;
-        NiloreClient.serverTickRate = 1.0f;
     }
 
     private void release() {
@@ -425,19 +354,8 @@ public class NoXZMode
         return 5;
     }
 
-    private Entity getHitResultEntity() {
-        Entity hitEntity;
-        if (mc.hitResult != null && mc.hitResult.getType() == HitResult.Type.ENTITY && (hitEntity = ((EntityHitResult)mc.hitResult).getEntity()) instanceof LivingEntity && hitEntity != mc.player && hitEntity.isAlive() && !hitEntity.isSpectator()) {
-            return hitEntity;
-        }
-        return null;
-    }
-
     private Entity getAttackTarget() {
-        if (KillAura.target != null) {
-            return KillAura.target;
-        }
-        return this.getHitResultEntity();
+        return KillAura.target;
     }
 
     private boolean isValidTarget(Entity entity) {
@@ -460,17 +378,10 @@ public class NoXZMode
             this.clearTarget();
             return;
         }
-        isAttacking = true;
-        attackCount = this.attacksRemaining--;
-        this.attackCooldown = 2;
+        this.attacksRemaining--;
         this.doAttack(this.attackTarget);
         if (this.attacksRemaining <= 0) {
             this.clearTarget();
-            if (AntiKB.INSTANCE.instantAttack.getValue()) {
-                if (AntiKB.INSTANCE.debugLog.getValue()) {
-                    ChatUtil.print("Attack (" + AntiKB.INSTANCE.attackAmount.getValue().intValue() + ")");
-                }
-            }
         }
     }
 
@@ -478,27 +389,8 @@ public class NoXZMode
         if (mc.player == null || mc.gameMode == null) {
             return false;
         }
-        if (AntiKB.INSTANCE.sprintStateCheck.getValue() && !mc.player.isSprinting()) {
-            if (AntiKB.INSTANCE.debugLog.getValue()) {
-                ChatUtil.print("not sprinting");
-            }
-            return false;
-        }
-        boolean wasSprinting = mc.player.isSprinting();
-        if (wasSprinting) {
-            mc.player.setSprinting(false);
-        }
         mc.gameMode.attack(mc.player, entity);
         mc.player.swing(InteractionHand.MAIN_HAND);
-        if (wasSprinting) {
-            Vec3 velocity = mc.player.getDeltaMovement();
-            mc.player.setDeltaMovement(velocity.x * 0.6, velocity.y, velocity.z * 0.6);
-        }
-        if (!AntiKB.INSTANCE.instantAttack.getValue()) {
-            if (AntiKB.INSTANCE.debugLog.getValue()) {
-                ChatUtil.print("Attack (" + this.attacksRemaining + ")");
-            }
-        }
         return true;
     }
 
@@ -525,9 +417,7 @@ public class NoXZMode
     }
 
     static {
-        isAttacking = false;
         handlingVelocity = false;
         velocityHandled = false;
-        attackCount = 0;
     }
 }

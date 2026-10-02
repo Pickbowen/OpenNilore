@@ -96,7 +96,9 @@ extends Module {
         if (mc.player == null || mc.level == null) {
             return;
         }
-        if (mc.player.isFallFlying()) {
+        if (mc.player.isFallFlying() || mc.player.onClimbable()) {
+            this.lastY = mc.player.getY();
+            this.accumulatedFall = 0.0f;
             return;
         }
         if (mc.player.onGround() || mc.player.getAbilities().flying || mc.player.isInWaterRainOrBubble() || mc.player.isInLava()) {
