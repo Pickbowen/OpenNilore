@@ -4,6 +4,7 @@ import java.util.HashMap;
 import java.util.Optional;
 import client.nilore.ClientBase;
 import client.nilore.event.impl.DisconnectEvent;
+import client.nilore.event.impl.EntityRemoveEvent;
 import client.nilore.event.impl.GameTickEvent;
 import client.nilore.event.impl.MotionEvent;
 import client.nilore.event.impl.PreMotionEvent;
@@ -58,6 +59,8 @@ extends ClientBase {
     public abstract void onStrafe(StrafeEvent var1);
 
     public abstract void onMotion(MotionEvent var1);
+
+    public abstract void onAttack(EntityRemoveEvent var1);
 
     public void onRender(RenderEvent renderEvent) {
     }

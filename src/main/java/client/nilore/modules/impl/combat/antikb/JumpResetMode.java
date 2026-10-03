@@ -4,6 +4,7 @@ import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket;
 import client.nilore.event.impl.DisconnectEvent;
+import client.nilore.event.impl.EntityRemoveEvent;
 import client.nilore.event.impl.GameTickEvent;
 import client.nilore.event.impl.MotionEvent;
 import client.nilore.event.impl.PreMotionEvent;
@@ -14,6 +15,7 @@ import client.nilore.event.impl.StrafeEvent;
 import client.nilore.event.impl.TickEvent;
 import client.nilore.modules.impl.combat.AntiKB;
 import client.nilore.modules.impl.combat.Backtrack;
+import client.nilore.modules.impl.combat.KillAura;
 import client.nilore.modules.impl.movement.Scaffold;
 import client.nilore.modules.impl.player.NoFall;
 import client.nilore.utils.rotation.Rotation;
@@ -83,6 +85,10 @@ public class JumpResetMode extends AntiKBMode {
     }
 
     @Override
+    public void onAttack(EntityRemoveEvent event) {
+    }
+
+    @Override
     public void onSprint(SprintEvent event) {
     }
 
@@ -118,10 +124,11 @@ public class JumpResetMode extends AntiKBMode {
         if (motion.getId() != player.getId()) return;
         this.knockbackPacket = motion;
 
-        boolean wantRotate = AntiKB.INSTANCE.rotate.getValue() || AntiKB.INSTANCE.followDirection.getValue();
-        if (wantRotate) {
-            float xMotion = (float) (motion.getXa() / 8000.0);
-            float zMotion = (float) (motion.getZa() / 8000.0);
+        boolean wantRotate = (AntiKB.INSTANCE.rotate.getValue() || AntiKB.INSTANCE.followDirection.getValue())
+                && KillAura.target == null;
+        float xMotion = (float) (motion.getXa() / 8000.0);
+        float zMotion = (float) (motion.getZa() / 8000.0);
+        if (wantRotate && (Math.abs(xMotion) > 1.0E-6 || Math.abs(zMotion) > 1.0E-6)) {
             float yaw = (float) Math.toDegrees(Math.atan2(xMotion, -zMotion));
             Rotation kbRotation = new Rotation(yaw, player.getXRot());
             AntiKB.rotation = kbRotation;
@@ -133,10 +140,12 @@ public class JumpResetMode extends AntiKBMode {
             }
         }
 
+        isJumping = true;
         if (player.onGround()) {
-            isJumping = true;
             this.jumpTicks = 1;
         }
+        logger.info("[AntiKB] JumpReset kb=({},{},{}) onGround={} rotating={}",
+                motion.getXa(), motion.getYa(), motion.getZa(), player.onGround(), AntiKB.rotation != null);
     }
 
     @Override
@@ -159,6 +168,7 @@ public class JumpResetMode extends AntiKBMode {
         if (this.jumpTicks > 0 && !Scaffold.INSTANCE.isEnabled()) {
             mc.options.keyJump.setDown(true);
             this.jumpTicks--;
+            logger.info("[AntiKB] JumpReset jump tick={} onGround={}", player.tickCount, player.onGround());
             return;
         }
         if (!Scaffold.INSTANCE.isEnabled()) {
@@ -178,6 +188,9 @@ public class JumpResetMode extends AntiKBMode {
         }
         if (AntiKB.rotation != null) {
             this.rotationHeldTicks++;
+        }
+        if (player.hurtTime == 0) {
+            isJumping = false;
         }
         boolean shouldClear = player.hurtTime == 0
                 || this.rotationHeldTicks > AntiKB.INSTANCE.rotateTicks.getValue().intValue()

@@ -2,6 +2,7 @@ package client.nilore.utils.rotation;
 
 import client.nilore.NiloreClient;
 import net.minecraft.network.protocol.game.ServerboundChatPacket;
+import net.minecraft.util.Mth;
 import client.nilore.ClientBase;
 import client.nilore.event.impl.CameraPitchEvent;
 import client.nilore.event.impl.ChatEvent;
@@ -112,9 +113,35 @@ public class RotationHandler
             } else if (antiKB != null && antiKB.isEnabled() && AntiKB.rotation != null) {
                 RotationHandler.setTargetRotation(AntiKB.rotation);
             } else {
-                isRotating = false;
+                RotationHandler.resetToPlayerRotation();
             }
         }
+    }
+
+    private static final float RESET_SPEED = 180.0f;
+
+    private static void resetToPlayerRotation() {
+        if (mc.player == null) {
+            isRotating = false;
+            return;
+        }
+        float playerYaw = mc.player.getYRot();
+        float playerPitch = mc.player.getXRot();
+        if (sentRotation == null) {
+            RotationHandler.setTargetRotation(new Rotation(playerYaw, playerPitch));
+            isRotating = false;
+            return;
+        }
+        float yawDiff = Mth.wrapDegrees(playerYaw - sentRotation.getYaw());
+        float pitchDiff = playerPitch - sentRotation.getPitch();
+        if (Math.abs(yawDiff) < 0.01f && Math.abs(pitchDiff) < 0.01f) {
+            RotationHandler.setTargetRotation(new Rotation(sentRotation.getYaw(), Mth.clamp(playerPitch, -90.0f, 90.0f)));
+            isRotating = false;
+            return;
+        }
+        float yaw = sentRotation.getYaw() + Mth.clamp(yawDiff, -RESET_SPEED, RESET_SPEED);
+        float pitch = Mth.clamp(sentRotation.getPitch() + Mth.clamp(pitchDiff, -RESET_SPEED, RESET_SPEED), -90.0f, 90.0f);
+        RotationHandler.setTargetRotation(new Rotation(yaw, pitch));
     }
 
     @EventTarget
@@ -148,15 +175,20 @@ public class RotationHandler
                 targetRotation = prevRotation = new Rotation(mc.player.getYRot(), mc.player.getXRot());
             }
             prevSentRotation = sentRotation;
-            float yaw = targetRotation.getYaw();
-            float pitch = targetRotation.getPitch();
-            if (!Float.isNaN(yaw) && !Float.isNaN(pitch) && isRotating) {
+            float baseYaw = sentRotation != null ? sentRotation.getYaw() : mc.player.getYRot();
+            float yaw = baseYaw + Mth.wrapDegrees(targetRotation.getYaw() - baseYaw);
+            float pitch = Mth.clamp(targetRotation.getPitch(), -90.0f, 90.0f);
+            if (Math.abs(yaw - baseYaw) > 100.0f) {
+                logger.info("[Rot] jump base={} target={} out={} delta={} rotating={}",
+                        baseYaw, targetRotation.getYaw(), yaw, yaw - baseYaw, isRotating);
+            }
+            if (!Float.isNaN(yaw) && !Float.isNaN(pitch) && !Float.isInfinite(yaw) && !Float.isInfinite(pitch)) {
                 e.setYaw(yaw);
                 e.setPitch(pitch);
             }
-            ClientBase.yaw = targetRotation.getYaw();
-            sentRotation = new Rotation(e.getYaw(), e.getPitch());
-            prevRotation = new Rotation(e.getYaw(), e.getPitch());
+            sentRotation = new Rotation(e.getYaw(), Mth.clamp(e.getPitch(), -90.0f, 90.0f));
+            prevRotation = new Rotation(e.getYaw(), Mth.clamp(e.getPitch(), -90.0f, 90.0f));
+            ClientBase.yaw = sentRotation.getYaw();
         }
     }
 

@@ -138,16 +138,17 @@ public class Projectiles extends Module {
         Vec3 camera = mc.gameRenderer.getMainCamera().getPosition();
         poseStack.pushPose();
         poseStack.translate(-camera.x, -camera.y, -camera.z);
+        // 这些状态在整个循环里取值不变, 提到循环外; 只有 shaderColor 是按实体取的, 留在里面。
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.disableDepthTest();
+        RenderSystem.depthMask(false);
+        RenderSystem.setShader(GameRenderer::getPositionShader);
         for (Entity entity : mc.level.entitiesForRendering()) {
             if (!(entity instanceof Projectile)) continue;
             if (!entity.isAlive()) continue;
             EspColorProvider provider = this.getColorProvider(entity);
             if (provider == null) continue;
-            RenderSystem.enableBlend();
-            RenderSystem.defaultBlendFunc();
-            RenderSystem.disableDepthTest();
-            RenderSystem.depthMask(false);
-            RenderSystem.setShader(GameRenderer::getPositionShader);
             Color color = provider.getColor(entity);
             RenderSystem.setShaderColor(color.getRed() / 255.0f, color.getGreen() / 255.0f, color.getBlue() / 255.0f, 1.0f);
             this.renderProjectileEntity(poseStack, entity, provider);
@@ -160,10 +161,10 @@ public class Projectiles extends Module {
                 }
             }
             RenderSystem.setShaderColor(1.0f, 1.0f, 1.0f, 1.0f);
-            RenderSystem.disableBlend();
-            RenderSystem.enableDepthTest();
-            RenderSystem.depthMask(true);
         }
+        RenderSystem.disableBlend();
+        RenderSystem.enableDepthTest();
+        RenderSystem.depthMask(true);
         SimulationResult simulation = null;
         if (holdingThrowable && this.isHoldingThrowable(mc.player, heldThrowable)) {
             simulation = this.simulateTrajectory(renderEvent.partialTick());
@@ -541,8 +542,11 @@ public class Projectiles extends Module {
         return null;
     }
 
+    private final List<EspColorProvider> activeProviders = new ArrayList<>(5);
+
     private List<EspColorProvider> getProjectileInfos() {
-        ArrayList<EspColorProvider> list = new ArrayList<>();
+        List<EspColorProvider> list = this.activeProviders;
+        list.clear();
         if (this.showArrows.getValue()) list.add(this.arrowsColor);
         if (this.showPotions.getValue()) list.add(this.potionsColor);
         if (this.showPearls.getValue()) list.add(this.enderPearlColor);

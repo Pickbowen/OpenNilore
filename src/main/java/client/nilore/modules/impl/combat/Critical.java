@@ -1,42 +1,127 @@
 package client.nilore.modules.impl.combat;
 
-import net.minecraft.core.BlockPos;
-import net.minecraft.util.Mth;
-import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.entity.ai.attributes.Attributes;
-import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.phys.AABB;
-import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.EntityHitResult;
 import client.nilore.event.EventTarget;
+import client.nilore.event.impl.EntityRemoveEvent;
+import client.nilore.event.impl.PlayerTickEvent;
+import client.nilore.event.impl.PreMotionEvent;
+import client.nilore.event.impl.StrafeEvent;
 import client.nilore.event.impl.TickEvent;
 import client.nilore.modules.Category;
 import client.nilore.modules.Module;
-import client.nilore.modules.impl.combat.antikb.NoXZMode;
 import client.nilore.settings.impl.BooleanSetting;
 import client.nilore.settings.impl.ModeSetting;
 import client.nilore.settings.impl.NumberSetting;
+import client.nilore.utils.game.FightManager;
+import client.nilore.utils.game.RotationUtil;
+import client.nilore.utils.misc.ChatUtil;
+import client.nilore.utils.rotation.Rotation;
+import client.nilore.utils.rotation.RotationHandler;
 
 public class Critical extends Module {
     public static Critical INSTANCE;
 
-    public final ModeSetting mode = new ModeSetting("Mode", "Stuck", "1.9+");
+    public static volatile boolean stopAttack = false;
 
-    public final NumberSetting waitTicks = new NumberSetting("WaitTicks", 1.0, 1.0, 3.0, 1.0,
-            () -> this.mode.is("Stuck"));
+    public final ModeSetting mode = new ModeSetting("Mode", "Grim", "SkipTicks", "Optimize").withDefault("Grim");
 
-    public final BooleanSetting fallDistance = new BooleanSetting("FallDistance", false,
-            () -> this.mode.is("Stuck"));
+    public final NumberSetting skipTicksRange = new NumberSetting("SkipTicks Range", 3.0, 1.0, 6.0, 0.1,
+            () -> this.mode.is("SkipTicks"));
 
-    public final NumberSetting targetTicks = new NumberSetting("TargetTicks", 2.0, 0.1, 3.0, 1.0,
-            () -> this.mode.is("1.9+"));
+    public final BooleanSetting autoJump = new BooleanSetting("Auto Jump", false, () -> this.mode.is("Optimize"));
 
-    private float lastCritDamage;
+    public final BooleanSetting debug = new BooleanSetting("Debug", false);
+
+    private LivingEntity enemy;
+    private boolean isAttack;
+    private boolean isSprint;
+    private boolean again;
+    private boolean balance;
+    private int skipTicks;
 
     public Critical() {
         super("Critical", Category.COMBAT);
         INSTANCE = this;
+    }
+
+    @Override
+    public void onEnable() {
+        this.clearState();
+    }
+
+    @Override
+    public void onDisable() {
+        this.clearState();
+    }
+
+    private void clearState() {
+        this.enemy = null;
+        this.isAttack = false;
+        this.isSprint = false;
+        this.again = false;
+        this.balance = false;
+        this.skipTicks = 0;
+        stopAttack = false;
+    }
+
+    @EventTarget
+    public void onPreMotion(PreMotionEvent event) {
+        if (mc.player == null) {
+            return;
+        }
+        if (this.mode.is("SkipTicks")) {
+            this.updateSkipTicks();
+        } else if (this.mode.is("Optimize")) {
+            this.optimizeExtraAttack();
+        }
+    }
+
+    private void updateSkipTicks() {
+        Entity target = KillAura.target;
+        if (target == null) {
+            return;
+        }
+        if (this.cantCrit(target)) {
+            this.skipTicks = 0;
+            return;
+        }
+        boolean auraActive = KillAura.INSTANCE != null && KillAura.INSTANCE.isEnabled();
+        if (mc.player.getDeltaMovement().y < 0.0
+                && !mc.player.onGround()
+                && auraActive
+                && mc.player.distanceTo(target) <= this.skipTicksRange.getValue().floatValue()) {
+            if (this.skipTicks <= 0) {
+                this.skipTicks++;
+            }
+        } else if (!auraActive) {
+            this.skipTicks = 0;
+        }
+    }
+
+    private void optimizeExtraAttack() {
+        if (!this.isAttack || !this.balance || !this.isFalling() || mc.player.isSprinting()) {
+            return;
+        }
+        this.again = false;
+        stopAttack = false;
+        LivingEntity current = this.enemy;
+        if (current != null && this.isLookingAt(current, 4.0)) {
+            if (FightManager.attackAndLock()) {
+                mc.gameMode.attack(mc.player, current);
+                mc.player.resetAttackStrengthTicker();
+                mc.player.swing(InteractionHand.MAIN_HAND);
+            } else {
+                this.again = true;
+            }
+        }
+        if (!this.again) {
+            this.isSprint = true;
+            this.balance = false;
+            this.debugLog("Crit.");
+        }
     }
 
     @EventTarget
@@ -44,151 +129,138 @@ public class Critical extends Module {
         if (mc.player == null) {
             return;
         }
-        if (this.isReleaseWindow()) {
-            mc.options.keySprint.setDown(false);
-            if (mc.player.isSprinting()) {
-                mc.player.setSprinting(false);
+        if (this.enemy == null) {
+            return;
+        }
+        if (this.mode.is("Grim")) {
+            if (this.enemy.hurtTime < 2 || this.enemy.distanceTo(mc.player) > 4.0) {
+                this.enemy = null;
+                this.isAttack = false;
+                return;
+            }
+            if (this.isAttack && !mc.player.onGround() && mc.player.fallDistance > 0.0f) {
+                this.releaseSprint();
+                this.isSprint = true;
+            }
+        } else if (this.mode.is("Optimize")) {
+            if (this.enemy.hurtTime < 2 || this.enemy.distanceTo(mc.player) > 4.0) {
+                this.enemy = null;
+                this.isAttack = false;
+                stopAttack = false;
+                return;
+            }
+            double velocityY = mc.player.getDeltaMovement().y;
+            stopAttack = !mc.player.onGround() && velocityY > 0.0 && velocityY < 0.16;
+            if (this.isAttack && this.isFalling()) {
+                this.releaseSprint();
+                this.debugLog("Balance.");
+                this.balance = true;
             }
         }
     }
 
-    public boolean isReleaseWindow() {
-        if (NoXZMode.handlingVelocity) return false;
-        if (mc.player == null) return false;
-        Entity target = KillAura.target;
+    @EventTarget
+    public void onStrafe(StrafeEvent event) {
+        if (mc.player == null || !this.autoJump.getValue() || !this.mode.is("Optimize")) {
+            return;
+        }
+        if (mc.player.onGround() && mc.player.isSprinting() && this.isAttack) {
+            event.setSprinting(true);
+        }
+    }
+
+    @EventTarget
+    public void onAttack(EntityRemoveEvent event) {
+        if (mc.player == null || event.dead()) {
+            return;
+        }
+        if (this.mode.is("SkipTicks")) {
+            if (mc.player.fallDistance > 0.0f && !mc.player.isSprinting()
+                    && event.entity() instanceof LivingEntity living && living.hurtTime < 2) {
+                this.debugLog("Crit.");
+            }
+            return;
+        }
+        if (!(event.entity() instanceof LivingEntity living)) {
+            this.enemy = null;
+            this.isAttack = false;
+            this.isSprint = false;
+            return;
+        }
+        if (mc.player.isSprinting()) {
+            this.enemy = living;
+            this.isAttack = true;
+        }
+        if (mc.player.fallDistance > 0.0f && !mc.player.isSprinting() && this.isAttack && this.isSprint) {
+            this.isAttack = false;
+            this.isSprint = false;
+            if (this.mode.is("Optimize")) {
+                stopAttack = false;
+            }
+            this.debugLog("Crit.");
+        }
+    }
+
+    @EventTarget
+    public void onPlayerTick(PlayerTickEvent event) {
+        if (!this.consumeSkipTick()) {
+            return;
+        }
+        event.setCancelled(true);
+    }
+
+    public boolean consumeSkipTick() {
+        if (!this.isEnabled() || !this.mode.is("SkipTicks") || this.skipTicks <= 0) {
+            return false;
+        }
+        this.skipTicks--;
+        return true;
+    }
+
+    private void releaseSprint() {
+        mc.player.setSprinting(false);
+        mc.options.keyShift.setDown(false);
+    }
+
+    private boolean canPrepareCritical() {
+        return !mc.player.onGround()
+                && !mc.player.onClimbable()
+                && !mc.player.isInWater()
+                && !mc.player.isInLava()
+                && !mc.player.isPassenger()
+                && !mc.player.getAbilities().flying;
+    }
+
+    private boolean isFalling() {
+        return this.canPrepareCritical() && mc.player.fallDistance > 0.0f;
+    }
+
+    private boolean cantCrit(Entity target) {
+        if (mc.player == null) {
+            return true;
+        }
         if (!(target instanceof LivingEntity living)) {
-            return false;
-        }
-        if (mc.player.onGround()) return false;
-        if (mc.player.isInWater() || mc.player.isInLava()) return false;
-        if (mc.player.isUsingItem()) return false;
-        if (mc.player.isShiftKeyDown()) return false;
-        if (mc.player.isFallFlying()) return false;
-        if (mc.player.isPassenger()) return false;
-        if (mc.player.onClimbable()) return false;
-        if (mc.player.hasEffect(MobEffects.BLINDNESS)) return false;
-        if (mc.player.hasEffect(MobEffects.SLOW_FALLING)) return false;
-        if (mc.player.hasEffect(MobEffects.LEVITATION)) return false;
-        int hurtTime = living.hurtTime;
-        return hurtTime >= 7 || hurtTime <= 3;
-    }
-
-    public boolean shouldCritEntity(Entity entity) {
-        if (!this.isEnabled() || !this.mode.is("1.9+") || mc.player == null) {
-            return false;
-        }
-        if (mc.player.isSprinting() || mc.player.isPassenger() || mc.player.isInWater()
-                || mc.player.onClimbable() || mc.player.isFallFlying()) {
-            return false;
-        }
-        if (!(entity instanceof LivingEntity living)) {
-            return false;
-        }
-        float damage = this.critDamage();
-        if (living.hurtTime > 0 && damage <= this.lastCritDamage) {
-            return false;
-        }
-        if (this.isCritBlocked(false)) {
-            return false;
-        }
-        double velocityY = mc.player.getDeltaMovement().y;
-        if (velocityY < -0.08) {
-            this.lastCritDamage = damage;
-            return false;
-        }
-        float chargeGap = Math.max(0.0f, (0.95f - mc.player.getAttackStrengthScale(0.5f))
-                * mc.player.getCurrentItemAttackStrengthDelay());
-        float window = Math.max(chargeGap, (float) (velocityY / 0.08));
-        if (window > this.targetTicks.getValue().floatValue()) {
-            return false;
-        }
-        return !this.blockedAhead((int) (window * 1.3f));
-    }
-
-    public boolean holdAttack(Entity entity) {
-        if (!this.isEnabled() || !this.mode.is("1.9+") || mc.player == null) {
-            return false;
-        }
-        if (NoXZMode.handlingVelocity) {
-            return false;
-        }
-        if (mc.player.getAttackStrengthScale(0.0f) < 0.95f) {
             return true;
         }
-        return this.shouldCritEntity(entity);
+        return mc.player.onClimbable()
+                || mc.player.isInWater()
+                || mc.player.isInLava()
+                || mc.player.isPassenger()
+                || living.hurtTime > 10
+                || living.getHealth() <= 0.0f;
     }
 
-    private float critDamage() {
-        if (mc.player == null) {
-            return -1.0f;
-        }
-        float base = (float) mc.player.getAttributeValue(Attributes.ATTACK_DAMAGE);
-        float charge = mc.player.getAttackStrengthScale(0.5f);
-        float damage = base * (0.2f + charge * charge * 0.8f);
-        if (!this.isCritBlocked(false) && mc.player.getDeltaMovement().y < -0.08) {
-            damage *= 1.5f;
-        }
-        return damage;
+    private boolean isLookingAt(Entity entity, double range) {
+        Rotation rotation = RotationHandler.targetRotation != null
+                ? RotationHandler.targetRotation
+                : new Rotation(mc.player.getYRot(), mc.player.getXRot());
+        return RotationUtil.rayTraceForAim(rotation, range) instanceof EntityHitResult hit
+                && hit.getEntity() == entity;
     }
 
-    private boolean isCritBlocked(boolean allowAir) {
-        if (mc.player == null) {
-            return true;
+    private void debugLog(String message) {
+        if (this.debug.getValue() && mc.player != null && mc.level != null) {
+            ChatUtil.print("[Critical] " + message);
         }
-        if (mc.player.hasEffect(MobEffects.BLINDNESS)
-                || mc.player.hasEffect(MobEffects.SLOW_FALLING)
-                || mc.player.hasEffect(MobEffects.LEVITATION)) {
-            return true;
-        }
-        if (mc.player.isUsingItem() || mc.player.isInWater() || mc.player.isShiftKeyDown()
-                || mc.player.getAbilities().flying || mc.player.isFallFlying() || mc.player.isPassenger()) {
-            return true;
-        }
-        if (!allowAir && mc.player.onGround()) {
-            return true;
-        }
-        if (mc.player.onClimbable()) {
-            return true;
-        }
-        return this.inCobweb();
-    }
-
-    private boolean inCobweb() {
-        if (mc.player == null || mc.level == null) {
-            return false;
-        }
-        AABB box = mc.player.getBoundingBox();
-        for (BlockPos pos : BlockPos.betweenClosed(
-                Mth.floor(box.minX), Mth.floor(box.minY), Mth.floor(box.minZ),
-                Mth.floor(box.maxX), Mth.floor(box.maxY), Mth.floor(box.maxZ))) {
-            if (mc.level.getBlockState(pos).is(Blocks.COBWEB)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private boolean blockedAhead(int ticks) {
-        if (mc.player == null || mc.level == null) {
-            return false;
-        }
-        double originX = mc.player.getX();
-        double originY = mc.player.getY();
-        double originZ = mc.player.getZ();
-        double x = originX;
-        double y = originY;
-        double z = originZ;
-        Vec3 velocity = mc.player.getDeltaMovement();
-        AABB box = mc.player.getBoundingBox();
-        for (int i = 0; i < ticks; ++i) {
-            x += velocity.x;
-            y += velocity.y;
-            z += velocity.z;
-            velocity = new Vec3(velocity.x * 0.91, (velocity.y - 0.08) * 0.98, velocity.z * 0.91);
-            if (!mc.level.noCollision(mc.player, box.move(x - originX, y - originY, z - originZ))) {
-                return true;
-            }
-        }
-        return false;
     }
 }

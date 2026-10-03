@@ -19,6 +19,7 @@ import org.objectweb.asm.tree.VarInsnNode;
 import client.nilore.NiloreClient;
 import client.nilore.event.impl.GameTickEvent;
 import client.nilore.event.impl.MotionEvent;
+import client.nilore.event.impl.PlayerTickEvent;
 import client.nilore.event.impl.SlowdownEvent;
 import client.nilore.event.impl.SprintEvent;
 import client.nilore.utils.misc.ReflectionUtil;
@@ -89,6 +90,17 @@ public class LocalPlayerPatch {
                 false));
         methodNode.instructions.insertBefore(targetCall, replacement);
         methodNode.instructions.remove(targetCall);
+    }
+
+    @Inject(method = "tick", desc = "()V")
+    public static void onTickPre(LocalPlayer player, CallbackInfo callbackInfo) {
+        if (NiloreClient.isReady()) {
+            PlayerTickEvent event = new PlayerTickEvent();
+            NiloreClient.getInstance().getEventBus().call(event);
+            if (event.isCancelled()) {
+                callbackInfo.cancel();
+            }
+        }
     }
 
     @Inject(

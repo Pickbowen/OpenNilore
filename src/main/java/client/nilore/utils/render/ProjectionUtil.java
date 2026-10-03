@@ -7,14 +7,11 @@ import java.nio.IntBuffer;
 import lombok.Generated;
 import net.minecraft.client.Camera;
 import net.minecraft.util.Mth;
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 import org.joml.Quaternionf;
-import org.joml.Quaternionfc;
 import org.joml.Vector3f;
-import org.joml.Vector3fc;
 import org.joml.Vector4f;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL11;
@@ -32,6 +29,12 @@ extends ClientBase {
     private static final IntBuffer viewport = BufferUtils.createIntBuffer(16);
     private static final Vector3f tempVec3 = new Vector3f();
     private static final Quaternionf tempQuat = new Quaternionf();
+    private static final Quaternionf bobQuat = new Quaternionf();
+    private static final Quaternionf bobPitch = new Quaternionf();
+    private static final Quaternionf bobRoll = new Quaternionf();
+    private static final Vector3f bobRelative = new Vector3f();
+    private static final Vector3f bobOffset = new Vector3f();
+    private static Method cachedFovMethod;
 
     public static void updateMatrices() {
         floatBuffer.clear();
@@ -46,25 +49,43 @@ extends ClientBase {
     }
 
     public static Vector2f project(double worldX, double worldY, double worldZ, float partialTicks) {
-        Entity cameraEntity;
         Vec3 cameraPos = mc.getEntityRenderDispatcher().camera.getPosition();
-        Quaternionf cameraRotation = new Quaternionf(mc.getEntityRenderDispatcher().cameraOrientation());
-        cameraRotation.conjugate();
-        Vector3f relativePos = new Vector3f((float)(cameraPos.x - worldX), (float)(cameraPos.y - worldY), (float)(cameraPos.z - worldZ));
-        relativePos.rotate(cameraRotation);
-        if (mc.options.bobView().get() && (cameraEntity = mc.getCameraEntity()) instanceof Player) {
-            Player player = (Player)cameraEntity;
-            ProjectionUtil.applyBobbing(player, relativePos, partialTicks);
+        bobQuat.set(mc.getEntityRenderDispatcher().cameraOrientation());
+        bobQuat.conjugate();
+        bobRelative.set((float)(cameraPos.x - worldX), (float)(cameraPos.y - worldY), (float)(cameraPos.z - worldZ));
+        bobRelative.rotate(bobQuat);
+        if (mc.options.bobView().get() && mc.getCameraEntity() instanceof Player player) {
+            ProjectionUtil.applyBobbing(player, bobRelative, partialTicks);
         }
-        double fov = 1.2f;
+        return ProjectionUtil.projectInternal(bobRelative, resolveFov(partialTicks));
+    }
+
+    private static final double DEFAULT_FOV = 1.2;
+
+    /**
+     * {@code GameRenderer.getFov} 是 private, 只能反射。方法句柄本身不变, 查一次就够 ——
+     * 每帧 {@code getDeclaredMethod} 要遍历整个方法表并重新分配参数数组, 而这里每个实体每帧都要调一次。
+     * 只有解析成功才缓存: 客户端还没起来时反射会失败, 那时保持重试, fov 退回默认值。
+     */
+    private static double resolveFov(float partialTicks) {
+        Method method = cachedFovMethod;
+        if (method == null) {
+            try {
+                method = mc.gameRenderer.getClass().getDeclaredMethod(
+                        ReflectionUtil.getMappedMethodName(mc.gameRenderer.getClass(), "getFov",
+                                "(Lnet/minecraft/client/Camera;FZ)D"),
+                        Camera.class, Float.TYPE, Boolean.TYPE);
+                method.setAccessible(true);
+                cachedFovMethod = method;
+            } catch (Exception exception) {
+                return DEFAULT_FOV;
+            }
+        }
         try {
-            Method method = mc.gameRenderer.getClass().getDeclaredMethod(ReflectionUtil.getMappedMethodName(mc.gameRenderer.getClass(), "getFov", "(Lnet/minecraft/client/Camera;FZ)D"), Camera.class, Float.TYPE, Boolean.TYPE);
-            method.setAccessible(true);
-            fov = (Double)method.invoke(mc.gameRenderer, new Object[]{mc.getEntityRenderDispatcher().camera, partialTicks, true});
+            return (Double)method.invoke(mc.gameRenderer, mc.getEntityRenderDispatcher().camera, partialTicks, true);
         } catch (Exception exception) {
-            exception.printStackTrace();
+            return DEFAULT_FOV;
         }
-        return ProjectionUtil.projectInternal(relativePos, fov);
     }
 
     private static void applyBobbing(Player player, Vector3f relativePos, float partialTicks) {
@@ -72,13 +93,14 @@ extends ClientBase {
         float walkDelta = walkDist - player.walkDistO;
         float walkProgress = -(walkDist + walkDelta * partialTicks);
         float bobAmount = Mth.lerp(partialTicks, player.oBob, player.bob);
-        Quaternionf pitchRotation = new Quaternionf().rotationX(Math.abs(Mth.cos(walkProgress * (float)Math.PI - 0.2f) * bobAmount) * 5.0f * ((float)Math.PI / 180));
-        pitchRotation.conjugate();
-        relativePos.rotate(pitchRotation);
-        Quaternionf rollRotation = new Quaternionf().rotationZ(Mth.sin(walkProgress * (float)Math.PI) * bobAmount * 3.0f * ((float)Math.PI / 180));
-        rollRotation.conjugate();
-        relativePos.rotate(rollRotation);
-        Vector3f bobOffset = new Vector3f(Mth.sin(walkProgress * (float)Math.PI) * bobAmount * 0.5f, -Math.abs(Mth.cos(walkProgress * (float)Math.PI) * bobAmount), 0.0f);
+        bobPitch.rotationX(Math.abs(Mth.cos(walkProgress * (float)Math.PI - 0.2f) * bobAmount) * 5.0f * ((float)Math.PI / 180));
+        bobPitch.conjugate();
+        relativePos.rotate(bobPitch);
+        bobRoll.rotationZ(Mth.sin(walkProgress * (float)Math.PI) * bobAmount * 3.0f * ((float)Math.PI / 180));
+        bobRoll.conjugate();
+        relativePos.rotate(bobRoll);
+        bobOffset.set(Mth.sin(walkProgress * (float)Math.PI) * bobAmount * 0.5f,
+                -Math.abs(Mth.cos(walkProgress * (float)Math.PI) * bobAmount), 0.0f);
         bobOffset.y = -bobOffset.y;
         relativePos.add(bobOffset);
     }

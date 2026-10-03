@@ -2,6 +2,7 @@ package client.nilore.modules.impl.render.nametag;
 
 import java.awt.Color;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -23,11 +24,17 @@ import client.nilore.render.RoundedRectangle;
 import client.nilore.utils.game.ItemAlertTracker;
 import client.nilore.utils.math.MathUtil;
 import client.nilore.utils.math.Vector2f;
+import client.nilore.utils.render.ColorUtil;
 import client.nilore.utils.render.ProjectionUtil;
 import client.nilore.utils.render.RenderUtil;
 
 public class SimpleNameTag extends NameTagStyle {
+    private static final int BACKDROP_COLOR = ColorUtil.fromARGB(0, 0, 0, 80);
+    private static final int ITEM_BACKDROP_COLOR = ColorUtil.fromARGB(0, 0, 0, 120);
+
     private final Map<Entity, Vector2f> entityPositions = new ConcurrentHashMap<>();
+    private final Map<ItemStack, Vector2f> itemPositions = new HashMap<>();
+    private final Set<Entity> seenEntities = new HashSet<>();
     private final List<BlurRect> blurRects = new ArrayList<>();
     private final FontRenderer font = FontPresets.pingfang(16.0f);
     private Paint paint;
@@ -57,14 +64,14 @@ public class SimpleNameTag extends NameTagStyle {
         ratio = Math.max(0.0f, Math.min(1.0f, ratio));
         if (ratio >= 0.6f) {
             float t = (ratio - 0.6f) / 0.4f;
-            return new Color((int) (255.0f * (1.0f - t)), 255, 0).getRGB();
+            return ColorUtil.fromRGB((int) (255.0f * (1.0f - t)), 255, 0);
         }
         if (ratio >= 0.3f) {
             float t = (ratio - 0.3f) / 0.3f;
-            return new Color(255, (int) (255.0f * t), 0).getRGB();
+            return ColorUtil.fromRGB(255, (int) (255.0f * t), 0);
         }
         float t = ratio / 0.3f;
-        return new Color((int) (128.0f + 127.0f * t), 0, 0).getRGB();
+        return ColorUtil.fromRGB((int) (128.0f + 127.0f * t), 0, 0);
     }
 
     private void updatePositions(float partialTick) {
@@ -74,7 +81,8 @@ public class SimpleNameTag extends NameTagStyle {
             return;
         }
         double rangeSq = Math.pow(NameTags.INSTANCE.distanceSetting.getValue().doubleValue(), 2.0);
-        HashSet<Entity> seen = new HashSet<>();
+        Set<Entity> seen = this.seenEntities;
+        seen.clear();
         for (Entity entity : mc.level.entitiesForRendering()) {
             if (entity == mc.player) continue;
             if (!entity.isAlive()) continue;
@@ -113,7 +121,7 @@ public class SimpleNameTag extends NameTagStyle {
         float corner = 6.0f;
         int padding = 4;
         int gap = 4;
-        Map<ItemStack, Vector2f> itemPositions = new ConcurrentHashMap<>();
+        this.itemPositions.clear();
         Renderer.renderConsumer(ctx -> {
             for (Map.Entry<Entity, Vector2f> entry : this.entityPositions.entrySet()) {
                 Entity entity = entry.getKey();
@@ -161,10 +169,10 @@ public class SimpleNameTag extends NameTagStyle {
                 if (this.paint == null) {
                     this.paint = new Paint();
                 }
-                this.paint.setColor(new Color(0, 0, 0, 80).getRGB());
+                this.paint.setColor(BACKDROP_COLOR);
                 ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(originX, originY, boxWidth, boxHeight, corner), this.paint);
                 if (ratio > 0.0f) {
-                    this.paint.setColor(new Color(0, 0, 0, 80).getRGB());
+                    this.paint.setColor(BACKDROP_COLOR);
                     ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(originX, originY, boxWidth * ratio, boxHeight, corner), this.paint);
                 }
                 int healthColor = this.getHealthColor(ratio);
@@ -177,7 +185,7 @@ public class SimpleNameTag extends NameTagStyle {
                 if (hasAlerts) {
                     float itemCursorX = originX + textWidth + padding * 2 + gap;
                     for (ItemStack item : alertItems) {
-                        this.paint.setColor(new Color(0, 0, 0, 120).getRGB());
+                        this.paint.setColor(ITEM_BACKDROP_COLOR);
                         ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(itemCursorX, originY, itemBoxSize, boxHeight, corner), this.paint);
                         float itemX = screenPos.x + itemCursorX * scale;
                         float itemY = screenPos.y + originY * scale;

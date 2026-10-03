@@ -265,17 +265,10 @@ extends ClientBase {
         return null;
     }
 
-    // ------------------------------------------------------------------
-    // 碰撞箱可命中点搜索
-    // ------------------------------------------------------------------
 
-    /** 碰撞箱表面粗采样间距(格)。 */
     private static final double HIT_SAMPLE_SPACING = 0.25;
-    /** 单轴最大分段数, 防止大体积实体产生海量候选点。 */
     private static final int HIT_SAMPLE_MAX_SEGMENTS = 8;
-    /** 单次搜索的 raycast 上限, 约束"整箱被遮"这种最坏情况的开销。 */
     private static final int HIT_SEARCH_MAX_RAYCASTS = 48;
-    /** 候选方向去重粒度(度)。最终瞄准还要做灵敏度对齐, 更细的差别没有意义。 */
     private static final double HIT_CANDIDATE_DEDUP_DEG = 0.5;
 
     private static Entity hitCacheEntity;
@@ -295,32 +288,10 @@ extends ClientBase {
     private record HitCandidate(Vec3 point, Rotation rotation, double pitchAbs) {
     }
 
-    /**
-     * 在目标碰撞箱上搜索最优可命中点, 返回命中点和对应的瞄准 rotation。
-     *
-     * 与旧实现的差别:
-     *  - 旧实现按固定顺序遍历采样点, 第一个通过 raycast 的就返回。碰撞箱中心被排在
-     *    第一位, 所以只要中心看得见就永远只打中心, 命中点被钉死。
-     *  - 新实现先一次性生成候选点, 按"平视角优先"排序后再逐个 raycast, 命中即返回。
-     *    平视角下 eye→命中点的水平分量最大, 也就是攻击距离收益最大; 上半身被方块挡住时
-     *    会自然让位到下半身, 于是"露出来的那半截"也能打到。
-     *
-     * 性能:
-     *  - 排序后 early-exit, 常见情况(平视角那一点可见)只需 1 次 raycast;
-     *  - 候选方向按 {@link #HIT_CANDIDATE_DEDUP_DEG} 去重, 远处目标的几十个采样点会
-     *    塌缩成几个方向;
-     *  - 同一 tick 内 (实体, 碰撞箱, 眼位) 不变则直接复用上次结果, 所以一条 tick 里
-     *    目标切换、multiAttack、doAttack 反复调用不会重复搜索;
-     *  - 最坏情况(整箱被遮)由 {@link #HIT_SEARCH_MAX_RAYCASTS} 封顶。
-     */
     public static BestHitInfo getBestHit(Entity entity) {
         return RotationUtil.getBestHit(entity, false);
     }
 
-    /**
-     * @param ignoreBlocks 跳过方块遮挡(Through Walls 在生效范围内时由调用方传 true),
-     *                     开了以后被墙挡住的点也能作为命中点, 只受 maxRange 限制。
-     */
     public static BestHitInfo getBestHit(Entity entity, boolean ignoreBlocks) {
         if (entity == null || mc.player == null || mc.level == null) {
             return null;
@@ -360,7 +331,6 @@ extends ClientBase {
             }
             candidates.add(new HitCandidate(point, rotation, Math.abs(rotation.getPitch())));
         }
-        // 平视角优先(|pitch| 小), 其次取近点(离眼越近越稳地在攻击距离内)。
         candidates.sort(Comparator.<HitCandidate>comparingDouble(HitCandidate::pitchAbs)
                 .thenComparingDouble(candidate -> candidate.point().distanceToSqr(eyePos)));
 
@@ -389,14 +359,6 @@ extends ClientBase {
         return new BestHitInfo(eyePos, eyePos, 1000.0, null);
     }
 
-    /**
-     * 生成碰撞箱表面候选点。第一个是"离眼睛最近的点"——与眼同高、pitch≈0, 正是平视角
-     * 收益最大的那个解, 排序后会被最先试到。
-     *
-     * 只采"朝向眼睛"的那几个面: 射线本来就从近侧进入碰撞箱, 瞄准背面的采样点和近侧
-     * 落在同一个入射点上, 却因为 pitch 更小而排到前面, 会把顺序带偏(还会白白吃掉 raycast
-     * 预算)。眼睛在箱内时退化成全表面采样。
-     */
     private static List<Vec3> collectHitPoints(Vec3 eyePos, AABB aABB) {
         List<Vec3> points = new ArrayList<>();
         points.add(RotationUtil.closestPoint(eyePos, aABB));
@@ -467,11 +429,6 @@ extends ClientBase {
         return (yaw << 32) ^ (pitch & 0xFFFFFFFFL);
     }
 
-    /**
-     * 廉价的可见性探测: 碰撞箱上是否存在至少一个可命中点。
-     * 目标筛选会每 tick 对多个实体调用, 所以只探有限个点并 early-exit, 不做完整搜索;
-     * 真正的命中点选择交给 {@link #getBestHit(Entity)}。
-     */
     public static boolean canSeeAnyPoint(Entity entity) {
         if (entity == null || mc.player == null || mc.level == null) {
             return false;
@@ -482,7 +439,6 @@ extends ClientBase {
         if (RotationUtil.isPointVisible(entity, eyePos, nearest)) {
             return true;
         }
-        // 沿朝向目标的竖直列上下扫, 覆盖"上半身被挡、下半身露着"这类情况
         double sizeY = aABB.maxY - aABB.minY;
         for (int i = 1; i <= 4; ++i) {
             double y = aABB.minY + sizeY * i / 5.0;
@@ -490,7 +446,6 @@ extends ClientBase {
                 return true;
             }
         }
-        // 兜底: 四个顶角
         return RotationUtil.isPointVisible(entity, eyePos, new Vec3(aABB.minX, aABB.maxY, aABB.minZ))
                 || RotationUtil.isPointVisible(entity, eyePos, new Vec3(aABB.minX, aABB.maxY, aABB.maxZ))
                 || RotationUtil.isPointVisible(entity, eyePos, new Vec3(aABB.maxX, aABB.maxY, aABB.minZ))
@@ -562,17 +517,7 @@ extends ClientBase {
         return false;
     }
 
-    // ------------------------------------------------------------------
-    // 攻击距离(reach)口径
-    // ------------------------------------------------------------------
 
-    /**
-     * 攻击距离上限(眼睛 → 碰撞箱最近点), 单位格。
-     *
-     * 这是服务端/反作弊的判定口径(vanilla 生存 3.0), 客户端必须按同一把尺子卡,
-     * 否则就会出现"客户端认为能打、服务端认为超范围"。默认 3.0, 由 KillAura 的
-     * Reach 设置每 tick 同步进来。
-     */
     private static double reachLimit = 3.0;
 
     public static void setReachLimit(double reach) {
@@ -591,11 +536,6 @@ extends ClientBase {
         return RotationUtil.closestPoint(eyePos, entity.getBoundingBox()).distanceTo(eyePos) <= reachLimit;
     }
 
-    /**
-     * @param ignoreBlocks true 时不做方块裁剪, 只保留 maxRange 限制(供 Through Walls 使用)。
-     *                     注意: 方块裁剪的距离同时充当了实体射线的搜索上限, 所以跳过裁剪
-     *                     等于"墙不算数, 直线可达就打"。
-     */
     public static HitResult performRaycast(Rotation rotation, boolean ignoreBlocks) {
         AABB expandedBB;
         double pickRange = mc.gameMode.getPickRange();
@@ -718,20 +658,9 @@ extends ClientBase {
         return new Vec3(sinYaw * cosPitch, sinPitch, cosYaw * cosPitch);
     }
 
-    // ------------------------------------------------------------------
-    // 转动链路: 瞄准点搜索 + 限速前进 + GCD 量化
-    // ------------------------------------------------------------------
 
-    /** 身体采样高度分数({0.75, 0.5, 0.3, 0.1})。 */
     private static final double[] AIM_HEIGHT_FRACTIONS = {0.75, 0.5, 0.3, 0.1};
 
-    /**
-     * 由"眼睛 → 目标点"算 rotation。
-     *
-     * yaw 相对当前 rotation 取最短增量: mc.player.getYRot() 只有在 rotation 被同步写进
-     * 玩家时才等价; nilore 是静默转头, 语义等价物是上一 tick 真正发出去的 rotation
-     * ({@link RotationHandler#prevRotation})。
-     */
     public static Rotation rotationToPoint(Vec3 from, Vec3 to) {
         Vec3 delta = to.subtract(from);
         double horizontalDist = Math.hypot(delta.x, delta.z);
@@ -745,7 +674,6 @@ extends ClientBase {
         return new Rotation(yaw, Mth.clamp(pitch, -90.0f, 90.0f));
     }
 
-    /** 每轴最多走 step 度; step <= 0 时原地不动。 */
     private static Rotation stepTowards(Rotation from, Rotation to, double step) {
         if (from == null || to == null) {
             return to;
@@ -753,17 +681,14 @@ extends ClientBase {
         if (step <= 0.0) {
             return from;
         }
-        float limit = (float)step;
-        float yawDelta = Mth.clamp(Mth.wrapDegrees(to.getYaw() - from.getYaw()), -limit, limit);
-        float pitchDelta = Mth.clamp(to.getPitch() - from.getPitch(), -limit, limit);
+        float yawLimit = (float) step;
+        float pitchLimit = (float) (step / 2.0);
+        float yawDelta = Mth.clamp(Mth.wrapDegrees(to.getYaw() - from.getYaw()), -yawLimit, yawLimit);
+        float pitchDelta = Mth.clamp(to.getPitch() - from.getPitch(), -pitchLimit, pitchLimit);
         return new Rotation(from.getYaw() + yawDelta,
                 Mth.clamp(from.getPitch() + pitchDelta, -90.0f, 90.0f));
     }
 
-    /**
-     * 每轴限速前进, 再锚定在上一次发出的 rotation 上做灵敏度 GCD 量化。
-     * 角误差小于 0.05° 时直接到位(收敛短路), 避免在死区里反复量化。
-     */
     public static Rotation smoothRotationTo(Rotation from, Rotation to, double speed) {
         if (from == null || to == null) {
             return to;
@@ -776,57 +701,63 @@ extends ClientBase {
         return RotationSmoother.patchConstantRotation(RotationUtil.stepTowards(from, to, speed), from);
     }
 
-    /**
-     * 在目标身上找一个"raytrace 真能打到"的瞄准点。
-     *
-     * 顺序是 眼睛 → 沿身体高度的 0.75/0.5/0.3/0.1(水平坐标取"自己眼睛"在目标箱体内
-     * clamp 0.05) → 目标中心列, 每一步都用 {@link #canHitPoint} 验收。全都打不到时返回
-     * 眼睛点交给上层处理(上层还有 reach 门兜着, 不会因此打出去)。
-     */
-    public static Vec3 findAimPoint(Entity entity, double range) {
+    public static Vec3 findAimPoint(Entity entity, double range, float partialTicks) {
         if (entity == null || mc.player == null || mc.level == null) {
             return null;
         }
-        Vec3 eyePoint = entity.getEyePosition();
-        // 眼位埋在蜘蛛网里时目标真实可打的是上半身, 改用 position + eyeHeight*0.3
+        AABB aabb = EntityUtil.getInterpolatedAABB(entity, partialTicks);
+        Vec3 interpolatedPos = EntityUtil.getInterpolatedPos(entity, partialTicks);
+        double eyeHeight = entity.getEyeHeight();
+        Vec3 eyePoint = interpolatedPos.add(0.0, eyeHeight, 0.0);
         Vec3 fallback = mc.level.getBlockState(BlockPos.containing(eyePoint)).is(Blocks.COBWEB)
-                ? entity.position().add(0.0, entity.getEyeHeight() * 0.3, 0.0)
+                ? interpolatedPos.add(0.0, eyeHeight * 0.3, 0.0)
                 : eyePoint;
-        if (RotationUtil.canHitPoint(entity, fallback, range)) {
+        if (RotationUtil.canHitPoint(entity, fallback, range, aabb)) {
             return fallback;
         }
-        AABB aABB = entity.getBoundingBox();
         Vec3 myEye = mc.player.getEyePosition();
-        double x = Mth.clamp(myEye.x, aABB.minX + 0.05, aABB.maxX - 0.05);
-        double z = Mth.clamp(myEye.z, aABB.minZ + 0.05, aABB.maxZ - 0.05);
-        double height = aABB.maxY - aABB.minY;
+        double x = Mth.clamp(myEye.x, aabb.minX + 0.05, aabb.maxX - 0.05);
+        double z = Mth.clamp(myEye.z, aabb.minZ + 0.05, aabb.maxZ - 0.05);
+        double height = aabb.maxY - aabb.minY;
         for (double fraction : AIM_HEIGHT_FRACTIONS) {
-            double y = aABB.minY + height * fraction;
-            Vec3 clampedPoint = new Vec3(x, y, z);
-            if (RotationUtil.canHitPoint(entity, clampedPoint, range)) {
-                return clampedPoint;
-            }
-            Vec3 columnPoint = new Vec3(entity.getX(), y, entity.getZ());
-            if (RotationUtil.canHitPoint(entity, columnPoint, range)) {
+            double y = aabb.minY + height * fraction;
+            Vec3 columnPoint = new Vec3(interpolatedPos.x, y, interpolatedPos.z);
+            if (RotationUtil.canHitPoint(entity, columnPoint, range, aabb)) {
                 return columnPoint;
+            }
+            Vec3 eyeColumnPoint = new Vec3(x, y, z);
+            if (RotationUtil.canHitPoint(entity, eyeColumnPoint, range, aabb)) {
+                return eyeColumnPoint;
             }
         }
         return fallback;
     }
 
-    /** 从自己眼睛朝该点算 rotation, raytrace 命中目标本身才算数。 */
-    private static boolean canHitPoint(Entity entity, Vec3 point, double range) {
+    public static Vec3 findAimPoint(Entity entity, double range) {
+        return RotationUtil.findAimPoint(entity, range, 1.0f);
+    }
+
+    public static boolean isLookingAt(Entity entity, double range, float inflate) {
+        if (entity == null || mc.player == null || mc.level == null) {
+            return false;
+        }
+        Rotation rotation = RotationHandler.sentRotation != null
+                ? RotationHandler.sentRotation
+                : new Rotation(mc.player.getYRot(), mc.player.getXRot());
+        return RayTraceUtil.rayTraceForEntity(rotation, range, inflate, mc.player, entity, false) != null;
+    }
+
+    private static boolean canHitPoint(Entity entity, Vec3 point, double range, AABB targetBox) {
         Rotation rotation = RotationUtil.rotationToPoint(mc.player.getEyePosition(), point);
-        return RotationUtil.rayTraceForAim(rotation, range) instanceof EntityHitResult hit
+        return RotationUtil.rayTraceForAim(rotation, range, entity, targetBox) instanceof EntityHitResult hit
                 && hit.getEntity() == entity;
     }
 
-    /**
-     * 从眼睛沿 rotation 走 range, 方块 clip(OUTLINE, 不裁剪流体) + 手写实体拾取, 取近者。
-     * 实体只按 {@code getPickRadius()} 膨胀, 额外膨胀保持 0.0f: 多一分膨胀就是多一分
-     * 超范围命中。
-     */
     public static HitResult rayTraceForAim(Rotation rotation, double range) {
+        return RotationUtil.rayTraceForAim(rotation, range, null, null);
+    }
+
+    public static HitResult rayTraceForAim(Rotation rotation, double range, Entity target, AABB interpolatedBox) {
         if (mc.player == null || mc.level == null || rotation == null) {
             return null;
         }
@@ -847,7 +778,8 @@ extends ClientBase {
         List<Entity> candidates = mc.level.getEntities(mc.player, searchBox,
                 candidate -> !candidate.isSpectator() && candidate.isPickable());
         for (Entity candidate : candidates) {
-            AABB box = candidate.getBoundingBox().inflate(candidate.getPickRadius());
+            AABB base = interpolatedBox != null && candidate == target ? interpolatedBox : candidate.getBoundingBox();
+            AABB box = base.inflate(candidate.getPickRadius());
             Optional<Vec3> clip = box.clip(eyePos, endPos);
             if (box.contains(eyePos)) {
                 if (bestDist < 0.0) {

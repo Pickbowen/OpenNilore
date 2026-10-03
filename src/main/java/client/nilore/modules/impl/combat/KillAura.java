@@ -23,10 +23,10 @@ import net.minecraft.client.Camera;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.network.protocol.game.ServerboundInteractPacket;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
-import net.minecraftforge.client.ForgeHooksClient;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
@@ -46,13 +46,13 @@ import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 import client.nilore.ClientBase;
 import client.nilore.NiloreClient;
-import client.nilore.event.impl.PreMotionEvent;
 import client.nilore.event.impl.RenderEvent;
 import client.nilore.event.impl.TickEvent;
 import client.nilore.event.impl.WorldChangeEvent;
 import client.nilore.hud.ModuleListHud;
 import client.nilore.modules.Category;
 import client.nilore.modules.Module;
+import client.nilore.modules.impl.combat.antikb.JumpResetMode;
 import client.nilore.modules.impl.combat.antikb.NoXZMode;
 import client.nilore.modules.impl.movement.Scaffold;
 import client.nilore.modules.impl.player.AntiTNT;
@@ -66,6 +66,7 @@ import client.nilore.settings.impl.BooleanSetting;
 import client.nilore.settings.impl.ModeSetting;
 import client.nilore.settings.impl.NumberSetting;
 import client.nilore.utils.game.EntityUtil;
+import client.nilore.utils.game.FightManager;
 import client.nilore.utils.game.ItemUtil;
 import client.nilore.utils.game.MotionSimulator;
 import client.nilore.utils.game.RotationUtil;
@@ -103,7 +104,7 @@ public class KillAura extends Module {
     public final BooleanSetting ignoreSkipTicks = new BooleanSetting("Ignore skip ticks", false);
     public final BooleanSetting fakeAutoBlock   = new BooleanSetting("Fake AutoBlock", true);
 
-    public final NumberSetting reach       = new NumberSetting("Reach", 5.0, 3.0, 6.0, 0.1);
+    public final NumberSetting reach       = new NumberSetting("Reach", 3.0, 1.0, 4.0, 0.1);
     public final NumberSetting maxAps      = new NumberSetting("Max APS", 12.0, 1.0, 20.0, 1.0);
     public final NumberSetting minAps      = new NumberSetting("Min APS", 9.0, 1.0, 20.0, 1.0);
     public final NumberSetting switchSize  = new NumberSetting("Switch Size", 1.0, 1.0, 5.0, 1.0,
@@ -113,7 +114,8 @@ public class KillAura extends Module {
     public final NumberSetting hurtTime    = new NumberSetting("Hurt Time", 10.0, 0.0, 10.0, 1.0);
     public final ModeSetting delayMode    = new ModeSetting("Delay Mode", "1.8", "1.9").withDefault("1.8");
 
-    public final ModeSetting priorityMode = new ModeSetting("Priority", "Distance", "FoV", "Health", "None").withDefault("FoV");
+    public final ModeSetting targetMode   = new ModeSetting("Target Mode", "Single", "Switch", "Multiple").withDefault("Single");
+    public final ModeSetting priorityMode = new ModeSetting("Priority", "Distance", "FoV", "Health", "LivingTime", "Armor", "None").withDefault("FoV");
     public final ModeSetting targetEsp    = new ModeSetting("Target ESP", "None", "Spiral", "Box", "Tab", "NurikZapen").withDefault("NurikZapen");
 
     public final NumberSetting rotationSpeed = new NumberSetting("Rotation Speed", 180, 1, 180, 1);
@@ -168,7 +170,7 @@ public class KillAura extends Module {
     }
 
     private Rotation computeRotation(Entity target, Rotation from, double speed, double range) {
-        Vec3 aimPoint = RotationUtil.findAimPoint(target, range);
+        Vec3 aimPoint = RotationUtil.findAimPoint(target, range, 1.0f);
         if (aimPoint == null) {
             return null;
         }
@@ -377,19 +379,12 @@ public class KillAura extends Module {
 
         boolean isSwitch = this.switchSize.getValue().intValue() > 1
                 || this.infSwitch.getValue()
-                || this.multiAttack.getValue();
+                || this.multiAttack.getValue()
+                || !this.targetMode.is("Single");
         this.updateTargets();
         aimingTarget = this.getTarget();
-        double speed = Mth.clamp(this.rotationSpeed.getValue().doubleValue(),
-                this.rotationSpeed.getMin().doubleValue(),
-                this.rotationSpeed.getMax().doubleValue());
         if (aimingTarget == null) {
             this.rotation = null;
-        } else if (speed > 0) {
-            Rotation from = RotationHandler.prevRotation != null
-                    ? RotationHandler.prevRotation
-                    : new Rotation(mc.player.getYRot(), mc.player.getXRot());
-            this.rotation = this.computeRotation(aimingTarget, from, speed, reach);
         }
         if (targetList.isEmpty()) {
             target = null;
@@ -399,6 +394,7 @@ public class KillAura extends Module {
             this.targetIndex = 0;
         }
         if (targetList.size() > 1
+                && this.targetMode.is("Switch")
                 && (this.attackTimes >= this.switchDelay.getValue().intValue()
                 || !RotationUtil.isWithinReach(aimingTarget))) {
             this.attackTimes = 0;
@@ -416,6 +412,25 @@ public class KillAura extends Module {
             this.targetIndex = 0;
         }
         target = targetList.get(this.targetIndex);
+
+        if (this.aimingTarget != null) {
+            double speed = Mth.clamp(this.rotationSpeed.getValue().doubleValue(),
+                    this.rotationSpeed.getMin().doubleValue(),
+                    this.rotationSpeed.getMax().doubleValue());
+            if (speed <= 0.0) {
+                this.rotation = null;
+            } else {
+                Rotation from = RotationHandler.prevRotation != null
+                        ? RotationHandler.prevRotation
+                        : new Rotation(mc.player.getYRot(), mc.player.getXRot());
+                this.rotation = this.computeRotation(this.aimingTarget, from, speed, reach);
+            }
+        } else {
+            this.rotation = null;
+        }
+
+        this.attackTick();
+
         if (!this.canAttackNow()) {
             return;
         }
@@ -431,8 +446,7 @@ public class KillAura extends Module {
         this.attacks += (float)(MathUtil.randomDouble(minApsValue, apsValue) / 20.0);
     }
 
-    @EventTarget
-    public void onPreMotion(PreMotionEvent event) {
+    private void attackTick() {
         if (mc.player == null) return;
         if (this.isWebPlacing()) {
             this.attacks = 0.0f;
@@ -444,10 +458,6 @@ public class KillAura extends Module {
         }
         if (this.keepSprint.getValue() && !NoXZMode.handlingVelocity) {
             if (mc.player.isSprinting()) {
-                if (shouldStopSprint()) {
-                    mc.options.keySprint.setDown(false);
-                    mc.player.setSprinting(false);
-                }
                 this.attacks = 0.0f;
                 return;
             }
@@ -469,17 +479,17 @@ public class KillAura extends Module {
         if (target == null || !targetList.contains(target)) {
             return false;
         }
-        if (!(mc.hitResult instanceof EntityHitResult hit) || hit.getEntity() != target) {
-            double dist = RotationUtil.closestPoint(mc.player.getEyePosition(), target.getBoundingBox())
-                    .distanceTo(mc.player.getEyePosition());
-            if (!this.ignoreBlocksAt(dist)) {
+        if (!this.throughWalls.getValue()) {
+            double reachNow = Math.max(this.reach.getValue().doubleValue(),
+                    RotationUtil.getReachLimit());
+            if (!RotationUtil.isLookingAt(target, reachNow, 0.0f)) {
                 return false;
             }
         }
         if (this.delayMode.is("1.9") && mc.player.getAttackStrengthScale(0.0f) < 0.95f) {
             return false;
         }
-        if (this.critHold()) {
+        if (Critical.stopAttack) {
             return false;
         }
         if (!(this.ignoreSkipTicks.getValue() || ClientBase.delayPackets.isEmpty()
@@ -497,9 +507,10 @@ public class KillAura extends Module {
         if (aura == null || !aura.isEnabled() || !aura.keepSprint.getValue()) return false;
         if (mc.player == null || target == null) return false;
         if (mc.player.isUsingItem()) return false;
+        if (JumpResetMode.isJumping) return false;
         if (NoXZMode.isCountering()) return false;
         if (NoXZMode.isInDelayWindow() && shouldKeepSprintInDelayWindow()) return false;
-        if (target.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) > 12.25) return false;
+        if (target.getBoundingBox().distanceToSqr(mc.player.position()) > 12.25) return false;
         return !mc.player.onGround() || !mc.options.keyJump.isDown();
     }
 
@@ -510,10 +521,6 @@ public class KillAura extends Module {
         return new MotionSimulator(mc.player).findLandingBlock(1) != null;
     }
 
-    private boolean critHold() {
-        return Critical.INSTANCE != null && Critical.INSTANCE.holdAttack(target);
-    }
-
     public boolean doAttack() {
         if (this.isWebPlacing()) {
             this.attacks = 0.0f;
@@ -522,7 +529,8 @@ public class KillAura extends Module {
         if (targetList.isEmpty()) return false;
         if (this.rotation == null) return false;
 
-        if (this.multiAttack.getValue()) {
+        if (this.targetMode.is("Multiple") || this.multiAttack.getValue()) {
+            int limit = this.targetMode.is("Multiple") ? Integer.MAX_VALUE : 2;
             int attacked = 0;
             for (Entity entity : targetList) {
                 if (mc.player == null) break;
@@ -530,7 +538,7 @@ public class KillAura extends Module {
                 if (this.attackEntity(entity)) {
                     attacked++;
                 }
-                if (attacked >= 2) break;
+                if (attacked >= limit) break;
             }
             return attacked > 0;
         }
@@ -591,21 +599,16 @@ public class KillAura extends Module {
         return this.isValidTarget(entity);
     }
 
-    private boolean ignoreBlocksAt(double dist) {
-        return this.throughWalls.getValue()
-                && dist <= this.throughWallsRange.getValue().floatValue();
-    }
-
     public boolean attackEntity(Entity entity) {
-        if (mc.player == null || mc.gameMode == null) return false;
+        if (mc.player == null || mc.getConnection() == null) return false;
         if (this.isWebPlacing()) return false;
+        if (!FightManager.attackAndLock()) return false;
 
         ++this.attackTimes;
-        int attackKey = mc.options.keyAttack.getKey().getValue();
-        mc.gameMode.attack(mc.player, entity);
-        ForgeHooksClient.onMouseButtonPre(attackKey, 1, 0);
+        mc.getConnection().send(ServerboundInteractPacket.createAttackPacket(entity, mc.player.isShiftKeyDown()));
+        mc.player.attack(entity);
+        mc.player.resetAttackStrengthTicker();
         mc.player.swing(InteractionHand.MAIN_HAND);
-        ForgeHooksClient.onMouseButtonPost(attackKey, 1, 0);
 
         if (this.morePart.getValue()) {
             mc.player.magicCrit(entity);
@@ -633,13 +636,17 @@ public class KillAura extends Module {
             possibleTargets.sort(Comparator.comparingDouble(KillAura::getAngleDiffToTarget));
         } else if (this.priorityMode.is("Health")) {
             possibleTargets.sort(Comparator.comparingDouble(KillAura::getEntityHealth));
+        } else if (this.priorityMode.is("LivingTime")) {
+            possibleTargets.sort(Comparator.comparingInt(KillAura::getEntityLivingTime).reversed());
+        } else if (this.priorityMode.is("Armor")) {
+            possibleTargets.sort(Comparator.comparingDouble(KillAura::getEntityArmor));
         }
         if (this.preferBaby.getValue()
                 && possibleTargets.stream().anyMatch(KillAura::isBaby)) {
             possibleTargets.removeIf(KillAura::isNotBaby);
         }
         possibleTargets.sort(Comparator.comparing(KillAura::getCrystalPriority));
-        if (this.infSwitch.getValue()) {
+        if (this.infSwitch.getValue() || this.targetMode.is("Multiple")) {
             return possibleTargets;
         }
         int limit = (int) Math.min(possibleTargets.size(), this.switchSize.getValue().intValue());
@@ -660,7 +667,18 @@ public class KillAura extends Module {
 
     private static double getEntityHealth(Entity entity) {
         if (entity instanceof LivingEntity le) {
-            return le.getHealth();
+            return le.getHealth() + le.getAbsorptionAmount();
+        }
+        return 0.0;
+    }
+
+    private static int getEntityLivingTime(Entity entity) {
+        return entity.tickCount;
+    }
+
+    private static double getEntityArmor(Entity entity) {
+        if (entity instanceof LivingEntity le) {
+            return le.getArmorValue();
         }
         return 0.0;
     }
