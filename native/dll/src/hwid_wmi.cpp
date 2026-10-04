@@ -289,9 +289,12 @@ bool patch_iat_co_create(HMODULE mod) {
             reinterpret_cast<const BYTE*>(mod) + desc->Name);
         if (_stricmp(dllName, "ole32.dll") != 0) { ++desc; continue; }
 
+        // Same guard as the registry hook: no import-name table means the slots are
+        // resolved addresses, so walking them as names faults.
+        if (!desc->OriginalFirstThunk) { ++desc; continue; }
+
         IMAGE_THUNK_DATA* thunk = reinterpret_cast<IMAGE_THUNK_DATA*>(
-            reinterpret_cast<BYTE*>(mod) +
-            (desc->OriginalFirstThunk ? desc->OriginalFirstThunk : desc->FirstThunk));
+            reinterpret_cast<BYTE*>(mod) + desc->OriginalFirstThunk);
         IMAGE_THUNK_DATA* iat = reinterpret_cast<IMAGE_THUNK_DATA*>(
             reinterpret_cast<BYTE*>(mod) + desc->FirstThunk);
 

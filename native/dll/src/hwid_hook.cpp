@@ -113,10 +113,12 @@ bool patch_module_iat(HMODULE mod, RegQueryValueExW_t hook) {
             reinterpret_cast<const BYTE*>(mod) + desc->Name);
         if (_stricmp(dllName, "advapi32.dll") != 0) { ++desc; continue; }
 
+        // Without the import-name table the IAT slots hold resolved addresses, not
+        // name RVAs - walking them as names reads garbage (and can fault). Skip.
+        if (!desc->OriginalFirstThunk) { ++desc; continue; }
+
         IMAGE_THUNK_DATA* thunk = reinterpret_cast<IMAGE_THUNK_DATA*>(
-            reinterpret_cast<BYTE*>(mod) +
-            (desc->OriginalFirstThunk ? desc->OriginalFirstThunk
-                                      : desc->FirstThunk));
+            reinterpret_cast<BYTE*>(mod) + desc->OriginalFirstThunk);
         IMAGE_THUNK_DATA* iat = reinterpret_cast<IMAGE_THUNK_DATA*>(
             reinterpret_cast<BYTE*>(mod) + desc->FirstThunk);
 
