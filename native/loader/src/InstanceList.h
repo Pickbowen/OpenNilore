@@ -14,6 +14,7 @@ namespace loader {
 struct Instance {
     unsigned long pid;
     QString title;
+    QString commandLine;   // full command line (from JavaProcess), used by Early Mode to relaunch
 };
 
 class InstanceRow;
@@ -34,12 +35,22 @@ public:
 
     int count() const { return rows_.size(); }
 
+    // True if a row already exists for this pid.
+    bool containsPid(unsigned long pid) const { return rows_.contains(pid); }
+
+    // Return the instance entry backing the row for pid; zero pid if missing.
+    Instance instanceForPid(unsigned long pid) const;
+
     // Disables inject buttons across all rows (used while an injection is
     // already in progress so the user can't queue a second one).
     void setInteractive(bool on);
 
+    // Visual ping on the row for the given pid: draws a yellow outline ring
+    // that fades out.
+    void markInjected(unsigned long pid);
+
 signals:
-    void injectRequested(unsigned long pid, const QString& title);
+    void injectRequested(unsigned long pid, const QString& title, const QString& commandLine);
 
 private:
     void updateEmptyState();
@@ -47,6 +58,7 @@ private:
     QScrollArea* scroll_           = nullptr;
     QWidget*     container_        = nullptr;
     QVBoxLayout* containerLayout_  = nullptr;
+    QLabel*      note_             = nullptr;
     QLabel*      emptyLabel_       = nullptr;
 
     QHash<unsigned long, InstanceRow*> rows_;

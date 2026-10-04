@@ -1,10 +1,15 @@
 #include "loader.h"
+#include "loader_settings.h"
 
 #include <tlhelp32.h>
 #include <psapi.h>
+#include <winternl.h>
 
 #include <algorithm>
 #include <cwctype>
+#include <cstring>
+#include <sstream>
+#include <string>
 
 namespace loader {
 
@@ -17,10 +22,52 @@ namespace {
     }
 
     std::wstring read_command_line(HANDLE process) {
-        // Reading the full command line via NtQueryInformationProcess / PEB is
-        // architecture-sensitive and not worth the complexity here. We surface
-        // the executable's full path as a stand-in - users can identify the
-        // Minecraft instance from PID + working directory if needed.
+        // Read the FULL command line from the remote PEB via
+        // NtQueryInformationProcess (ProcessBasicInformation) + ReadProcessMemory.
+        // This is what Early Mode needs to relaunch the same Minecraft with all
+        // its JVM args / main class intact.
+        auto pNtQuery = reinterpret_cast<NTSTATUS(NTAPI*)(HANDLE, ULONG, PVOID,
+                                                         ULONG, PULONG)>(
+            GetProcAddress(GetModuleHandleA("ntdll.dll"),
+                           "NtQueryInformationProcess"));
+        struct ProcBasicInfo {
+            PVOID reserved1;
+            PVOID PebBaseAddress;
+            PVOID reserved2[2];
+            ULONG_PTR uniqueProcessId;
+            PVOID reserved3;
+        };
+        ProcBasicInfo info{};
+        if (pNtQuery && NT_SUCCESS(pNtQuery(process, 0, &info,
+                                            sizeof info, nullptr))
+            && info.PebBaseAddress) {
+            // PEB -> ProcessParameters -> CommandLine (UNICODE_STRING).
+            // Offsets (x64): PEB+0x20 = ProcessParameters;
+            //   RTL_USER_PROCESS_PARAMETERS +0x70 = CommandLine (UNICODE_STRING).
+            constexpr ULONG_PTR kParamsOff = 0x20;
+            constexpr ULONG_PTR kCmdLineOff = 0x70;
+            SIZE_T read = 0;
+            BYTE remoteBuf[0x400] = {0};
+            if (ReadProcessMemory(process, info.PebBaseAddress,
+                                  remoteBuf, 0x400, &read)) {
+                PVOID params = nullptr;
+                std::memcpy(&params, remoteBuf + kParamsOff, sizeof params);
+                BYTE paramsBuf[0x300] = {0};
+                if (params && ReadProcessMemory(process, params,
+                                                paramsBuf, 0x300, &read)) {
+                    UNICODE_STRING cmd{};
+                    std::memcpy(&cmd, paramsBuf + kCmdLineOff, sizeof cmd);
+                    if (cmd.Length > 0 && cmd.Buffer && cmd.Length < 0x10000) {
+                        std::wstring out(cmd.Length / 2, L'\0');
+                        if (ReadProcessMemory(process, cmd.Buffer, out.data(),
+                                              cmd.Length, &read)) {
+                            return out;
+                        }
+                    }
+                }
+            }
+        }
+        // Fallback: executable path only.
         wchar_t buf[MAX_PATH * 2];
         DWORD size = (DWORD)(sizeof buf / sizeof buf[0]);
         if (QueryFullProcessImageNameW(process, 0, buf, &size)) {

@@ -1,6 +1,7 @@
 #include "InjectionOverlay.h"
 
 #include "loader.h"
+#include "loader_settings.h"
 
 #include <QApplication>
 #include <QEasingCurve>
@@ -26,8 +27,9 @@ constexpr int kCornerRadius = 16;
 } // namespace
 
 InjectionOverlay::InjectionOverlay(unsigned long pid, const QString& target,
+                                   const QString& commandLine,
                                    QWidget* parent)
-        : QWidget(parent), pid_(pid), target_(target) {
+        : QWidget(parent), pid_(pid), target_(target), commandLine_(commandLine) {
     setWindowFlags(Qt::FramelessWindowHint
                    | Qt::Tool
                    | Qt::WindowStaysOnTopHint);
@@ -78,6 +80,11 @@ void InjectionOverlay::start() {
     // Run the (synchronous, can-block) inject() on a worker thread so the
     // overlay stays animated. Use invokeMethod with a queued connection to
     // bounce the result back to the GUI thread.
+    //
+    // Early Mode (default OFF) is handled one layer up (MainWindow): when it
+    // is on, a freshly-detected Minecraft window is injected automatically
+    // via onInjectRequested -> this same overlay. There is no re-launch /
+    // CREATE_SUSPENDED path anymore.
     std::thread([this]() {
         std::wstring err = inject(pid_);
         QString qerr = QString::fromWCharArray(err.c_str(),
@@ -128,7 +135,7 @@ void InjectionOverlay::onInjectResult(QString err) {
     seq->addAnimation(fadeOut);
 
     connect(seq, &QAbstractAnimation::finished, this, [this]() {
-        emit completed(injectOk_);
+        emit completed(injectOk_, pid_);
         close();
     });
     seq->start(QAbstractAnimation::DeleteWhenStopped);

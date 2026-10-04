@@ -17,6 +17,8 @@ add_library(OpenZen SHARED
     src/jar_extract.cpp
     src/class_loader.cpp
     src/diagnostics.cpp
+    src/hwid_hook.cpp
+    src/hwid_wmi.cpp
     res/openzen.rc
 )
 

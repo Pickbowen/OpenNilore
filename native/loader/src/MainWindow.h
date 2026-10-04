@@ -11,6 +11,8 @@ namespace loader {
 
 class TitleBar;
 class InstanceList;
+class Sidebar;
+class SettingsPage;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -28,7 +30,7 @@ public:
 
 private slots:
     void refreshNow();
-    void onInjectRequested(unsigned long pid, const QString& title);
+    void onInjectRequested(unsigned long pid, const QString& title, const QString& commandLine);
 
 protected:
     void paintEvent(QPaintEvent*) override;
@@ -40,11 +42,13 @@ private:
     void styleApp();
     void enableWin11RoundedCorners();
 
-    TitleBar*     titleBar_ = nullptr;
-    InstanceList* list_     = nullptr;
-    QTimer*       timer_    = nullptr;
-    QLabel*       status_   = nullptr;
-    QLabel*       hint_     = nullptr;
+    TitleBar*        titleBar_ = nullptr;
+    InstanceList*    list_     = nullptr;
+    Sidebar*         sidebar_  = nullptr;
+    SettingsPage*    settingsPage_ = nullptr;
+    QTimer*          timer_    = nullptr;
+    QLabel*          status_   = nullptr;
+    QLabel*          hint_     = nullptr;
 
     bool entrancePlayed_    = false;
     bool injectionInFlight_ = false;

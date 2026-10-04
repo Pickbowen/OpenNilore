@@ -1,6 +1,7 @@
 package client.nilore.modules.impl.combat;
 
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import client.nilore.event.impl.SprintEvent;
 import client.nilore.modules.Category;
@@ -17,11 +18,10 @@ extends Module {
     public static AutoSoup INSTANCE;
     private final NumberSetting health = new NumberSetting("Health", 15, 0, 20, 1);
     private final NumberSetting delay = new NumberSetting("Delay", 300, 0, 1000, 1);
-    private final NumberSetting switchDelay = new NumberSetting("Switch Delay", 100, 0, 1000, 1);
     private final BooleanSetting drop = new BooleanSetting("Drop", true);
-    private final Timer switchDelayTimer = new Timer();
     private final Timer delayTimer = new Timer();
     private int prevSelectedSlot = -1;
+    private int currentSoupSlot = -1;
     public boolean isUsingSoup;
 
     public AutoSoup() {
@@ -32,6 +32,7 @@ extends Module {
     @Override
     protected void onDisable() {
         this.prevSelectedSlot = -1;
+        this.currentSoupSlot = -1;
         this.isUsingSoup = false;
     }
 
@@ -40,29 +41,39 @@ extends Module {
         if (mc.player == null || mc.level == null || mc.screen != null) {
             return;
         }
-        if (this.switchDelayTimer.hasPassed(this.switchDelay.getValue().longValue()) && this.prevSelectedSlot != -1) {
-            mc.player.getInventory().selected = this.prevSelectedSlot;
-            PlayerUtil.sendCarriedItem();
-            this.prevSelectedSlot = -1;
-            this.delayTimer.reset();
+        if (this.prevSelectedSlot != -1) {
+            if (mc.player.getInventory().selected != this.currentSoupSlot) {
+                this.prevSelectedSlot = -1;
+                this.currentSoupSlot = -1;
+                this.isUsingSoup = false;
+                this.delayTimer.reset();
+                return;
+            }
+            ItemStack carried = mc.player.getInventory().getSelected();
+            if (carried.getItem() != Items.MUSHROOM_STEW) {
+                if (this.drop.getValue() && carried.getItem() == Items.BOWL) {
+                    mc.player.drop(true);
+                }
+                mc.player.getInventory().selected = this.prevSelectedSlot;
+                PlayerUtil.sendCarriedItem();
+                this.prevSelectedSlot = -1;
+                this.currentSoupSlot = -1;
+                this.isUsingSoup = false;
+                this.delayTimer.reset();
+            }
+            return;
         }
         if (!this.delayTimer.hasPassed(this.delay.getValue().longValue())) {
             return;
         }
-        int soupSlot = ItemUtil.findItemInRange(0, 9, Items.MUSHROOM_STEW);
-        if (mc.player.getHealth() <= this.health.getValue().floatValue() && soupSlot != -1) {
-            boolean alreadySelected = mc.player.getInventory().selected == soupSlot;
-            if (!alreadySelected) {
-                this.prevSelectedSlot = mc.player.getInventory().selected;
-                mc.player.getInventory().selected = soupSlot;
-                PlayerUtil.sendCarriedItem();
-                this.switchDelayTimer.reset();
-            }
+        int foundSlot = ItemUtil.findItemInRange(0, 9, Items.MUSHROOM_STEW);
+        if (mc.player.getHealth() <= this.health.getValue().floatValue() && foundSlot != -1) {
+            this.prevSelectedSlot = mc.player.getInventory().selected;
+            this.currentSoupSlot = foundSlot;
+            mc.player.getInventory().selected = foundSlot;
+            PlayerUtil.sendCarriedItem();
             mc.gameMode.useItem(mc.player, InteractionHand.MAIN_HAND);
             this.isUsingSoup = true;
-            if (this.drop.getValue()) {
-                mc.player.drop(true);
-            }
             this.delayTimer.reset();
         } else {
             this.isUsingSoup = false;

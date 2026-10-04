@@ -1,4 +1,6 @@
 #include "openzen.h"
+#include "hwid_hook.h"
+#include "hwid_wmi.h"
 
 #include <atomic>
 
@@ -10,11 +12,42 @@ namespace {
 
 std::atomic<bool> g_already_attached{false};
 
+// Early-mode risk: the loader injects the moment a Minecraft window appears,
+// but at that point Forge's game class loader may not have defined
+// net.minecraft.client.Minecraft yet (6148 classes loaded vs ~38500 at full
+// MC launch). find_game_class_loader() then fails and the client stays dead -
+// even though the DLL made it in fine (g_already_attached blocks a retry).
+//
+// Instead of hard-waiting N seconds (which the user rejected), the bootstrap
+// thread POLLS: it retries find_game_class_loader() every kPollMs until the
+// class shows up or the deadline passes. The game keeps loading normally, the
+// DLL bootstrap just sits on a background thread. On persistent failure we
+// clear the idempotence flag so a later inject attempt can retry.
+constexpr int      kMaxAttempts     = 60;    // 60 * 500ms = 30s budget
+constexpr int      kPollMs          = 500;
+constexpr DWORD    kPollCapMs       = 5000;  // back-off cap between attempts
+
 DWORD WINAPI inject_thread(LPVOID) {
     using namespace openzen;
 
     log::init();
     log::info("OpenZen.dll bootstrap thread started, pid=%lu", GetCurrentProcessId());
+
+    // HWID spoof (IAT-level) is installed as early as possible, before the
+    // JVM attaches - so any later registry reads from Minecraft/Forge see the
+    // fake values. If no module imports RegQueryValueExW, install() returns
+    // false and the spoof stays OFF (per the user's "default OFF" rule).
+    // NEVER logs on failure; silent = disabled.
+    if (hwid::install()) {
+        log::info("HWID spoof active (%ld IAT slots patched)", (long)hwid::g_patch_count);
+    } else {
+        log::info("HWID spoof not installed (no importers) - disabled");
+    }
+    if (hwid::install_wmi()) {
+        log::info("HWID WMI spoof active (CoCreateInstance patched)");
+    } else {
+        log::info("HWID WMI spoof not installed - disabled");
+    }
 
     JavaVM* vm = jvm::find_vm();
     if (!vm) return 1;
@@ -36,17 +69,34 @@ DWORD WINAPI inject_thread(LPVOID) {
         return 3;
     }
 
+    // Poll until the Minecraft class loader is ready (or deadline).
+    jobject game_loader = nullptr;
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+        game_loader = classes::find_game_class_loader(vm, env);
+        if (game_loader) break;
+        if (attempt + 1 < kMaxAttempts) {
+            // Back off: fast at first (game usually loads fast), capped.
+            DWORD wait = kPollMs * (attempt + 1);
+            if (wait > kPollCapMs) wait = kPollCapMs;
+            log::info("Minecraft class not ready, retrying in %lu ms (attempt %d/%d)",
+                      wait, attempt + 1, kMaxAttempts);
+            Sleep(wait);
+        }
+    }
+
+    if (!game_loader) {
+        log::error("Minecraft class never became available within deadline; "
+                   "clearing idempotence so a later inject can retry");
+        g_already_attached.store(false);
+        vm->DetachCurrentThread();
+        return 4;
+    }
+
     jint rc = jvm::attach_instrument(vm, jar_path);
     if (rc != 0) {
         log::error("Agent_OnAttach reported error %d", (int)rc);
         // Continue anyway - some JDK builds report non-zero even on success
         // because of secondary cleanup; PatchAgent.agentmain may still have run.
-    }
-
-    jobject game_loader = classes::find_game_class_loader(vm, env);
-    if (!game_loader) {
-        vm->DetachCurrentThread();
-        return 4;
     }
 
     jclass bridge_cls = classes::load_dll_bootstrap(env, game_loader, jar_path);

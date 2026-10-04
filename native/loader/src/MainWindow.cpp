@@ -2,8 +2,11 @@
 
 #include "InjectionOverlay.h"
 #include "InstanceList.h"
+#include "SettingsPage.h"
+#include "Sidebar.h"
 #include "TitleBar.h"
 #include "loader.h"
+#include "loader_settings.h"
 
 #include <QApplication>
 #include <QCloseEvent>
@@ -125,36 +128,49 @@ void MainWindow::buildUi() {
     titleBar_->setTitleText(displayTitle);
     root->addWidget(titleBar_);
 
+    // Flat DeepSeek-style: the sidebar is a fixed-width column; the Inject
+    // view (InstanceList) is a DIRECT child of this central widget - exactly
+    // like the proven-stable original, never wrapped in any intermediate
+    // container (wrapping it in a shell/dock/stack caused a vtable UAF:
+    // exe+0x245cd5 / 0x246655 / 0x246635). The Settings page is a sibling
+    // overlay child that is shown/hidden via setVisible.
     auto* body = new QWidget(central);
     body->setObjectName("body");
-    body->setAttribute(Qt::WA_StyledBackground, false);
-    auto* layout = new QVBoxLayout(body);
-    layout->setContentsMargins(18, 14, 18, 14);
-    layout->setSpacing(10);
+    auto* bodyLayout = new QHBoxLayout(body);
+    bodyLayout->setContentsMargins(0, 0, 0, 0);
+    bodyLayout->setSpacing(0);
 
-    auto* title = new QLabel(QStringLiteral("Minecraft Instances"), body);
-    title->setObjectName("title");
-
-    hint_ = new QLabel(
-        QStringLiteral("Click Inject on the instance you want to load OpenNilore into. "
-                       "List refreshes every second."),
-        body);
-    hint_->setObjectName("hint");
-    hint_->setWordWrap(true);
+    sidebar_ = new Sidebar(body);
+    bodyLayout->addWidget(sidebar_);
 
     list_ = new InstanceList(body);
     connect(list_, &InstanceList::injectRequested,
             this, &MainWindow::onInjectRequested);
+    bodyLayout->addWidget(list_, 1);
 
-    status_ = new QLabel(QStringLiteral("Watching for Minecraft processes…"), body);
-    status_->setObjectName("status");
-    status_->setWordWrap(true);
+    settingsPage_ = new SettingsPage(body);
+    settingsPage_->setVisible(false);
+    bodyLayout->addWidget(settingsPage_, 1);
 
-    layout->addWidget(title);
-    layout->addWidget(hint_);
-    layout->addWidget(list_, 1);
-    layout->addWidget(status_);
+    connect(sidebar_, &Sidebar::injectClicked, this, [this] {
+        list_->setVisible(true);
+        settingsPage_->setVisible(false);
+    });
+    connect(sidebar_, &Sidebar::settingsClicked, this, [this] {
+        list_->setVisible(false);
+        settingsPage_->setVisible(true);
+    });
+
     root->addWidget(body, 1);
+
+    auto* statusRow = new QWidget(central);
+    auto* statusRowLayout = new QHBoxLayout(statusRow);
+    statusRowLayout->setContentsMargins(10, 0, 10, 10);
+    status_ = new QLabel(statusRow);
+    status_->setObjectName("status");
+    statusRowLayout->addWidget(status_);
+    statusRowLayout->addStretch(1);
+    root->addWidget(statusRow);
 
     setCentralWidget(central);
 }
@@ -272,6 +288,7 @@ void MainWindow::refreshNow() {
         Instance item;
         item.pid = jp.pid;
         item.title = fromW(jp.window_title);
+        item.commandLine = fromW(jp.command_line);
         if (item.title.isEmpty()) {
             item.title = QStringLiteral("(starting up — %1)")
                     .arg(fromW(jp.window_class));
@@ -284,7 +301,12 @@ void MainWindow::refreshNow() {
                      .arg(list_->count()));
 }
 
-void MainWindow::onInjectRequested(unsigned long pid, const QString& title) {
+void MainWindow::onInjectRequested(unsigned long pid, const QString& title,
+                                   const QString& commandLine) {
+    // Signal re-entrancy guard: the Early Mode auto-detection fires on every
+    // newly-seen Minecraft pid. When auto-inject is already in progress
+    // (injectionInFlight_), drop the new candidate instead of starting a
+    // second overlay / worker thread.
     if (injectionInFlight_) return;
     injectionInFlight_ = true;
 
@@ -293,9 +315,17 @@ void MainWindow::onInjectRequested(unsigned long pid, const QString& title) {
     list_->setInteractive(false);
     if (timer_) timer_->stop();
 
-    auto* overlay = new InjectionOverlay(pid, title, this);
+    auto* overlay = new InjectionOverlay(pid, title, commandLine, this);
     connect(overlay, &InjectionOverlay::completed, this,
-            [this](bool /*ok*/) { playExitThenQuit(); });
+            [this](bool ok, unsigned long injectedPid) {
+        // Ping the injected row so the user sees which pid got the DLL.
+        // The 1.4s yellow ring needs a few frames; hold the window briefly
+        // (3000ms) before fading out so it is actually visible, then leave.
+        if (ok && injectedPid) list_->markInjected(injectedPid);
+        QTimer::singleShot(1200, this, [this]() {
+            playExitThenQuit();
+        });
+    });
     overlay->start();
 }
 

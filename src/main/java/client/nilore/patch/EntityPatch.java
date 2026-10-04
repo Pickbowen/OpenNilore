@@ -6,6 +6,11 @@ import asm.patchify.annotation.Overwrite;
 import asm.patchify.annotation.Patch;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.entity.vehicle.AbstractMinecart;
+import net.minecraft.world.entity.vehicle.Boat;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 import client.nilore.ClientBase;
@@ -32,13 +37,22 @@ public class EntityPatch {
     }
 
     @Inject(method = "push", desc = "(Lnet/minecraft/world/entity/Entity;)V", at = @At(At.Type.HEAD))
-    public static void onPush(Entity entity, CallbackInfo callbackInfo) {
-        if (!NiloreClient.isReady() || entity != ClientBase.mc.player || entity.isInWater()) return;
+    public static void onPush(Entity entity, Entity other, CallbackInfo callbackInfo) {
+        if (!NiloreClient.isReady() || entity != ClientBase.mc.player) return;
+        if (!isPusherEntity(other)) return;
         SneakEvent event = new SneakEvent();
         NiloreClient.getInstance().getEventBus().call(event);
         if (event.isCancelled()) {
             callbackInfo.cancel();
         }
+    }
+
+    private static boolean isPusherEntity(Entity other) {
+        return other instanceof Player
+                || other instanceof Mob
+                || other instanceof ItemEntity
+                || other instanceof Boat
+                || other instanceof AbstractMinecart;
     }
 
     @Overwrite(method = "moveRelative", desc = "(FLnet/minecraft/world/phys/Vec3;)V")

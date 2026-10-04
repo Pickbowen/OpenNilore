@@ -89,6 +89,10 @@ public class JumpResetMode extends AntiKBMode {
     }
 
     @Override
+    public void onEntityHurt(client.nilore.event.impl.EntityHurtEvent event) {
+    }
+
+    @Override
     public void onSprint(SprintEvent event) {
     }
 

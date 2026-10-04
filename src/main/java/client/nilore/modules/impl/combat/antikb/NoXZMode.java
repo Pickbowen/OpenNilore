@@ -2,6 +2,10 @@ package client.nilore.modules.impl.combat.antikb;
 
 import java.util.concurrent.LinkedBlockingDeque;
 
+import java.awt.Color;
+
+import com.mojang.blaze3d.platform.InputConstants;
+
 import net.minecraft.client.gui.screens.inventory.InventoryScreen;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ClientGamePacketListener;
@@ -9,6 +13,7 @@ import net.minecraft.network.protocol.game.ClientboundAnimatePacket;
 import net.minecraft.network.protocol.game.ClientboundContainerClosePacket;
 import net.minecraft.network.protocol.game.ClientboundDisconnectPacket;
 import net.minecraft.network.protocol.game.ClientboundHurtAnimationPacket;
+import net.minecraft.network.protocol.game.ClientboundMoveEntityPacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerChatPacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerCombatKillPacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket;
@@ -18,11 +23,13 @@ import net.minecraft.network.protocol.game.ClientboundSetPlayerTeamPacket;
 import net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket;
 import net.minecraft.network.protocol.game.ClientboundSoundPacket;
 import net.minecraft.network.protocol.game.ClientboundSystemChatPacket;
-import net.minecraft.util.Mth;
+import net.minecraft.network.protocol.game.ClientboundTeleportEntityPacket;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.phys.Vec3;
 import client.nilore.event.impl.DisconnectEvent;
+import client.nilore.event.impl.EntityHurtEvent;
 import client.nilore.event.impl.EntityRemoveEvent;
 import client.nilore.event.impl.GameTickEvent;
 import client.nilore.event.impl.MotionEvent;
@@ -38,10 +45,15 @@ import client.nilore.modules.impl.combat.KillAura;
 import client.nilore.modules.impl.movement.NoSlow;
 import client.nilore.modules.impl.movement.Scaffold;
 import client.nilore.modules.impl.player.Stuck;
-import client.nilore.utils.game.FightManager;
 import client.nilore.utils.game.RotationUtil;
 import client.nilore.utils.misc.ChatUtil;
+import client.nilore.utils.render.RenderUtil;
 
+/**
+ * Port of EdNaven Velocity's Reduce + Delay execution path:
+ * choke own knockback packet, release on aim+sprint (Delay = airborne allowed),
+ * then attack-reduce with the x0.6 self-deceleration the vanilla client never applies.
+ */
 public class NoXZMode
         extends AntiKBMode {
     public static NoXZMode INSTANCE;
@@ -50,23 +62,26 @@ public class NoXZMode
     private final LinkedBlockingDeque<Packet<ClientGamePacketListener>> packetQueue = new LinkedBlockingDeque<>();
 
     public boolean delaying;
-    private boolean velocityPending;
     private boolean positionCorrection;
+    private boolean compensating;
+    private long compensateUntilMs = -1L;
     private int delayTicks;
-    private int velocityPendingTicks;
-    private int attacksRemaining;
+    private int counterRemaining;
+    private int noAimTicks;
+    private int jumpTicks;
+    private boolean jumpKeyForced;
+    private float barProgress;
+    private float barAlpha;
+    private long lastFrameNanos;
     private Entity target;
-    private float jumpResetYaw;
-    private float jumpResetDifference;
-    private boolean forceForward;
 
     @Override
     public boolean isActive() {
-        return this.delaying || this.attacksRemaining > 0;
+        return this.delaying || this.counterRemaining > 0;
     }
 
     public static boolean isCountering() {
-        return INSTANCE != null && INSTANCE.attacksRemaining > 0;
+        return INSTANCE != null && INSTANCE.counterRemaining > 0;
     }
 
     public static boolean isInAttackWindow() {
@@ -77,6 +92,17 @@ public class NoXZMode
         return INSTANCE != null && INSTANCE.delaying;
     }
 
+    public static Entity getLockedTarget() {
+        NoXZMode m = INSTANCE;
+        if (m == null || AntiKB.INSTANCE == null || !AntiKB.INSTANCE.isEnabled()) {
+            return null;
+        }
+        if (!m.delaying && m.counterRemaining <= 0) {
+            return null;
+        }
+        return m.target != null && m.target.isAlive() ? m.target : null;
+    }
+
     public NoXZMode() {
         super("NoXZ");
         INSTANCE = this;
@@ -84,13 +110,12 @@ public class NoXZMode
 
     @Override
     public void onEnable() {
-        this.clearGrimState();
+        this.resetAll();
     }
 
     @Override
     public void onDisable() {
-        this.releaseQueue();
-        this.clearGrimState();
+        this.resetAll();
     }
 
     @Override
@@ -107,10 +132,6 @@ public class NoXZMode
     }
 
     @Override
-    public void onGameTick(GameTickEvent gameTickEvent) {
-    }
-
-    @Override
     public void onPreMotion(PreMotionEvent preMotionEvent) {
     }
 
@@ -123,7 +144,80 @@ public class NoXZMode
     }
 
     @Override
-    public void onRender2D(Render2DEvent render2DEvent) {
+    public void onEntityHurt(EntityHurtEvent event) {
+        if (mc.player == null || event.entity() != mc.player) {
+            return;
+        }
+        Entity attacker = event.damageSource().getDirectEntity();
+        if (attacker == null) {
+            attacker = event.damageSource().getEntity();
+        }
+        if (attacker != null && attacker != mc.player && attacker.isAlive()
+                && this.target == null) {
+            this.target = attacker;
+        }
+    }
+
+    @Override
+    public void onGameTick(GameTickEvent gameTickEvent) {
+        if (mc.player == null) {
+            return;
+        }
+        if (!AntiKB.INSTANCE.jumpReset.getValue() || this.jumpTicks <= 0) {
+            this.restoreJumpKey();
+            return;
+        }
+        if (Scaffold.INSTANCE != null && Scaffold.INSTANCE.isEnabled()) {
+            return;
+        }
+        this.jumpKeyForced = true;
+        mc.options.keyJump.setDown(true);
+        --this.jumpTicks;
+    }
+
+    @Override
+    public void onRender2D(Render2DEvent event) {
+        if (this.compensateUntilMs != -1L
+                && (System.currentTimeMillis() >= this.compensateUntilMs || mc.options.keyUp.isDown())) {
+            this.compensating = false;
+            this.compensateUntilMs = -1L;
+        }
+        if (!AntiKB.INSTANCE.renderBar.getValue() || !AntiKB.INSTANCE.isEnabled()) {
+            return;
+        }
+        float maximum = Math.max(1, AntiKB.INSTANCE.maxDelayTicks.getValue().intValue());
+        float target = this.delaying ? Math.min(1.0f, this.delayTicks / maximum) : 0.0f;
+        float targetAlpha = this.delaying || this.barProgress > 0.01f ? 1.0f : 0.0f;
+        long now = System.nanoTime();
+        float dt = this.lastFrameNanos == 0L
+                ? 0.016666668f
+                : Math.min((now - this.lastFrameNanos) / 1.0E9f, 0.1f);
+        this.lastFrameNanos = now;
+        if (target >= 1.0f) {
+            this.barProgress = 1.0f;
+        } else {
+            float speed = target > this.barProgress ? 9.75f : 21.4f;
+            this.barProgress += (target - this.barProgress) * (1.0f - (float) Math.exp(-speed * dt));
+        }
+        this.barAlpha += (targetAlpha - this.barAlpha) * (1.0f - (float) Math.exp(-9.75f * dt));
+        if (Math.abs(target - this.barProgress) < 0.001f) {
+            this.barProgress = target;
+        }
+        if (this.barAlpha <= 0.01f || this.barProgress <= 0.001f) {
+            return;
+        }
+        int width = mc.getWindow().getGuiScaledWidth();
+        int height = mc.getWindow().getGuiScaledHeight();
+
+        float barWidth = 100.0f;
+        float barHeight = 2.0f;
+        float barX = width / 2.0f - barWidth / 2.0f;
+        float barY = height / 2.0f + height * 0.10f;
+
+        RenderUtil.drawFilledRect(event.poseStack(), barX, barY, barWidth, barHeight,
+                new Color(30, 30, 36, (int) (180 * this.barAlpha)).getRGB());
+        RenderUtil.drawFilledRect(event.poseStack(), barX, barY, barWidth * this.barProgress, barHeight,
+                new Color(0, 180, 255, (int) (230 * this.barAlpha)).getRGB());
     }
 
     @Override
@@ -138,25 +232,33 @@ public class NoXZMode
             return;
         }
 
-        if (this.shouldAbortGrim()) {
+        if (this.shouldNotEngage()) {
             return;
         }
 
         if (packet instanceof ClientboundSetEntityMotionPacket motion
                 && motion.getId() == mc.player.getId()) {
-            this.updateJumpReset(motion);
             if (!this.delaying) {
                 this.delaying = true;
                 this.delayTicks = 0;
                 handlingVelocity = true;
-                this.debug("Delay started");
             }
             receivePacketEvent.setCancelled(true);
             this.packetQueue.add(packet);
             return;
         }
 
-        if (!this.delaying || this.isImmediatePacket(packet)) {
+        if (this.isAllowedPacket(packet)) {
+            return;
+        }
+        if (!this.delaying) {
+            return;
+        }
+        // Entity position sync must never be choked: holding the opponent's move packets
+        // back makes our client see an outdated hitbox while the server judges against the
+        // current one -> Grim Hitboxes / Reach.
+        if (packet instanceof ClientboundMoveEntityPacket
+                || packet instanceof ClientboundTeleportEntityPacket) {
             return;
         }
         receivePacketEvent.setCancelled(true);
@@ -165,8 +267,7 @@ public class NoXZMode
 
     @Override
     public void onDisconnect(DisconnectEvent disconnectEvent) {
-        this.releaseQueue();
-        this.clearGrimState();
+        this.resetAll();
     }
 
     @Override
@@ -174,30 +275,9 @@ public class NoXZMode
         if (mc.player == null) {
             return;
         }
-
-        if (this.forceForward) {
+        if (this.compensating && (!this.delaying || mc.player.onGround())) {
             strafeEvent.setForward(1.0f);
             strafeEvent.setStrafe(0.0f);
-            if (!mc.player.isSprinting()) {
-                mc.player.setSprinting(true);
-            }
-        }
-
-        if (this.velocityPending && mc.player.isSprinting()) {
-            strafeEvent.setSprinting(true);
-
-            if (Math.abs(this.jumpResetDifference) <= 45.0f
-                    && AntiKB.INSTANCE.sideStrafe.getValue() && this.velocityPendingTicks < 4) {
-                float[] movement = this.jumpResetMovement();
-                if (movement[0] != 0.0f) {
-                    strafeEvent.setForward(movement[0]);
-                }
-                if (movement[1] != 0.0f) {
-                    strafeEvent.setStrafe(movement[1]);
-                }
-            } else {
-                this.velocityPending = false;
-            }
         }
     }
 
@@ -209,79 +289,108 @@ public class NoXZMode
 
         this.target = KillAura.target;
 
-        if (this.velocityPending) {
-            ++this.velocityPendingTicks;
-            if (this.velocityPendingTicks >= 4) {
-                this.velocityPending = false;
-                this.velocityPendingTicks = 0;
-            }
+        if (this.compensateUntilMs != -1L
+                && (System.currentTimeMillis() >= this.compensateUntilMs || mc.options.keyUp.isDown())) {
+            this.compensating = false;
+            this.compensateUntilMs = -1L;
         }
 
-        if (this.shouldAbortGrim()) {
-            if (this.delaying) {
-                this.debug("Delay force released");
-            }
-            this.resetGrimState();
+        if (mc.player.isDeadOrDying() || this.shouldNotEngage() || this.noAimTicks >= 5) {
+            this.resetAll();
             return;
         }
 
         if (this.delaying) {
-            this.forceForward = true;
-            this.attacksRemaining = 0;
+            this.compensating = true;
+            this.counterRemaining = 0;
             ++this.delayTicks;
             if (this.delayTicks >= AntiKB.INSTANCE.maxDelayTicks.getValue().intValue()) {
-                this.debug("Delay timeout");
-                this.resetGrimState();
+                this.resetAll();
                 return;
             }
-            boolean insideBufferRange = this.target != null
-                    && this.target.distanceTo(mc.player) <= AntiKB.INSTANCE.bufferRange.getValue().doubleValue();
-            if (this.isLookingAtTarget() && insideBufferRange && mc.player.isSprinting()
-                    && (mc.player.onGround() || AntiKB.INSTANCE.reduceMode.is("Sprint"))) {
-                this.attacksRemaining = AntiKB.INSTANCE.attackAmount.getValue().intValue();
+            // Release as soon as we are aiming + sprinting, on the ground or not: holding
+            // everything until landing stacks several knockback packets and dumps them in
+            // one tick, which reads as a way bigger knockback than the server sent.
+            if (this.isAimingAtTarget() && mc.player.isSprinting()) {
+                this.counterRemaining = this.getAttackCount();
+                this.noAimTicks = 0;
                 this.delaying = false;
                 handlingVelocity = false;
-                this.debug("Release x" + this.attacksRemaining);
-                this.releaseLastMotionOnly();
-                this.velocityPending = true;
-                this.velocityPendingTicks = 0;
+                this.flushQueue();
+                if (AntiKB.INSTANCE.jumpReset.getValue() && mc.player.onGround()) {
+                    this.jumpTicks = 1;
+                }
             }
         }
 
-        if (this.attacksRemaining > 0) {
-            if (!this.isLookingAtTarget() || !mc.player.isSprinting()) {
+        if (this.counterRemaining > 0) {
+            if (!this.isAimingAtTarget()) {
+                ++this.noAimTicks;
                 return;
             }
-            this.performReduceAttack(this.target);
-            --this.attacksRemaining;
-            if (this.attacksRemaining == 0) {
-                this.forceForward = false;
+            if (!mc.player.isSprinting()) {
+                this.debug("not sprinting");
+                return;
             }
+            if (!this.canReachTarget()) {
+                this.debug("raycast fail");
+                return;
+            }
+            this.attackReduce(this.target);
+            --this.counterRemaining;
+        } else if (this.compensating) {
+            this.compensateUntilMs = System.currentTimeMillis() + 10L;
         }
     }
 
-    private void performReduceAttack(Entity entity) {
-        if (entity == null || mc.player == null || mc.getConnection() == null) {
+    private void attackReduce(Entity entity) {
+        if (entity == null || mc.player == null || mc.gameMode == null || mc.getConnection() == null) {
             return;
         }
-        if (!FightManager.attackAndLock()) {
-            return;
+        boolean wasSprinting = mc.player.isSprinting();
+        if (wasSprinting) {
+            mc.player.setSprinting(false);
         }
-        FightManager.attackByPacket(entity, false);
+        mc.gameMode.attack(mc.player, entity);
         mc.player.swing(InteractionHand.MAIN_HAND);
-        mc.player.setDeltaMovement(mc.player.getDeltaMovement().multiply(0.6, 1.0, 0.6));
-        mc.player.setSprinting(false);
+        // Vanilla never applies the post-attack self-deceleration for us, so simulate it.
+        if (wasSprinting) {
+            Vec3 movement = mc.player.getDeltaMovement();
+            mc.player.setDeltaMovement(movement.x * 0.6, movement.y, movement.z * 0.6);
+        }
     }
 
-    private boolean isLookingAtTarget() {
+    private int getAttackCount() {
+        return AntiKB.INSTANCE.attackAmount.getValue().intValue();
+    }
+
+    private boolean isAimingAtTarget() {
+        if (this.target == null || mc.player == null) {
+            return false;
+        }
+        // Silent-rotation client: mc.hitResult reflects the local view which the aura
+        // never moves, so aim must be judged against the rotation actually sent.
+        return RotationUtil.isLookingAt(this.target, 3.0, 0.1f);
+    }
+
+    private boolean canReachTarget() {
         if (this.target == null) {
             return false;
         }
-        return RotationUtil.isLookingAt(this.target,
-                AntiKB.INSTANCE.attackRange.getValue().doubleValue(), 0.1f);
+        return RotationUtil.isLookingAt(this.target, 2.95, 0.1f)
+                && this.getAABBDistance(this.target) <= 2.95;
     }
 
-    private boolean shouldAbortGrim() {
+    private double getAABBDistance(Entity entity) {
+        Vec3 eyePos = mc.player.getEyePosition(1.0f);
+        net.minecraft.world.phys.AABB box = entity.getBoundingBox();
+        double clampedX = Math.max(box.minX, Math.min(eyePos.x, box.maxX));
+        double clampedY = Math.max(box.minY, Math.min(eyePos.y, box.maxY));
+        double clampedZ = Math.max(box.minZ, Math.min(eyePos.z, box.maxZ));
+        return eyePos.distanceTo(new Vec3(clampedX, clampedY, clampedZ));
+    }
+
+    private boolean shouldNotEngage() {
         if (mc.player == null || mc.getConnection() == null) {
             return true;
         }
@@ -313,7 +422,7 @@ public class NoXZMode
         return stuck != null && stuck.isEnabled();
     }
 
-    private boolean isImmediatePacket(Packet<?> packet) {
+    private boolean isAllowedPacket(Packet<?> packet) {
         return packet instanceof ClientboundSetEntityMotionPacket
                 || packet instanceof ClientboundSetHealthPacket
                 || packet instanceof ClientboundPlayerPositionPacket
@@ -330,97 +439,62 @@ public class NoXZMode
                 && animation.getId() != mc.player.getId();
     }
 
-    private void releaseQueue() {
+    private void flushQueue() {
         if (mc.getConnection() == null) {
             this.packetQueue.clear();
             return;
         }
-        Packet<ClientGamePacketListener> packet;
-        while ((packet = this.packetQueue.poll()) != null) {
-            try {
-                packet.handle(mc.getConnection());
-            } catch (Exception exception) {
+        // MnExecute-style replay: the queued packets (velocity included) must be applied
+        // outside the current tick's movement pass, otherwise the replayed knockback
+        // fights the already-computed movement for this tick and the server prediction
+        // drifts by a few hundredths.
+        mc.execute(() -> {
+            if (mc.getConnection() == null) {
                 this.packetQueue.clear();
-                break;
+                return;
             }
-        }
+            Packet<ClientGamePacketListener> packet;
+            while ((packet = this.packetQueue.poll()) != null) {
+                try {
+                    packet.handle(mc.getConnection());
+                } catch (Exception exception) {
+                    this.packetQueue.clear();
+                    break;
+                }
+            }
+        });
     }
 
-    private void releaseLastMotionOnly() {
-        if (mc.getConnection() == null) {
-            this.packetQueue.clear();
+    private void restoreJumpKey() {
+        if (!this.jumpKeyForced) {
             return;
         }
-        ClientboundSetEntityMotionPacket lastMotion = null;
-        for (Packet<ClientGamePacketListener> queued : this.packetQueue) {
-            if (queued instanceof ClientboundSetEntityMotionPacket motion) {
-                lastMotion = motion;
-            }
+        this.jumpKeyForced = false;
+        if (mc.player == null || Scaffold.INSTANCE != null && Scaffold.INSTANCE.isEnabled()) {
+            return;
         }
-        Packet<ClientGamePacketListener> packet;
-        while ((packet = this.packetQueue.poll()) != null) {
-            if (packet instanceof ClientboundSetEntityMotionPacket && packet != lastMotion) {
-                continue;
-            }
-            try {
-                packet.handle(mc.getConnection());
-            } catch (Exception exception) {
-                this.packetQueue.clear();
-                break;
-            }
-        }
+        boolean down = InputConstants.isKeyDown(mc.getWindow().getWindow(), mc.options.keyJump.getKey().getValue());
+        mc.options.keyJump.setDown(down);
     }
 
-    private void resetGrimState() {
-        this.releaseQueue();
-        this.clearGrimState();
-    }
-
-    private void clearGrimState() {
+    private void resetAll() {
+        this.flushQueue();
         this.delaying = false;
-        this.forceForward = false;
-        this.velocityPending = false;
+        this.compensating = false;
         this.positionCorrection = false;
         this.delayTicks = 0;
-        this.velocityPendingTicks = 0;
-        this.attacksRemaining = 0;
+        this.counterRemaining = 0;
+        this.noAimTicks = 0;
+        this.compensateUntilMs = -1L;
+        this.jumpTicks = 0;
+        this.restoreJumpKey();
         this.target = null;
         handlingVelocity = false;
     }
 
-    private void updateJumpReset(ClientboundSetEntityMotionPacket motion) {
-        if (mc.player == null) {
-            return;
-        }
-        double x = -motion.getXa();
-        double z = -motion.getZa();
-        if (Math.abs(x) < 1.0E-6 && Math.abs(z) < 1.0E-6) {
-            this.jumpResetYaw = mc.player.getYRot();
-            this.jumpResetDifference = 0.0f;
-            return;
-        }
-        this.jumpResetYaw = (float) Math.toDegrees(Math.atan2(-x, z));
-        this.jumpResetDifference = Mth.wrapDegrees(this.jumpResetYaw - mc.player.getYRot());
-    }
-
-    private float[] jumpResetMovement() {
-        float deltaYaw = Mth.wrapDegrees(this.jumpResetYaw - mc.player.getYRot());
-        if (this.jumpResetDifference > 22.5f) {
-            deltaYaw -= 45.0f;
-        } else if (this.jumpResetDifference < -22.5f) {
-            deltaYaw += 45.0f;
-        }
-        double radians = Math.toRadians(deltaYaw);
-        double x = Math.sin(radians);
-        double z = Math.cos(radians);
-        float forward = z > 0.707 ? 1.0f : z < -0.707 ? -1.0f : 0.0f;
-        float strafe = x > 0.707 ? -1.0f : x < -0.707 ? 1.0f : 0.0f;
-        return new float[]{forward, strafe};
-    }
-
     private void debug(String message) {
         if (AntiKB.INSTANCE.debugLog.getValue()) {
-            ChatUtil.print("[NoXZ] " + message);
+            ChatUtil.print(message);
         }
     }
 

@@ -1,5 +1,8 @@
 #include "manual_map.h"
 
+#include "loader_settings.h"
+#include "syscalls.h"
+
 #include <psapi.h>
 #include <tlhelp32.h>
 
@@ -41,6 +44,28 @@ HMODULE remote_load_library(HANDLE process, const wchar_t* dll_name) {
     }
     auto load_lib = reinterpret_cast<LPTHREAD_START_ROUTINE>(GetProcAddress(
             GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW"));
+    // Syscall Thread (default OFF): start the remote thread via NtCreateThreadEx
+    // (bypasses user-mode CreateRemoteThread hooks) instead of CreateRemoteThread.
+    if (loader_settings::is_syscall_thread_enabled()) {
+        sys::NtFuncs nt;
+        if (sys::init(nt)) {
+            HANDLE t = nullptr;
+            NTSTATUS st = nt.NtCreateThreadEx(
+                    &t, THREAD_ALL_ACCESS, nullptr, process, load_lib, arg,
+                    0, 0, 0, 0, nullptr);
+            sys::cleanup(nt);
+            if (NT_SUCCESS(st) && t) {
+                WaitForSingleObject(t, 10000);
+                DWORD ret = 0;
+                GetExitCodeThread(t, &ret);
+                CloseHandle(t);
+                VirtualFreeEx(process, arg, 0, MEM_RELEASE);
+                return reinterpret_cast<HMODULE>(static_cast<ULONG_PTR>(ret));
+            }
+            sys::cleanup(nt);
+        }
+        // fall through to CreateRemoteThread if init/stub failed
+    }
     HANDLE thread = CreateRemoteThread(process, nullptr, 0, load_lib, arg, 0, nullptr);
     if (!thread) {
         VirtualFreeEx(process, arg, 0, MEM_RELEASE);
@@ -289,8 +314,26 @@ std::wstring inject_in_memory(DWORD pid, const void* dll_bytes, size_t dll_size)
         return fmt_err(L"WriteProcessMemory (shellcode)", err);
     }
 
-    HANDLE thread = CreateRemoteThread(process, nullptr, 0,
-            reinterpret_cast<LPTHREAD_START_ROUTINE>(remote_sc), nullptr, 0, nullptr);
+    // Syscall Thread (default OFF): start the DllMain shellcode thread via
+    // NtCreateThreadEx to dodge CreateRemoteThread user-mode hooks.
+    HANDLE thread = nullptr;
+    if (loader_settings::is_syscall_thread_enabled()) {
+        sys::NtFuncs nt;
+        if (sys::init(nt)) {
+            NTSTATUS st = nt.NtCreateThreadEx(
+                    &thread, THREAD_ALL_ACCESS, nullptr, process,
+                    reinterpret_cast<PVOID>(remote_sc), nullptr,
+                    0, 0, 0, 0, nullptr);
+            sys::cleanup(nt);
+            if (!NT_SUCCESS(st) || !thread) {
+                thread = nullptr;
+            }
+        }
+    }
+    if (!thread) {
+        thread = CreateRemoteThread(process, nullptr, 0,
+                reinterpret_cast<LPTHREAD_START_ROUTINE>(remote_sc), nullptr, 0, nullptr);
+    }
     if (!thread) {
         DWORD err = GetLastError();
         VirtualFreeEx(process, remote_sc, 0, MEM_RELEASE);

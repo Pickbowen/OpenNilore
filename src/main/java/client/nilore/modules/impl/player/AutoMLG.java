@@ -134,12 +134,16 @@ extends Module {
             }
             if (this.recoveryCountdown-- <= 0) {
                 this.recoveryActive = false;
+                this.waterBucketSlot = null;
+                this.placedWaterPos = null;
+                return;
+            }
+            if (this.extraCooldown > 0) {
                 return;
             }
             if (this.waterBucketSlot == null) {
                 this.waterBucketSlot = ItemUtil.findItemInRange(0, 9, Items.BUCKET);
                 if (this.waterBucketSlot == null) {
-                    this.recoveryActive = false;
                     return;
                 }
             }
@@ -151,22 +155,17 @@ extends Module {
                 return;
             }
             if (this.placedWaterPos == null || !this.isWaterSource(this.placedWaterPos)) {
-                this.recoveryActive = false;
-                this.waterBucketSlot = null;
-                this.placedWaterPos = null;
                 return;
             }
             Rotation recoveryRotation = RotationUtil.rotationToBlock(this.placedWaterPos, 0.0f);
             BlockHitResult recoveryHit = this.raycastFluid(recoveryRotation, 4.5);
             if (recoveryHit.getType() == HitResult.Type.MISS || !recoveryHit.getBlockPos().equals(this.placedWaterPos)) {
-                this.recoveryActive = false;
-                this.waterBucketSlot = null;
-                this.placedWaterPos = null;
                 return;
             }
             this.setTargetRotation(recoveryRotation);
             this.selectSlot(this.waterBucketSlot);
             this.useItem(recoveryRotation);
+            this.extraCooldown = 2;
             return;
         }
         if (!this.waterPlaced && !this.recoveryActive && this.placedWaterPos == null && this.postPlaceCooldown == 0 && this.postActionCooldown == 0 && this.accumulatedFall <= 0.5f && ItemUtil.findItemInRange(0, 9, Items.WATER_BUCKET) < 0 && (slot = ItemUtil.findItemInRange(0, 9, Items.BUCKET)) >= 0 && (bucketPos = this.findBucketPos()) != null && (hit = this.raycastFluid(rotation = RotationUtil.rotationToBlock(bucketPos, 0.0f), 4.5)).getType() != HitResult.Type.MISS && hit.getBlockPos().equals(bucketPos)) {
@@ -279,8 +278,8 @@ extends Module {
             this.waterPlaced = true;
         }
         this.recoveryActive = this.recoverySetting.getValue();
-        this.recoveryDelay = 3;
-        this.recoveryCountdown = this.recoveryActive ? 2 : 0;
+        this.recoveryDelay = 2;
+        this.recoveryCountdown = this.recoveryActive ? 10 : 0;
         this.waterBucketSlot = null;
         this.placedWaterPos = this.getPlacementBlockPos(rotation);
     }

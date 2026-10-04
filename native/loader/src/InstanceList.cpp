@@ -43,6 +43,17 @@ InstanceList::InstanceList(QWidget* parent)
     containerLayout_->setContentsMargins(2, 2, 2, 2);
     containerLayout_->setSpacing(0);
 
+    // Small note under the section title, before any instance rows: pins the
+    // supported environment so users don't file bug reports for 1.21+ or
+    // Java 21 games.
+    note_ = new QLabel(
+        QStringLiteral("Minecraft 1.20.1 · Forge 47.4.20 · JDK 17"),
+        container_);
+    note_->setAlignment(Qt::AlignLeft);
+    note_->setStyleSheet(QStringLiteral(
+        "color: #5c626e; font-size: 11px; padding: 0 10px 10px 10px;"));
+    containerLayout_->addWidget(note_);
+
     emptyLabel_ = new QLabel(
         QStringLiteral("No Minecraft instances detected.\n"
                        "Start the game and it will show up here."),
@@ -80,25 +91,24 @@ void InstanceList::setInstances(const QVector<Instance>& list) {
         r->deleteLater();
     }
 
-    // Add or update / reorder.
+    // Note is index 0; rows start at index 1 so they sit below the note and
+    // the empty label / stretch are at the end.
     for (int i = 0; i < list.size(); ++i) {
         const auto& it = list[i];
         InstanceRow* r = rows_.value(it.pid, nullptr);
         if (!r) {
-            r = new InstanceRow(it.pid, it.title, container_);
+            r = new InstanceRow(it.pid, it.title, it.commandLine, container_);
             connect(r, &InstanceRow::injectClicked,
                     this, &InstanceList::injectRequested);
             rows_.insert(it.pid, r);
-            // Insert at index i (after any preceding rows, before the
-            // empty label / stretch).
-            containerLayout_->insertWidget(i, r);
+            containerLayout_->insertWidget(i + 1, r);
             r->playEntrance();
         } else {
             r->updateTitle(it.title);
             int currentIndex = containerLayout_->indexOf(r);
-            if (currentIndex != i) {
+            if (currentIndex != i + 1) {
                 containerLayout_->removeWidget(r);
-                containerLayout_->insertWidget(i, r);
+                containerLayout_->insertWidget(i + 1, r);
             }
         }
     }
@@ -115,6 +125,23 @@ void InstanceList::setInteractive(bool on) {
             btn->setEnabled(on);
         }
     }
+}
+
+void InstanceList::markInjected(unsigned long pid) {
+    if (auto* r = rows_.value(pid, nullptr)) {
+        r->flashHighlight();
+    }
+}
+
+Instance InstanceList::instanceForPid(unsigned long pid) const {
+    Instance out;
+    out.pid = 0;
+    if (auto* r = rows_.value(pid, nullptr)) {
+        out.pid = r->pid();
+        out.title = r->title();
+        out.commandLine = r->commandLine();
+    }
+    return out;
 }
 
 void InstanceList::updateEmptyState() {

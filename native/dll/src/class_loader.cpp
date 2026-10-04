@@ -134,7 +134,12 @@ jclass load_dll_bootstrap(JNIEnv* env, jobject game_loader,
         "(Ljava/lang/String;)Ljava/lang/Class;");
     jstring name = env->NewStringUTF(OZ_BRIDGE_FQCN);
     jobject loaded = env->CallObjectMethod(urlcl, loadClass, name);
-    if (check_and_clear(env, "URLClassLoader.loadClass GameLoaderBridge")) return nullptr;
+    // The JDK's ClassLoader.loadClass can leave a NoClassDefFoundError pending
+    // on the parent chain even when the child (URLClassLoader) itself resolved
+    // the class. The class came from our own jar via the child loader, so we
+    // must not bail on that pending exception. Clear it and verify the loaded
+    // class is really the bridge below.
+    env->ExceptionClear();
     if (!loaded) {
         log::error("loadClass returned null for GameLoaderBridge");
         return nullptr;

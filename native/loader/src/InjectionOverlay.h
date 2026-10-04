@@ -20,6 +20,7 @@ class InjectionOverlay : public QWidget {
 
 public:
     InjectionOverlay(unsigned long pid, const QString& target,
+                     const QString& commandLine,
                      QWidget* parent = nullptr);
 
     void start();
@@ -35,7 +36,7 @@ public:
     void setCheckmarkProgress(qreal v) { checkmarkProgress_ = v; update(); }
 
 signals:
-    void completed(bool success);
+    void completed(bool success, unsigned long pid);
 
 protected:
     void paintEvent(QPaintEvent*) override;
@@ -45,6 +46,7 @@ private:
 
     unsigned long pid_;
     QString       target_;
+    QString       commandLine_;
     QString       statusText_       = QStringLiteral("Injecting OpenZen…");
 
     qreal spinnerAngle_      = 0.0;

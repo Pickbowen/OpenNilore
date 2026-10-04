@@ -1,5 +1,7 @@
 package client.nilore.utils.rotation;
 
+import java.util.Random;
+
 import client.nilore.NiloreClient;
 import net.minecraft.network.protocol.game.ServerboundChatPacket;
 import net.minecraft.util.Mth;
@@ -113,35 +115,12 @@ public class RotationHandler
             } else if (antiKB != null && antiKB.isEnabled() && AntiKB.rotation != null) {
                 RotationHandler.setTargetRotation(AntiKB.rotation);
             } else {
-                RotationHandler.resetToPlayerRotation();
+                // NO module owns the rotation this tick -> hands off completely. The
+                // outgoing yaw/pitch stay exactly vanilla's; we only keep sentRotation in
+                // sync so the next silent-rotation starts from the right base.
+                isRotating = false;
             }
         }
-    }
-
-    private static final float RESET_SPEED = 180.0f;
-
-    private static void resetToPlayerRotation() {
-        if (mc.player == null) {
-            isRotating = false;
-            return;
-        }
-        float playerYaw = mc.player.getYRot();
-        float playerPitch = mc.player.getXRot();
-        if (sentRotation == null) {
-            RotationHandler.setTargetRotation(new Rotation(playerYaw, playerPitch));
-            isRotating = false;
-            return;
-        }
-        float yawDiff = Mth.wrapDegrees(playerYaw - sentRotation.getYaw());
-        float pitchDiff = playerPitch - sentRotation.getPitch();
-        if (Math.abs(yawDiff) < 0.01f && Math.abs(pitchDiff) < 0.01f) {
-            RotationHandler.setTargetRotation(new Rotation(sentRotation.getYaw(), Mth.clamp(playerPitch, -90.0f, 90.0f)));
-            isRotating = false;
-            return;
-        }
-        float yaw = sentRotation.getYaw() + Mth.clamp(yawDiff, -RESET_SPEED, RESET_SPEED);
-        float pitch = Mth.clamp(sentRotation.getPitch() + Mth.clamp(pitchDiff, -RESET_SPEED, RESET_SPEED), -90.0f, 90.0f);
-        RotationHandler.setTargetRotation(new Rotation(yaw, pitch));
     }
 
     @EventTarget
@@ -171,13 +150,36 @@ public class RotationHandler
             if (mc.player == null) {
                 return;
             }
+            // Nobody owns the rotation: leave vanilla's own yaw/pitch in the outgoing
+            // packet untouched. Replacing them with our clamped values produced a
+            // perfectly stepped rotation stream (perfectrotation) even with no module on.
+            if (!isRotating) {
+                prevSentRotation = sentRotation;
+                // Keep sentRotation in the same (accumulated) yaw frame as the silent
+                // rotation used: vanilla's yRot may sit 360 apart from it, and copying the
+                // wrapped value straight in made a -360 delta (Grim AimModulo360).
+                float vanillaYaw = e.getYaw();
+                if (sentRotation != null) {
+                    vanillaYaw = sentRotation.getYaw() + Mth.wrapDegrees(vanillaYaw - sentRotation.getYaw());
+                }
+                prevRotation = sentRotation = new Rotation(vanillaYaw, e.getPitch());
+                ClientBase.yaw = sentRotation.getYaw();
+                return;
+            }
             if (targetRotation == null || prevRotation == null) {
                 targetRotation = prevRotation = new Rotation(mc.player.getYRot(), mc.player.getXRot());
             }
             prevSentRotation = sentRotation;
+            // Never wrap the outgoing yaw: the local yRot accumulates past +/-180 when the
+            // player spins the view, and normalising here would turn an identical rotation
+            // into a -360 delta (Grim AimModulo360).
             float baseYaw = sentRotation != null ? sentRotation.getYaw() : mc.player.getYRot();
             float yaw = baseYaw + Mth.wrapDegrees(targetRotation.getYaw() - baseYaw);
             float pitch = Mth.clamp(targetRotation.getPitch(), -90.0f, 90.0f);
+            float refYaw = sentRotation != null ? sentRotation.getYaw() : baseYaw;
+            float refPitch = sentRotation != null ? sentRotation.getPitch() : pitch;
+            yaw = naturalizeYaw(yaw, refYaw);
+            pitch = naturalizePitch(pitch, refPitch);
             if (Math.abs(yaw - baseYaw) > 100.0f) {
                 logger.info("[Rot] jump base={} target={} out={} delta={} rotating={}",
                         baseYaw, targetRotation.getYaw(), yaw, yaw - baseYaw, isRotating);
@@ -190,6 +192,63 @@ public class RotationHandler
             prevRotation = new Rotation(e.getYaw(), Mth.clamp(e.getPitch(), -90.0f, 90.0f));
             ClientBase.yaw = sentRotation.getYaw();
         }
+    }
+
+    /** Rotation deltas landing exactly on these steps are a machine fingerprint. */
+    private static final double[] ROTATION_STEPS = new double[]{
+            0.0, 5.625, 11.25, 16.875, 22.5, 28.125, 33.75, 39.375, 45.0,
+            50.625, 56.25, 61.875, 67.5, 73.125, 78.75, 84.375, 90.0};
+    private static final Random NATURAL_RANDOM = new Random();
+
+    private static boolean landsOnKnownStep(double delta) {
+        if (Double.isNaN(delta) || Double.isInfinite(delta)) {
+            return false;
+        }
+        for (double step : ROTATION_STEPS) {
+            if (step == 0.0) {
+                if (Math.abs(delta) <= 1.0E-10) {
+                    return true;
+                }
+                continue;
+            }
+            double ratio = delta / step;
+            if (Math.abs(ratio - (double) Math.round(ratio)) <= 1.0E-10) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isMultipleOf360(double delta) {
+        if (Math.abs(delta) <= 1.0E-10) {
+            return true;
+        }
+        double ratio = delta / 360.0;
+        return Math.abs(ratio - (double) Math.round(ratio)) <= 1.0E-10;
+    }
+
+    /**
+     * Adds a sub-perceptual nudge whenever the outgoing rotation looks quantised: the
+     * delta hits a known step, the delta is an exact multiple of 360, or the value itself
+     * sits on a 360 boundary. 0.005 deg is far below anything a player or a hitbox check
+     * would notice, but it breaks the exact-match signatures.
+     */
+    private static float naturalizeYaw(float yaw, float reference) {
+        double delta = Math.abs(Mth.wrapDegrees(yaw - reference));
+        double mod = Math.abs(yaw % 360.0f);
+        boolean quantised = landsOnKnownStep(delta)
+                || Math.abs(mod) <= 1.0E-4
+                || Math.abs(mod - 360.0f) <= 1.0E-4
+                || delta > 1.0E-10 && isMultipleOf360(delta);
+        return quantised ? yaw + (float) (NATURAL_RANDOM.nextGaussian() * 0.005) : yaw;
+    }
+
+    private static float naturalizePitch(float pitch, float reference) {
+        double delta = Math.abs(pitch - reference);
+        boolean quantised = landsOnKnownStep(delta) || Math.abs(Math.abs(pitch) - 90.0f) <= 1.0E-4;
+        return quantised
+                ? Mth.clamp(pitch + (float) (NATURAL_RANDOM.nextGaussian() * 0.005), -90.0f, 90.0f)
+                : pitch;
     }
 
     @EventTarget

@@ -62,6 +62,8 @@ extends ClientBase {
 
     public abstract void onAttack(EntityRemoveEvent var1);
 
+    public abstract void onEntityHurt(client.nilore.event.impl.EntityHurtEvent var1);
+
     public void onRender(RenderEvent renderEvent) {
     }
 

@@ -19,6 +19,8 @@ add_custom_target(stage_dll_for_loader DEPENDS "${EMBED_DIR}/OpenZen.dll")
 
 qt_add_executable(OpenNiloreLoader WIN32
     src/main.cpp
+    src/autoquit.cpp
+    src/autoquit.h
     src/MainWindow.cpp
     src/MainWindow.h
     src/SplashScreen.cpp
@@ -31,6 +33,18 @@ qt_add_executable(OpenNiloreLoader WIN32
     src/InstanceRow.h
     src/InjectionOverlay.cpp
     src/InjectionOverlay.h
+    src/Sidebar.cpp
+    src/Sidebar.h
+    src/SettingsPage.cpp
+    src/SettingsPage.h
+    src/PillSwitch.cpp
+    src/PillSwitch.h
+    src/loader_settings.cpp
+    src/loader_settings.h
+    src/syscalls.cpp
+    src/syscalls.h
+    src/hwid_spoof.cpp
+    src/hwid_spoof.h
     src/process_list.cpp
     src/injector.cpp
     src/manual_map.cpp
