@@ -1,7 +1,5 @@
 package client.nilore.modules.impl.combat;
 
-import java.util.Optional;
-import java.util.stream.StreamSupport;
 
 import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
 import net.minecraft.network.protocol.game.ServerboundInteractPacket;
@@ -68,9 +66,17 @@ extends Module {
             Rotation rotation;
             Entity crystalEntity;
             double hitDistance;
-            Optional<Entity> crystalOpt = StreamSupport.stream(mc.level.entitiesForRendering().spliterator(), true).filter(entity -> entity instanceof EndCrystal).findAny();
+            // First crystal in iteration order - was a parallel stream's findAny, which forked a
+            // ForkJoin task per entity every tick for what is a linear scan.
+            Entity crystal = null;
+            for (Entity entity : mc.level.entitiesForRendering()) {
+                if (entity instanceof EndCrystal) {
+                    crystal = entity;
+                    break;
+                }
+            }
             aimRotation = null;
-            if (crystalOpt.isPresent() && (hitDistance = RotationUtil.getMinHitDistance(crystalEntity = crystalOpt.get(), rotation = RotationUtil.entityRotation(crystalEntity))) <= 3.0) {
+            if (crystal != null && (hitDistance = RotationUtil.getMinHitDistance(crystalEntity = crystal, rotation = RotationUtil.entityRotation(crystalEntity))) <= 3.0) {
                 aimRotation = rotation;
                 this.crystalTarget = crystalEntity;
             }

@@ -100,6 +100,24 @@ void SettingsPage::buildUi() {
                        "injection. Default OFF."),
         syscallSwitch_, this));
 
+    // Early Mode: instead of attaching to the running instance, restart it from
+    // its own command line with CREATE_SUSPENDED, map the DLL in while the main
+    // thread is still frozen, then resume. Nothing the game loads afterwards
+    // (an anti-cheat's loader included) can run before the DLL is resident.
+    earlySwitch_ = new PillSwitch(this);
+    earlySwitch_->setChecked(loader_settings::is_early_mode_enabled());
+    connect(earlySwitch_, &PillSwitch::toggled, this, [](bool on) {
+        loader_settings::save_value(loader_settings::kKeyEarlyMode(), on);
+    });
+    col->addWidget(makeToggleRow(
+        QStringLiteral("Early Mode"),
+        QStringLiteral("Auto: as soon as a Minecraft instance shows up, restart "
+                       "it suspended from its own command line, map the DLL in "
+                       "before it resumes, then let it go. The game window reopens "
+                       "and you rejoin the server. Clicking Inject does the same "
+                       "on demand. Default OFF."),
+        earlySwitch_, this));
+
     col->addStretch(1);
 }
 

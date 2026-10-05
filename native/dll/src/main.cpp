@@ -24,6 +24,10 @@ std::atomic<bool> g_already_attached{false};
 // DLL bootstrap just sits on a background thread. On persistent failure we
 // clear the idempotence flag so a later inject attempt can retry.
 constexpr int      kMaxAttempts     = 60;    // 60 * 500ms = 30s budget
+// Early Mode maps the DLL in before the process resumes, so the JVM can be a
+// long way off (launcher stub -> JVM start -> Forge). 120s is a generous cap;
+// hitting it only means the bootstrap gives up quietly.
+constexpr unsigned kJvmWaitMs       = 120000;
 constexpr int      kPollMs          = 500;
 constexpr DWORD    kPollCapMs       = 5000;  // back-off cap between attempts
 
@@ -41,7 +45,9 @@ DWORD WINAPI inject_thread(LPVOID) {
     if (hwid::install()) {
         log::info("HWID spoof active (%ld IAT slots patched)", (long)hwid::g_patch_count);
     } else {
-        log::info("HWID spoof not installed (no importers) - disabled");
+        // Early Mode lands us here before the JVM's modules exist, so there is
+        // nothing to patch yet - retried below, once the VM is up.
+        log::info("HWID spoof: no importers yet - retrying after the JVM");
     }
     if (hwid::install_wmi()) {
         log::info("HWID WMI spoof active (CoCreateInstance patched)");
@@ -49,8 +55,20 @@ DWORD WINAPI inject_thread(LPVOID) {
         log::info("HWID WMI spoof not installed - disabled");
     }
 
-    JavaVM* vm = jvm::find_vm();
-    if (!vm) return 1;
+    // Early Mode puts us inside the process before the JVM exists, so wait for
+    // it instead of bailing out. nullptr after the deadline = the game never
+    // came up; leaving the process untouched is the whole point.
+    JavaVM* vm = jvm::wait_for_vm(kJvmWaitMs);
+    if (!vm) {
+        log::error("No JavaVM after %u ms - bootstrap gives up", kJvmWaitMs);
+        return 1;
+    }
+
+    // Second chance for the IAT hooks: on the normal injection path they went in
+    // above, on the early path this is the first moment their targets exist.
+    if (hwid::g_patch_count == 0 && hwid::install()) {
+        log::info("HWID spoof active after retry (%ld slots)", (long)hwid::g_patch_count);
+    }
 
     JNIEnv* env = nullptr;
     JavaVMAttachArgs args{};

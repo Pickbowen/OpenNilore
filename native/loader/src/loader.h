@@ -22,6 +22,15 @@ struct WindowInfo {
 // Enumerate processes whose image is javaw.exe / java.exe.
 std::vector<JavaProcess> list_java_processes();
 
+// Working directory the target process was started with (PEB CurrentDirectory).
+// Empty when it cannot be read.
+std::wstring read_working_directory(HANDLE process);
+
+// Environment block of the target process (PEB ProcessParameters.Environment), in
+// the UTF-16 "KEY=VALUE\0...\0\0" form CreateProcess wants. Empty when it cannot
+// be read or does not validate.
+std::vector<wchar_t> read_environment_block(HANDLE process);
+
 // Map the embedded OpenZen.dll directly into the target process and run its
 // DllMain via shellcode. The DLL bytes never touch disk. Returns an empty
 // string on success or a human-readable error message.

@@ -4,7 +4,11 @@
 #include <QSet>
 #include <QString>
 
+#include "InstanceList.h"   // struct Instance, used by maybeAutoInject()
+#include "loader.h"         // struct JavaProcess, same
+
 class QLabel;
+class QSystemTrayIcon;
 class QTimer;
 
 namespace loader {
@@ -42,6 +46,19 @@ private:
     void styleApp();
     void enableWin11RoundedCorners();
 
+    // Early Mode auto-injection: fires for a Minecraft java process the loader
+    // has not handled yet. Deliberately driven off the raw java process list and
+    // its command line, NOT off the windowed instance list: the window only shows
+    // up after Forge/mod loading, which is far too late to be "early". Pids we
+    // created ourselves (and the ones already handled) are remembered so a
+    // restart cannot feed itself back into another restart.
+    void maybeAutoInject(const std::vector<JavaProcess>& procs);
+
+    // Tray balloon for the injection result. The overlay only lives a couple of
+    // seconds, so without this the outcome is easy to miss - which is exactly
+    // how "I never saw Early Mode do anything" happens.
+    void notify(const QString& title, const QString& body);
+
     TitleBar*        titleBar_ = nullptr;
     InstanceList*    list_     = nullptr;
     Sidebar*         sidebar_  = nullptr;
@@ -53,6 +70,8 @@ private:
     bool entrancePlayed_    = false;
     bool injectionInFlight_ = false;
     bool exiting_           = false;
+    QSet<unsigned long> earlyHandled_;
+    QSystemTrayIcon* tray_ = nullptr;
 };
 
 } // namespace loader

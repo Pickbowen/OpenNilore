@@ -75,6 +75,17 @@ InstanceRow::InstanceRow(unsigned long pid, const QString& title,
     titleLabel_->setTextInteractionFlags(Qt::NoTextInteraction);
     layout->addWidget(titleLabel_, 1);
 
+    // Green tag showing this instance is one the loader restarted and injected
+    // itself. Hidden until Early Mode has actually run for that pid.
+    earlyBadge_ = new QLabel(QStringLiteral("Early Mode Injected"), this);
+    earlyBadge_->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+    earlyBadge_->setStyleSheet(QStringLiteral(
+        "color: #3ddc84;"
+        "font-family: 'Segoe UI', 'Microsoft YaHei UI', sans-serif;"
+        "font-size: 11px; font-weight: 700;"));
+    earlyBadge_->setVisible(false);
+    layout->addWidget(earlyBadge_);
+
     injectBtn_ = new QPushButton(QStringLiteral("Inject"), this);
     injectBtn_->setCursor(Qt::PointingHandCursor);
     injectBtn_->setStyleSheet(QString::fromUtf8(kInjectBtnQss));
@@ -89,6 +100,12 @@ void InstanceRow::updateTitle(const QString& title) {
     if (title == title_) return;
     title_ = title;
     titleLabel_->setText(title_);
+}
+
+void InstanceRow::setEarlyInjected(bool on) {
+    if (earlyBadge_) {
+        earlyBadge_->setVisible(on);
+    }
 }
 
 void InstanceRow::setEntrance(qreal v) {

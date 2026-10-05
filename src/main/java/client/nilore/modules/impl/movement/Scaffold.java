@@ -79,6 +79,7 @@ public class Scaffold extends Module {
     public final NumberSetting nitroOffsetY = new NumberSetting("Nitro Offset", 20, 0, 220, 5, () -> this.blockCounterStyle.is("Nitro"));
     public final BooleanSetting onTickRot = new BooleanSetting("OnTickRot", false);
     public final NumberSetting rotationSpeed = new NumberSetting("Rotation Speed", 180, 0, 360, 5, () -> !this.syncRotSpeed.getValue());
+    public final NumberSetting jitter = new NumberSetting("Jitter", 1.0, 0.0, 5.0, 0.1);
     public final BooleanSetting syncRotSpeed = new BooleanSetting("Sync RotSpeed", true);
     public final NumberSetting turnSpeed = new NumberSetting("Turn Speed", 180, 0, 360, 5, this.syncRotSpeed::getValue);
     public final NumberSetting returnSpeed = new NumberSetting("Return Speed", 180, 0, 360, 5, this.syncRotSpeed::getValue);
@@ -839,6 +840,15 @@ public class Scaffold extends Module {
                 ? RotationHandler.prevRotation
                 : new Rotation(mc.player.getYRot(), mc.player.getXRot());
         rotation = RotationSmoother.patchConstantRotation(rotation, anchor);
+        // 挂在同一个方块面上时, 平滑器收敛后每 tick 输出的是同一个量化值, 出站 rotation 会
+        // 逐 tick 完全相同 —— DuplicateRotPlace / equalrotation 那类检查的靶子。
+        // 在量化之后叠一个亚感知抖动(0.03~0.07°, 人眼与判定都无感), 就是为了打断这种重复。
+        float jitterScale = this.jitter.getValue().floatValue();
+        if (jitterScale > 0.0f) {
+            rotation.setYawPitch(
+                    rotation.getYaw() + rotationJitter() * jitterScale,
+                    Mth.clamp(rotation.getPitch() + rotationJitter() * jitterScale, -90.0f, 90.0f));
+        }
         logLargeDelta(rotation);
 
         this.rots.setYawPitch(rotation.getYaw(), rotation.getPitch());

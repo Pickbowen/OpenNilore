@@ -16,9 +16,6 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Random;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
-import java.util.stream.StreamSupport;
 import net.minecraft.client.Camera;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.texture.DynamicTexture;
@@ -47,6 +44,8 @@ import org.joml.Matrix4f;
 import client.nilore.ClientBase;
 import client.nilore.NiloreClient;
 import client.nilore.event.impl.RenderEvent;
+import client.nilore.event.impl.MotionEvent;
+import client.nilore.event.impl.StrafeEvent;
 import client.nilore.event.impl.TickEvent;
 import client.nilore.event.impl.WorldChangeEvent;
 import client.nilore.hud.ModuleListHud;
@@ -66,7 +65,6 @@ import client.nilore.settings.impl.BooleanSetting;
 import client.nilore.settings.impl.ModeSetting;
 import client.nilore.settings.impl.NumberSetting;
 import client.nilore.utils.game.EntityUtil;
-import client.nilore.utils.game.FightManager;
 import client.nilore.utils.game.ItemUtil;
 import client.nilore.utils.game.MotionSimulator;
 import client.nilore.utils.game.RotationUtil;
@@ -130,6 +128,9 @@ public class KillAura extends Module {
     public int sprintTickCounter;
     public Rotation rotation;
 
+    /** asaka's sprintCancelled: the sprint release is one-shot, the Keep Sprint hold arms the next one. */
+    private boolean sprintCancelled;
+
     private Random organicRandom;
 
     private float organicYawOffset;
@@ -146,6 +147,7 @@ public class KillAura extends Module {
         this.reinitOrganicModel();
         this.targetIndex = 0;
         this.attacks = 0.0f;
+        this.sprintCancelled = false;
         target = null;
         aimingTarget = null;
         targetList.clear();
@@ -155,6 +157,7 @@ public class KillAura extends Module {
     @Override
     public void onDisable() {
         this.attacks = 0.0f;
+        this.sprintCancelled = false;
         target = null;
         aimingTarget = null;
         this.sprintTickCounter = 0;
@@ -434,15 +437,13 @@ public class KillAura extends Module {
         if (!this.canAttackNow()) {
             return;
         }
+        // No antikb coupling here on purpose: the aura keeps its own APS while the
+        // antikb is countering. It used to be throttled here and blocked outright in
+        // attackTick/canAttackNow during the counter window, which made the aura go
+        // dead whenever the antikb engaged. Double hits are still impossible - both
+        // attack paths take attackAndLock's per-tick lock.
         float apsValue = this.maxAps.getValue().floatValue();
         float minApsValue = this.minAps.getValue().floatValue();
-        if (NoXZMode.isCountering()) {
-            int kbAttackAmount = AntiKB.INSTANCE != null
-                    ? AntiKB.INSTANCE.attackAmount.getValue().intValue()
-                    : 0;
-            apsValue -= kbAttackAmount;
-            minApsValue -= kbAttackAmount;
-        }
         this.attacks += (float)(MathUtil.randomDouble(minApsValue, apsValue) / 20.0);
     }
 
@@ -452,13 +453,21 @@ public class KillAura extends Module {
             this.attacks = 0.0f;
             return;
         }
-        if (NoXZMode.isInAttackWindow()) {
+        if (!this.canAttackNow()) {
             this.attacks = 0.0f;
             return;
         }
-        if (this.keepSprint.getValue() && !NoXZMode.handlingVelocity) {
-            if (mc.player.isSprinting()) {
-                this.attacks = 0.0f;
+        // Hold the swing for as long as the sprint is on, exactly like the asaka client's
+        // performAttacks(): while "Keep Sprint" is on, a swing made on a sprint tick can never crit,
+        // so none is made at all and the sprint has to be released first (Sprint module / Critical).
+        if (this.keepSprint.getValue() && mc.player.isSprinting()) {
+            // asaka's hold resets the one-shot release flag unconditionally, and that reset must stay
+            // unconditional: the release arms the flag even while the antikb window is open (only its
+            // setSprinting call is skipped there), so an exception on the reset left the flag armed
+            // for the whole window, the release never fired again and the server never saw a single
+            // STOP_SPRINTING. Only the swing is held back by the window, never the flag reset.
+            this.sprintCancelled = false;
+            if (!NoXZMode.isInDelayWindow()) {
                 return;
             }
         }
@@ -482,12 +491,25 @@ public class KillAura extends Module {
         if (!this.throughWalls.getValue()) {
             double reachNow = Math.max(this.reach.getValue().doubleValue(),
                     RotationUtil.getReachLimit());
-            if (!RotationUtil.isLookingAt(target, reachNow, 0.0f)) {
+            if (!RotationUtil.isLookingAt(target, reachNow, 0.1f)) {
                 return false;
             }
         }
-        if (this.delayMode.is("1.9") && mc.player.getAttackStrengthScale(0.0f) < 0.95f) {
+        // Attack charge gate: the reference's own (KillAuraModule.jeix(): getAttackStrengthScale(0.0f)
+        // >= 0.95f), always on while Critical is enabled, and on the 1.9 delay mode as before. Vanilla
+        // crits need charge > 0.9 (Player.attack flag), so 0.95 covers it with margin.
+        boolean chargeGated = this.delayMode.is("1.9")
+                || (Critical.INSTANCE != null && Critical.INSTANCE.isEnabled());
+        if (chargeGated && mc.player.getAttackStrengthScale(0.0f) < 0.95f) {
             return false;
+        }
+        if (Critical.INSTANCE != null && Critical.INSTANCE.isEnabled()) {
+            // Second half of vanilla's crit condition: fallDistance > 0 && !onGround. The charge alone
+            // leaves the swing to land wherever the jump happens to be, and a swing on the way up can
+            // never crit - roughly half of them. Waiting for the fall costs nothing here.
+            if (Critical.INSTANCE.canCritSoon()) {
+                return false;
+            }
         }
         if (Critical.stopAttack) {
             return false;
@@ -496,25 +518,114 @@ public class KillAura extends Module {
                 || (Critical.INSTANCE != null && Critical.INSTANCE.isEnabled()))) {
             return false;
         }
+        // The reference's gate ends on VelocityModule.xcаohoi == 0: while the counter still has shots
+        // queued the aura stays silent and lets it swing. Its counter hits are deliberately sprint
+        // hits (NoXZMode.attackReduce keeps isSprinting() satisfied), so they cannot crit - swinging
+        // the aura into the same window only queues swings that are non-crit by construction and
+        // competes with the counter for the per-tick lock.
         if (NoXZMode.isCountering()) {
             return false;
         }
         return RotationUtil.isWithinReach(target);
     }
 
+    /**
+     * The asaka release, from its KillAura.onPostUpdate: once a target is held the aura drops the
+     * sprint itself - no airborne and no jump-key condition, which is why that client hits on the
+     * ground too. It is one-shot per stance rather than every tick: the flag is cleared by the Keep
+     * Sprint hold in attackTick(), so the sprint comes back up (the Sprint module asserts, vanilla
+     * restarts it) and the aura alternately sprints and swings non-sprinting.
+     *
+     * <p>The gate is asaka's own - its {@code attackTarget != null}, nothing more. It must not be
+     * tightened to a raycast: the aura's attack gate runs an inflate of 0.1 precisely because a
+     * quantised aim misses a 0.0 raycast, so gating the release on 0.0 held the sprint on exactly
+     * when the aim was merely close, and the swing then went out as a sprint hit with no crit.
+     *
+     * <p>It has to run in the post phase - the reference's PostMotion, asaka's PostUpdate - i.e. after
+     * aiStep's own sprint derivation. Released any earlier (TickEvent or SprintEvent, both before
+     * aiStep) vanilla re-derives the sprint from the still-pressed key inside the same tick, the flag
+     * in {@code wasSprinting} never flips and no STOP_SPRINTING ever leaves the client.
+     *
+     * <p>keySprint is deliberately left alone here (asaka does not touch it either); the Sprint
+     * module owns the key. The anti-knockback guards stay from our side: the counter's hits require
+     * isSprinting() and the queue-and-release window keeps the sprint on purpose.
+     */
+    @EventTarget
+    public void onPostMotion(MotionEvent motionEvent) {
+        if (mc.player == null || !motionEvent.isPost()) {
+            return;
+        }
+        if (!this.keepSprint.getValue() || target == null) {
+            this.sprintCancelled = false;
+            return;
+        }
+        if (mc.player.isSprinting() && !this.sprintCancelled) {
+            if (!NoXZMode.isCountering() && !NoXZMode.isInDelayWindow()) {
+                mc.player.setSprinting(false);
+            }
+            this.sprintCancelled = true;
+        }
+    }
+
+    /** asaka's KillAura.onJump: no jumping between a release and the sprint coming back. */
+    @EventTarget
+    public void onStrafe(StrafeEvent strafeEvent) {
+        if (mc.player == null || !this.keepSprint.getValue()) {
+            return;
+        }
+        // StrafeEvent carries Input.jumping in its "sprinting" field (see KeyboardInputPatch).
+        if (this.sprintCancelled && !mc.player.isSprinting()) {
+            strafeEvent.setSprinting(false);
+        }
+    }
+
+    /**
+     * One attack per client tick, shared by the three paths that can swing: the aura itself, NoXZMode's
+     * counter and Critical's extra hit. Whoever calls first in a tick wins, the rest are dropped, so the
+     * same target can never eat two hits in one tick.
+     *
+     * <p>Keyed on the level's game time rather than {@code mc.player.tickCount}: Critical's SkipTicks
+     * mode cancels LocalPlayer.tick outright, so the player's own counter stops advancing for the whole
+     * fall and the lock stayed taken - every attack path was locked out until the player landed.
+     */
+    public static boolean attackAndLock() {
+        long tick = mc.level != null ? mc.level.getGameTime()
+                : (mc.player != null ? mc.player.tickCount : 0);
+        if (tick == attackLockTick) {
+            return false;
+        }
+        attackLockTick = tick;
+        return true;
+    }
+
+    private static long attackLockTick = -1L;
+
     public static boolean shouldStopSprint() {
         KillAura aura = INSTANCE;
         if (aura == null || !aura.isEnabled() || !aura.keepSprint.getValue()) return false;
         if (mc.player == null || target == null) return false;
         if (mc.player.isUsingItem()) return false;
-        if (JumpResetMode.isJumping) return false;
+        // The reference applies this only inside its Jump Reset branch:
+        //   if (VelocityModule.cһеј && mode.is("Jump Reset") && hjepо()) return false;
+        // Checking the flag unconditionally also pinned the release off for good after a mode switch:
+        // JumpResetMode clears isJumping from its own handler, which starts with
+        // "if (!AntiKB.mode.is("Jump Reset")) return;" - so switching away mid-jump-reset leaves the
+        // flag stuck true, every sprint release in the client stops firing, and the Keep Sprint hold
+        // has nothing to wait for.
+        if (AntiKB.mode.is("Jump Reset") && JumpResetMode.isJumping) return false;
         if (NoXZMode.isCountering()) return false;
         if (NoXZMode.isInDelayWindow() && shouldKeepSprintInDelayWindow()) return false;
         if (target.getBoundingBox().distanceToSqr(mc.player.position()) > 12.25) return false;
+        // Tail of the reference's саѕһа(): airborne -> release, on the ground -> only while the jump
+        // key is not held. No damage prediction here: the prediction belongs to CriticalsModule's
+        // crit-sync predicate, not to the sprint release, and putting it here let the sprint stay on
+        // for good whenever the estimate could not beat the recorded swing - with Keep Sprint's hold
+        // that means no attack at all in the air.
         return !mc.player.onGround() || !mc.options.keyJump.isDown();
     }
 
-    private static boolean shouldKeepSprintInDelayWindow() {
+    /** Shared "the delay window still owns the input" predicate: on the ground or mid-counter, plus a falling landing check. NoXZMode's onStrafe reads it too. */
+    public static boolean shouldKeepSprintInDelayWindow() {
         if (mc.player == null || mc.level == null) return false;
         if (mc.player.onGround() || NoXZMode.isCountering()) return true;
         if (mc.player.getDeltaMovement().y > 0 || mc.player.hurtTime <= 0) return false;
@@ -602,7 +713,7 @@ public class KillAura extends Module {
     public boolean attackEntity(Entity entity) {
         if (mc.player == null || mc.getConnection() == null) return false;
         if (this.isWebPlacing()) return false;
-        if (!FightManager.attackAndLock()) return false;
+        if (!attackAndLock()) return false;
 
         ++this.attackTimes;
         mc.getConnection().send(ServerboundInteractPacket.createAttackPacket(entity, mc.player.isShiftKeyDown()));
@@ -625,27 +736,42 @@ public class KillAura extends Module {
         if (mc.player == null || mc.level == null) {
             return new ArrayList<>();
         }
-        AABB box = mc.player.getBoundingBox().inflate(this.reach.getValue().floatValue());
-        Stream<Entity> stream = StreamSupport.stream(mc.level.entitiesForRendering().spliterator(), true)
-                .filter(entity -> box.intersects(entity.getBoundingBox()))
-                .filter(this::isValidAttack);
-        List<Entity> possibleTargets = stream.collect(Collectors.toList());
-        if (this.priorityMode.is("Distance")) {
-            possibleTargets.sort(Comparator.comparingDouble(KillAura::getDistanceToPlayer));
-        } else if (this.priorityMode.is("FoV")) {
-            possibleTargets.sort(Comparator.comparingDouble(KillAura::getAngleDiffToTarget));
-        } else if (this.priorityMode.is("Health")) {
-            possibleTargets.sort(Comparator.comparingDouble(KillAura::getEntityHealth));
-        } else if (this.priorityMode.is("LivingTime")) {
-            possibleTargets.sort(Comparator.comparingInt(KillAura::getEntityLivingTime).reversed());
-        } else if (this.priorityMode.is("Armor")) {
-            possibleTargets.sort(Comparator.comparingDouble(KillAura::getEntityArmor));
+        // Gathering radius, not the hit radius: reach is enforced later (isLookingAt / isWithinReach),
+        // this only decides who counts as "the opponent" for the sprint and crit machinery.
+        AABB box = mc.player.getBoundingBox().inflate(REFERENCE_AIM_RANGE);
+        // Plain loop, one pass, no stream: this runs every tick for the whole fight, and the old
+        // version built a parallel-stream pipeline (ForkJoin tasks on the render thread), collected a
+        // list, then made three more passes over it. Same filter set, same order (the sorts below are
+        // stable), minus the machinery that costs the most while the JIT is still cold.
+        double fov = this.fov.getValue().doubleValue();
+        List<Entity> possibleTargets = new ArrayList<>();
+        for (Entity entity : mc.level.entitiesForRendering()) {
+            if (!box.intersects(entity.getBoundingBox())) continue;
+            if (!this.isValidAttack(entity)) continue;
+            // FoV filter, around the rotation the aura actually sends. The setting was read nowhere
+            // before this, so raising or lowering it had no effect at all.
+            if (!RotationUtil.isEntityInFov(entity, fov)) continue;
+            possibleTargets.add(entity);
         }
-        if (this.preferBaby.getValue()
-                && possibleTargets.stream().anyMatch(KillAura::isBaby)) {
+        if (this.priorityMode.is("Distance")) {
+            possibleTargets.sort(BY_DISTANCE);
+        } else if (this.priorityMode.is("FoV")) {
+            possibleTargets.sort(BY_ANGLE);
+        } else if (this.priorityMode.is("Health")) {
+            possibleTargets.sort(BY_HEALTH);
+        } else if (this.priorityMode.is("LivingTime")) {
+            possibleTargets.sort(BY_LIVING_TIME);
+        } else if (this.priorityMode.is("Armor")) {
+            possibleTargets.sort(BY_ARMOR);
+        }
+        if (this.preferBaby.getValue() && KillAura.hasBaby(possibleTargets)) {
             possibleTargets.removeIf(KillAura::isNotBaby);
         }
-        possibleTargets.sort(Comparator.comparing(KillAura::getCrystalPriority));
+        possibleTargets.sort(BY_CRYSTAL_PRIORITY);
+        // Final stable sort: an in-reach opponent becomes the target, out-of-reach ones only stay in
+        // the list (reference ranks on the same 9.0 = 3.0^2). Inside each group the priority and
+        // crystal order above survive - a stable sort keeps them as the secondary key.
+        possibleTargets.sort(BY_OUT_OF_REACH);
         if (this.infSwitch.getValue() || this.targetMode.is("Multiple")) {
             return possibleTargets;
         }
@@ -663,6 +789,38 @@ public class KillAura extends Module {
 
     private static boolean isBaby(Entity entity) {
         return entity instanceof LivingEntity && ((LivingEntity) entity).isBaby();
+    }
+
+    /**
+     * Radius the opponent list is gathered with - the asaka client's "Aim Range" default, kept as a
+     * constant on purpose (no second GUI knob). Its own attack gate ("Attack Range") is 3.0, and so is
+     * ours ({@code reach} + isWithinReach), so gathering wider only decides who counts as the opponent
+     * for the sprint and crit machinery. Pinning this to {@code reach} (3.0) makes {@code target} drop
+     * the moment the opponent leaves reach, which is what the sprint release flickers on.
+     */
+    private static final float REFERENCE_AIM_RANGE = 4.0f;
+
+    private static boolean hasBaby(List<Entity> entities) {
+        for (Entity entity : entities) {
+            if (isBaby(entity)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Built once instead of per tick: getTargets runs every tick, the old code allocated a fresh
+    // comparator on each pass.
+    private static final Comparator<Entity> BY_DISTANCE = Comparator.comparingDouble(KillAura::getDistanceToPlayer);
+    private static final Comparator<Entity> BY_ANGLE = Comparator.comparingDouble(KillAura::getAngleDiffToTarget);
+    private static final Comparator<Entity> BY_HEALTH = Comparator.comparingDouble(KillAura::getEntityHealth);
+    private static final Comparator<Entity> BY_LIVING_TIME = Comparator.comparingInt(KillAura::getEntityLivingTime).reversed();
+    private static final Comparator<Entity> BY_ARMOR = Comparator.comparingDouble(KillAura::getEntityArmor);
+    private static final Comparator<Entity> BY_CRYSTAL_PRIORITY = Comparator.comparing(KillAura::getCrystalPriority);
+    private static final Comparator<Entity> BY_OUT_OF_REACH = Comparator.comparingInt(KillAura::getOutOfReachRank);
+
+    private static int getOutOfReachRank(Entity entity) {
+        return RotationUtil.isWithinReach(entity) ? 0 : 1;
     }
 
     private static double getEntityHealth(Entity entity) {
@@ -684,10 +842,7 @@ public class KillAura extends Module {
     }
 
     private static double getAngleDiffToTarget(Entity entity) {
-        float baseYaw = RotationHandler.targetRotation != null
-                ? RotationHandler.targetRotation.getYaw()
-                : mc.player.getYRot();
-        return RotationUtil.angleDiff(baseYaw, RotationUtil.entityRotation(entity).getYaw());
+        return RotationUtil.angleDiff(mc.player.getYRot(), RotationUtil.entityRotation(entity).getYaw());
     }
 
     private static double getDistanceToPlayer(Entity entity) {

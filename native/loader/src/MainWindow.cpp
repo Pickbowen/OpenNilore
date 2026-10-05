@@ -8,8 +8,13 @@
 #include "loader.h"
 #include "loader_settings.h"
 
+#include <algorithm>
+#include <cwctype>
+
 #include <QApplication>
 #include <QCloseEvent>
+#include <QSystemTrayIcon>
+#include <QStyle>
 #include <QEasingCurve>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -279,6 +284,36 @@ void MainWindow::playEntrance() {
     grp->start(QAbstractAnimation::DeleteWhenStopped);
 }
 
+namespace {
+
+// The window is not up yet when we want to act, so the command line is the only
+// signal available. It is set at process creation, which is exactly why the
+// trigger can fire seconds after java.exe starts instead of after the game has
+// finished loading its mods.
+bool looks_like_minecraft(const std::wstring& command_line) {
+    if (command_line.empty()) return false;
+    std::wstring lower(command_line);
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](wchar_t c) { return (wchar_t)std::towlower(c); });
+    // --gameDir / --assetIndex are the vanilla launcher's own arguments and are
+    // what NetEase-style launchers pass through too; the main class checks cover
+    // launches that were built by hand.
+    return lower.find(L"--gamedir") != std::wstring::npos
+        || lower.find(L"--assetindex") != std::wstring::npos
+        || lower.find(L"net.minecraft.client.main.main") != std::wstring::npos
+        || lower.find(L"minecraft") != std::wstring::npos;
+}
+
+// A Minecraft java process. The command line is the early signal; the window is
+// the fallback for when the PEB read is refused (a protected game process), which
+// is late but still better than never injecting.
+bool is_minecraft_process(const JavaProcess& jp) {
+    return looks_like_minecraft(jp.command_line)
+        || isMinecraft(jp.window_title, jp.window_class);
+}
+
+} // namespace
+
 void MainWindow::refreshNow() {
     auto procs = list_java_processes();
     QVector<Instance> filtered;
@@ -297,8 +332,61 @@ void MainWindow::refreshNow() {
     }
 
     list_->setInstances(filtered);
-    status_->setText(QStringLiteral("Watching %1 Minecraft instance(s).")
-                     .arg(list_->count()));
+
+    // Early Mode triggers off the raw java list, not the windowed one, so say
+    // what it currently sees: "no java process at all" and "a java process that
+    // does not look like Minecraft" are different failures and the loader hid
+    // both of them behind the same one-line status.
+    if (loader_settings::is_early_mode_enabled()) {
+        int matching = 0;
+        for (const auto& jp : procs) {
+            if (is_minecraft_process(jp)) ++matching;
+        }
+        status_->setText(QStringLiteral(
+                "Early Mode — %1 java process(es) seen, %2 recognised.")
+                .arg((int)procs.size()).arg(matching));
+    } else {
+        status_->setText(QStringLiteral("Watching %1 Minecraft instance(s).")
+                         .arg(list_->count()));
+    }
+
+    maybeAutoInject(procs);
+}
+
+void MainWindow::maybeAutoInject(const std::vector<JavaProcess>& procs) {
+    // Early Mode is an auto path: the user launches the game normally and the
+    // loader takes the instance over itself, because being "early" means we have
+    // to be the one that starts the process (CREATE_SUSPENDED). Nothing happens
+    // while the toggle is off.
+    if (!loader_settings::is_early_mode_enabled()) return;
+    if (injectionInFlight_) return;
+
+    for (const JavaProcess& jp : procs) {
+        // Skip what we already dealt with, and skip the pid our own relaunch
+        // produced - otherwise the restart would queue another restart forever.
+        if (earlyHandled_.contains(jp.pid)) continue;
+        if (!is_minecraft_process(jp)) continue;
+        earlyHandled_.insert(jp.pid);
+        QString title = fromW(jp.window_title);
+        if (title.isEmpty()) {
+            title = QStringLiteral("Minecraft (starting up)");
+        }
+        onInjectRequested(jp.pid, title, fromW(jp.command_line));
+        return;                                     // one instance at a time
+    }
+}
+
+void MainWindow::notify(const QString& title, const QString& body) {
+    if (!tray_) {
+        tray_ = new QSystemTrayIcon(this);
+        QIcon icon = qApp->windowIcon();
+        if (icon.isNull()) {
+            icon = style()->standardIcon(QStyle::SP_ComputerIcon);
+        }
+        tray_->setIcon(icon);
+        tray_->show();
+    }
+    tray_->showMessage(title, body, QSystemTrayIcon::Information, 5000);
 }
 
 void MainWindow::onInjectRequested(unsigned long pid, const QString& title,
@@ -315,13 +403,42 @@ void MainWindow::onInjectRequested(unsigned long pid, const QString& title,
     list_->setInteractive(false);
     if (timer_) timer_->stop();
 
+    const bool early = loader_settings::is_early_mode_enabled();
     auto* overlay = new InjectionOverlay(pid, title, commandLine, this);
     connect(overlay, &InjectionOverlay::completed, this,
-            [this](bool ok, unsigned long injectedPid) {
+            [this, early](bool ok, unsigned long injectedPid) {
         // Ping the injected row so the user sees which pid got the DLL.
         // The 1.4s yellow ring needs a few frames; hold the window briefly
         // (3000ms) before fading out so it is actually visible, then leave.
         if (ok && injectedPid) list_->markInjected(injectedPid);
+        // Remember the pid we just stood up (early mode hands back the new one)
+        // so the auto path does not pick it up as a fresh candidate.
+        if (injectedPid) earlyHandled_.insert(injectedPid);
+        if (ok && injectedPid && early) {
+            // Green tag on the row + a balloon, so Early Mode leaving a trace is
+            // not something you have to catch in a 2s animation.
+            list_->markEarlyInjected(injectedPid);
+            notify(QStringLiteral("OpenNilore"),
+                   QStringLiteral("Early Mode injected (pid %1, mapped in before the game window)")
+                       .arg(injectedPid));
+        } else if (ok && injectedPid) {
+            notify(QStringLiteral("OpenNilore"),
+                   QStringLiteral("Injected into pid %1").arg(injectedPid));
+        } else {
+            notify(QStringLiteral("OpenNilore"),
+                   QStringLiteral("Injection failed"));
+        }
+        if (early) {
+            // Early Mode keeps watching instead of quitting: the instance we just
+            // restarted only reappears in the list a few seconds later, and that
+            // row (with its green tag) is the whole point of the feedback. It
+            // also means a later launch gets taken over without restarting the
+            // loader by hand.
+            injectionInFlight_ = false;
+            list_->setInteractive(true);
+            if (timer_) timer_->start();
+            return;
+        }
         QTimer::singleShot(1200, this, [this]() {
             playExitThenQuit();
         });

@@ -95,6 +95,11 @@ bool is_syscall_thread_enabled() {
     return v.isValid() && v.toBool();
 }
 
+bool is_early_mode_enabled() {
+    QVariant v = load_all().value(kKeyEarlyMode());
+    return v.isValid() && v.toBool();
+}
+
 QString hwid_custom_value(const QString& key) {
     QVariant v = load_all().value(key);
     return v.isValid() ? v.toString() : QString();

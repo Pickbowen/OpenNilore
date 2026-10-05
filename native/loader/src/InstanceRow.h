@@ -28,6 +28,11 @@ public:
     const QString& title() const { return title_; }
     void updateTitle(const QString& title);
 
+    // Green "Early Mode Injected" tag after the title. Kept on the row (and
+    // reapplied when the list rebuilds) so "did Early Mode fire?" is answerable
+    // at a glance.
+    void setEarlyInjected(bool on);
+
     qreal hoverIntensity() const { return hoverIntensity_; }
     void  setHoverIntensity(qreal v) { hoverIntensity_ = v; update(); }
 
@@ -59,6 +64,7 @@ private:
     QString       commandLine_;
     QLabel*       pidLabel_   = nullptr;
     QLabel*       titleLabel_ = nullptr;
+    QLabel*       earlyBadge_ = nullptr;
     QPushButton*  injectBtn_  = nullptr;
 
     qreal hoverIntensity_ = 0.0;  // 0..1, drives background tint

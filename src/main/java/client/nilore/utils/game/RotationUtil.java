@@ -24,6 +24,7 @@ import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import client.nilore.ClientBase;
+import client.nilore.modules.impl.combat.KillAura;
 import client.nilore.utils.math.MathUtil;
 import client.nilore.utils.rotation.Rotation;
 import client.nilore.utils.rotation.RotationHandler;
@@ -528,12 +529,16 @@ extends ClientBase {
         return reachLimit;
     }
 
+    /** Kept under the reach limit: while a knockback is withheld the server measures from a position
+     *  our client has not reached yet, and Grim's own offset for that ran around 0.03. */
+    private static final double REACH_MARGIN = 0.05;
+
     public static boolean isWithinReach(Entity entity) {
         if (entity == null || mc.player == null) {
             return false;
         }
         Vec3 eyePos = mc.player.getEyePosition(1.0f);
-        return RotationUtil.closestPoint(eyePos, entity.getBoundingBox()).distanceTo(eyePos) <= reachLimit;
+        return RotationUtil.closestPoint(eyePos, entity.getBoundingBox()).distanceTo(eyePos) <= reachLimit - REACH_MARGIN;
     }
 
     public static HitResult performRaycast(Rotation rotation, boolean ignoreBlocks) {
@@ -643,11 +648,20 @@ extends ClientBase {
         return new Rotation(Mth.wrapDegrees(yaw), Mth.wrapDegrees(pitch));
     }
 
-    public static boolean isEntityInFov(Entity entity, float fov) {
-        Rotation rotation = RotationUtil.entityRotation(entity);
-        float yawDiff = Math.abs(mc.player.getYRot() % 360.0f - rotation.getYaw());
-        float wrappedDiff = Math.abs(Math.min(yawDiff, 360.0f - yawDiff));
-        return wrappedDiff <= fov;
+    /**
+     * Whether the entity sits inside the field of view around the rotation we actually send.
+     *
+     * <p>The silent aim is what the server sees and what the aura works with, so it is the right
+     * reference - the player's real view never moves while the aura is aiming.
+     *
+     * @param fov total field of view in degrees, so a target may sit fov/2 off the aim
+     */
+    /** FoV is measured against the player's own crosshair, not the silent rotation. */
+    public static boolean isEntityInFov(Entity entity, double fov) {
+        if (entity == null || mc.player == null) {
+            return false;
+        }
+        return RotationUtil.angleDiff(mc.player.getYRot(), RotationUtil.entityRotation(entity).getYaw()) <= fov / 2.0;
     }
 
     public static Vec3 directionFromRotation(Rotation rotation) {
@@ -737,14 +751,44 @@ extends ClientBase {
         return RotationUtil.findAimPoint(entity, range, 1.0f);
     }
 
+    /**
+     * Whether the aim ray hits that entity, with {@code inflate} as the tolerance.
+     *
+     * <p>rayTraceForEntity returns the block result or a final clip when the entity was NOT hit, so
+     * testing it for null made this method true on every call and the aim gate useless - the server
+     * bounces those attacks as Hitboxes. Ask for the entity result specifically instead, and keep
+     * the inflation: the rotation is GCD quantised and carries a drift/jitter walk, so without a
+     * little slack a good aim sits a fraction of a degree off the box and the attack waits ticks.
+     *
+     * <p>Judged against the freshest silent aim, not the angle already on the wire: that is the angle
+     * the attack itself uses, since {@code setTargetRotation} is what feeds {@code ClientBase.yaw}.
+     */
     public static boolean isLookingAt(Entity entity, double range, float inflate) {
         if (entity == null || mc.player == null || mc.level == null) {
             return false;
         }
-        Rotation rotation = RotationHandler.sentRotation != null
-                ? RotationHandler.sentRotation
-                : new Rotation(mc.player.getYRot(), mc.player.getXRot());
-        return RayTraceUtil.rayTraceForEntity(rotation, range, inflate, mc.player, entity, false) != null;
+        HitResult hit = RotationUtil.rayTraceForAim(currentAimRotation(), range, entity, entity.getBoundingBox().inflate(inflate));
+        return hit instanceof EntityHitResult entityHit && entityHit.getEntity() == entity;
+    }
+
+    /**
+     * Freshest aim first: the aura's own rotation for this tick, then the handler's target, then the
+     * angle already on the wire, then the player's own view. Checks run from TickEvent, which is
+     * before {@code onTickHigh} hands the rotation over, so without the first entry every check sees
+     * the previous tick's angle.
+     */
+    private static Rotation currentAimRotation() {
+        KillAura aura = KillAura.INSTANCE;
+        if (aura != null && aura.isEnabled() && aura.rotation != null) {
+            return aura.rotation;
+        }
+        if (RotationHandler.isRotating && RotationHandler.targetRotation != null) {
+            return RotationHandler.targetRotation;
+        }
+        if (RotationHandler.sentRotation != null) {
+            return RotationHandler.sentRotation;
+        }
+        return new Rotation(mc.player.getYRot(), mc.player.getXRot());
     }
 
     private static boolean canHitPoint(Entity entity, Vec3 point, double range, AABB targetBox) {

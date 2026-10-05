@@ -1,21 +1,21 @@
 package client.nilore.modules.impl.combat;
 
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.phys.EntityHitResult;
 import client.nilore.event.EventTarget;
 import client.nilore.event.impl.EntityRemoveEvent;
+import client.nilore.event.impl.MotionEvent;
 import client.nilore.event.impl.PlayerTickEvent;
 import client.nilore.event.impl.PreMotionEvent;
 import client.nilore.event.impl.StrafeEvent;
-import client.nilore.event.impl.TickEvent;
 import client.nilore.modules.Category;
 import client.nilore.modules.Module;
 import client.nilore.settings.impl.BooleanSetting;
 import client.nilore.settings.impl.ModeSetting;
 import client.nilore.settings.impl.NumberSetting;
-import client.nilore.utils.game.FightManager;
 import client.nilore.utils.game.RotationUtil;
 import client.nilore.utils.misc.ChatUtil;
 import client.nilore.utils.rotation.Rotation;
@@ -31,7 +31,7 @@ public class Critical extends Module {
     public final NumberSetting skipTicksRange = new NumberSetting("SkipTicks Range", 3.0, 1.0, 6.0, 0.1,
             () -> this.mode.is("SkipTicks"));
 
-    public final BooleanSetting autoJump = new BooleanSetting("Auto Jump", false, () -> this.mode.is("Optimize"));
+    public final BooleanSetting autoJump = new BooleanSetting("Auto Jump", false);
 
     public final BooleanSetting debug = new BooleanSetting("Debug", false);
 
@@ -109,7 +109,7 @@ public class Critical extends Module {
         stopAttack = false;
         LivingEntity current = this.enemy;
         if (current != null && this.isLookingAt(current, 4.0)) {
-            if (FightManager.attackAndLock()) {
+            if (KillAura.attackAndLock()) {
                 mc.gameMode.attack(mc.player, current);
                 mc.player.resetAttackStrengthTicker();
                 mc.player.swing(InteractionHand.MAIN_HAND);
@@ -124,9 +124,20 @@ public class Critical extends Module {
         }
     }
 
+    /**
+     * asaka's Criticals.onUpdate(PostUpdateEvent): the state machine and the sprint release live in
+     * the post phase, not on TickEvent.
+     *
+     * <p>TickEvent fires at the head of Minecraft.tick, a whole LocalPlayer.tick before aiStep, so a
+     * {@code setSprinting(false)} there was re-derived back to true from the still-pressed sprint key
+     * inside the same tick's aiStep, {@code wasSprinting} never flipped and the server never received
+     * a STOP_SPRINTING - the release was dead code. The post MotionEvent is the hop that lands after
+     * aiStep's derivation and before sendPosition's sendIsSprintingIfNeeded, which is where asaka's
+     * PostUpdateEvent (aiStep, before super.aiStep) sits too.
+     */
     @EventTarget
-    public void onTick(TickEvent event) {
-        if (mc.player == null) {
+    public void onPostMotion(MotionEvent event) {
+        if (mc.player == null || !event.isPost()) {
             return;
         }
         if (this.enemy == null) {
@@ -161,7 +172,7 @@ public class Critical extends Module {
 
     @EventTarget
     public void onStrafe(StrafeEvent event) {
-        if (mc.player == null || !this.autoJump.getValue() || !this.mode.is("Optimize")) {
+        if (mc.player == null || !this.autoJump.getValue()) {
             return;
         }
         if (mc.player.onGround() && mc.player.isSprinting() && this.isAttack) {
@@ -175,8 +186,7 @@ public class Critical extends Module {
             return;
         }
         if (this.mode.is("SkipTicks")) {
-            if (mc.player.fallDistance > 0.0f && !mc.player.isSprinting()
-                    && event.entity() instanceof LivingEntity living && living.hurtTime < 2) {
+            if (mc.player.fallDistance > 0.0f && !mc.player.isSprinting() && mc.player.hurtTime < 2) {
                 this.debugLog("Crit.");
             }
             return;
@@ -233,6 +243,30 @@ public class Critical extends Module {
 
     private boolean isFalling() {
         return this.canPrepareCritical() && mc.player.fallDistance > 0.0f;
+    }
+
+    /**
+     * Vanilla's crit preconditions, minus the sprint flag and the attack charge - the caller owns
+     * those. Anything false here means a crit is off the table entirely, so the swing has to go
+     * through untouched: the ground, water, a ladder, an elytra, riding or creative flight must not
+     * turn the aura's gates into a stall.
+     */
+    private boolean critConditionsMet() {
+        if (mc.player == null) {
+            return false;
+        }
+        return !mc.player.onGround() && !mc.player.onClimbable() && !mc.player.isInWater()
+                && !mc.player.isInLava() && !mc.player.getAbilities().flying
+                && !mc.player.isPassenger() && !mc.player.isFallFlying()
+                && !mc.player.hasEffect(MobEffects.BLINDNESS);
+    }
+
+    /**
+     * True while a crit is reachable but not yet available: still on the way up, where
+     * {@code fallDistance} is still 0 and no swing can crit.
+     */
+    public boolean canCritSoon() {
+        return this.critConditionsMet() && mc.player.fallDistance <= 0.0f;
     }
 
     private boolean cantCrit(Entity target) {

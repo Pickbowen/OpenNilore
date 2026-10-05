@@ -27,6 +27,7 @@ private:
 
     PillSwitch* hwidSwitch_      = nullptr;
     PillSwitch* syscallSwitch_   = nullptr;
+    PillSwitch* earlySwitch_     = nullptr;
 };
 
 } // namespace loader

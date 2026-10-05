@@ -61,6 +61,36 @@ JavaVM* find_vm() {
     return vm;
 }
 
+JavaVM* wait_for_vm(unsigned timeout_ms) {
+    // Early Mode maps us in while the process is still suspended, so jvm.dll and
+    // the JavaVM it creates do not exist yet. Poll silently - find_vm() logs
+    // every miss, which at a 100ms cadence would bury the log - and hand back
+    // the same object so the rest of the bootstrap is unchanged.
+    constexpr unsigned kStepMs = 100;
+    for (unsigned waited = 0; waited <= timeout_ms; waited += kStepMs) {
+        HMODULE jvm_dll = GetModuleHandleW(L"jvm.dll");
+        if (jvm_dll) {
+            using JNI_GetCreatedJavaVMs_t = jint (JNICALL*)(JavaVM**, jsize, jsize*);
+            auto fn = reinterpret_cast<JNI_GetCreatedJavaVMs_t>(
+                GetProcAddress(jvm_dll, "JNI_GetCreatedJavaVMs"));
+            if (fn) {
+                JavaVM* probe = nullptr;
+                jsize count = 0;
+                if (fn(&probe, 1, &count) == JNI_OK && count > 0) {
+                    // The VM exists now, so let find_vm() do the real acquisition:
+                    // one place resolves the VM, and its logging only fires on the
+                    // path where it can actually succeed.
+                    if (JavaVM* vm = find_vm()) {
+                        return vm;
+                    }
+                }
+            }
+        }
+        Sleep(kStepMs);
+    }
+    return nullptr;
+}
+
 jint attach_instrument(JavaVM* vm, const std::wstring& jar_path) {
     std::wstring instrument_path;
     if (!find_instrument_dll(instrument_path)) {

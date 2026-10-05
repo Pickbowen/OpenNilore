@@ -47,6 +47,8 @@ qt_add_executable(OpenNiloreLoader WIN32
     src/hwid_spoof.h
     src/process_list.cpp
     src/injector.cpp
+    src/early_inject.cpp
+    src/early_inject.h
     src/manual_map.cpp
     src/embedded_dll.cpp
     src/window_title.cpp

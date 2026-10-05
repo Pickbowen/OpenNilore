@@ -26,6 +26,11 @@ namespace jvm {
     // JVM is available (the DLL was injected into a non-Java process).
     JavaVM* find_vm();
 
+    // Same object as find_vm(), but waits for the JVM to show up first: Early
+    // Mode maps the DLL into the process before the JVM exists. Polls quietly
+    // (find_vm() logs every miss) and returns nullptr once timeout_ms is up.
+    JavaVM* wait_for_vm(unsigned timeout_ms);
+
     // Call Agent_OnAttach in the JDK's instrument.dll, pointing it at the given
     // agent jar. After this returns 0 the jar's Agent-Class entry point
     // (PatchAgent.agentmain) will have been invoked and the JDK's

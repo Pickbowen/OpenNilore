@@ -39,6 +39,7 @@ public class AntiKB
     public final BooleanSetting autoAttackCount = new BooleanSetting("Auto Attack Count", true, () -> mode.is("NoXZ"));
     public final BooleanSetting delayEnable = new BooleanSetting("Delay", true, () -> mode.is("NoXZ"));
     public final NumberSetting maxDelayTicks = new NumberSetting("Max Delay Ticks", 10.0, 1.0, 120.0, 1.0, () -> mode.is("NoXZ") && this.delayEnable.getValue());
+    public final BooleanSetting autoForwards = new BooleanSetting("Auto Forwards", false, () -> mode.is("NoXZ"));
     public final BooleanSetting requireKillAura = new BooleanSetting("Require KillAura", true, () -> mode.is("NoXZ"));
     public final BooleanSetting jumpReset = new BooleanSetting("Jump Reset", false, () -> mode.is("NoXZ"));
     public final NumberSetting attackAmount = new NumberSetting("Attack Amount", 5.0, 0.0, 20.0, 1, () -> mode.is("NoXZ") && !this.autoAttackCount.getValue());
@@ -93,7 +94,17 @@ public class AntiKB
         optional.get().onPreMotion(preMotionEvent);
     }
 
-    @EventTarget
+    /**
+     * LOW, not NORMAL: the mode state machine (NoXZ's window / counter) gates on "is the aura aimed
+     * at the target", and both that gate and {@code KillAura.target} are read inside it. Everything
+     * the aura publishes for the current tick - {@code KillAura.target}, {@code KillAura.rotation} -
+     * is written by its own TickEvent listener, and {@code RotationHandler.onTickHigh} (LOWEST) only
+     * hands the rotation over at the very end of the same dispatch. At NORMAL the order was decided
+     * by whichever module the player happened to enable first, so the whole gate ran against the
+     * previous tick's aim and only passed once the player's own view sat on the target. LOW puts it
+     * after every NORMAL listener deterministically.
+     */
+    @EventTarget(value = 3)
     public void onTick(TickEvent tickEvent) {
         Optional<AntiKBMode> optional = AntiKBMode.findMode(mode.getValue());
         if (FireballBlink.INSTANCE.isEnabled() || HighJump.INSTANCE.isEnabled() || Scaffold.INSTANCE.isEnabled() || optional.isEmpty()) {

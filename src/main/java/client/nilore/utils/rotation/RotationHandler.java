@@ -45,13 +45,22 @@ public class RotationHandler
 
     public static void setTargetRotation(Rotation rotation) {
         targetRotation = rotation;
-        ClientBase.yaw = rotation.getYaw();
+        // Keep the value handed to other patches (attack direction reads this via
+        // PlayerPatch) in the same accumulated frame as the outgoing rotation and apply
+        // the same naturalisation - otherwise the two disagree by a multiple of 360.
+        float y = rotation.getYaw();
+        if (sentRotation != null) {
+            y = sentRotation.getYaw() + Mth.wrapDegrees(y - sentRotation.getYaw());
+        }
+        ClientBase.yaw = naturalizeYaw(y, sentRotation != null ? sentRotation.getYaw() : y);
     }
 
     @EventTarget
     public void onWorldChange(WorldChangeEvent worldChangeEvent) {
         prevRotation = null;
         targetRotation = null;
+        lastWireYaw = Float.NaN;
+        lastWirePitch = Float.NaN;
     }
 
     @EventTarget(value=0)
@@ -150,20 +159,33 @@ public class RotationHandler
             if (mc.player == null) {
                 return;
             }
-            // Nobody owns the rotation: leave vanilla's own yaw/pitch in the outgoing
-            // packet untouched. Replacing them with our clamped values produced a
-            // perfectly stepped rotation stream (perfectrotation) even with no module on.
+            // Nobody owns the rotation: vanilla's own yaw/pitch go out untouched apart from
+            // the naturalisation below.
             if (!isRotating) {
                 prevSentRotation = sentRotation;
                 // Keep sentRotation in the same (accumulated) yaw frame as the silent
                 // rotation used: vanilla's yRot may sit 360 apart from it, and copying the
                 // wrapped value straight in made a -360 delta (Grim AimModulo360).
                 float vanillaYaw = e.getYaw();
+                float vanillaPitch = e.getPitch();
                 if (sentRotation != null) {
                     vanillaYaw = sentRotation.getYaw() + Mth.wrapDegrees(vanillaYaw - sentRotation.getYaw());
                 }
-                prevRotation = sentRotation = new Rotation(vanillaYaw, e.getPitch());
+                float refYaw = sentRotation != null ? sentRotation.getYaw() : vanillaYaw;
+                float refPitch = sentRotation != null ? sentRotation.getPitch() : vanillaPitch;
+                float naturalYaw = naturalizeYaw(vanillaYaw, refYaw);
+                float naturalPitch = naturalizePitch(vanillaPitch, refPitch);
+                // Write even when the naturalisation was a no-op. sentRotation records this
+                // value, so leaving the packet on vanilla's own frame while sentRotation sat a
+                // multiple of 360 away made the next tick's write jump by that much - Grim
+                // AimModulo360, which fired on every tick spent standing at a yaw near 0. When
+                // nothing is quantised the value written is vanilla's own, so this changes
+                // nothing on the ticks that do not need a nudge.
+                e.setYaw(naturalYaw);
+                e.setPitch(naturalPitch);
+                prevRotation = sentRotation = new Rotation(naturalYaw, Mth.clamp(naturalPitch, -90.0f, 90.0f));
                 ClientBase.yaw = sentRotation.getYaw();
+                guardDuplicateRotation(e);
                 return;
             }
             if (targetRotation == null || prevRotation == null) {
@@ -187,6 +209,7 @@ public class RotationHandler
             if (!Float.isNaN(yaw) && !Float.isNaN(pitch) && !Float.isInfinite(yaw) && !Float.isInfinite(pitch)) {
                 e.setYaw(yaw);
                 e.setPitch(pitch);
+                guardDuplicateRotation(e);
             }
             sentRotation = new Rotation(e.getYaw(), Mth.clamp(e.getPitch(), -90.0f, 90.0f));
             prevRotation = new Rotation(e.getYaw(), Mth.clamp(e.getPitch(), -90.0f, 90.0f));
@@ -249,6 +272,46 @@ public class RotationHandler
         return quantised
                 ? Mth.clamp(pitch + (float) (NATURAL_RANDOM.nextGaussian() * 0.005), -90.0f, 90.0f)
                 : pitch;
+    }
+
+    /** Yaw/pitch of the last rotation packet that actually left the client. NaN = none yet. */
+    private static float lastWireYaw = Float.NaN;
+    private static float lastWirePitch = Float.NaN;
+
+    /**
+     * Hard invariant on top of the naturalisation: two consecutive rotation packets must
+     * never carry the same yaw AND pitch. The naturalisation above only nudges when the
+     * delta looks quantised, so a held aim can still leave the event carrying the previous
+     * packet's value - which is exactly the signature the server's equalrotation part
+     * reports. This runs on the value the packet leaves with, so it holds whichever branch
+     * produced it.
+     */
+    private static void guardDuplicateRotation(MotionEvent e) {
+        float yaw = e.getYaw();
+        float pitch = Mth.clamp(e.getPitch(), -90.0f, 90.0f);
+        if (yaw == lastWireYaw && pitch == lastWirePitch) {
+            yaw = nudgeApart(yaw);
+            e.setYaw(yaw);
+            logger.info("[Rot] equalrotation guard {} -> {}", lastWireYaw, yaw);
+        }
+        lastWireYaw = yaw;
+        lastWirePitch = pitch;
+    }
+
+    /** Moves the value by an imperceptible amount that is guaranteed to change the float. */
+    private static float nudgeApart(float value) {
+        float delta = 0.0025f + NATURAL_RANDOM.nextFloat() * 0.005f;
+        if (NATURAL_RANDOM.nextBoolean()) {
+            delta = -delta;
+        }
+        float nudged = value + delta;
+        // At a large accumulated yaw the addend can sit below one ULP and vanish; widen it
+        // until the float actually moves.
+        for (int i = 0; nudged == value && i < 8; i++) {
+            delta *= 2.0f;
+            nudged = value + delta;
+        }
+        return nudged;
     }
 
     @EventTarget

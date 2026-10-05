@@ -22,6 +22,7 @@ public abstract class AntiKBMode
 extends ClientBase {
     protected final String name;
     private static final HashMap<Class<? extends AntiKBMode>, AntiKBMode> modes = new HashMap<>();
+    private static final HashMap<String, AntiKBMode> byName = new HashMap<>();
 
     public AntiKBMode(String string) {
         this.name = string;
@@ -30,6 +31,10 @@ extends ClientBase {
     public static void initModes() {
         modes.put(JumpResetMode.class, new JumpResetMode());
         modes.put(NoXZMode.class, new NoXZMode());
+        byName.clear();
+        for (AntiKBMode antiKBMode : modes.values()) {
+            byName.put(antiKBMode.name, antiKBMode);
+        }
     }
 
     public abstract void onEnable();
@@ -38,8 +43,13 @@ extends ClientBase {
 
     public abstract String getName();
 
+    /**
+     * Called from every AntiKB event handler - a dozen times a tick - so it is a map lookup, not the
+     * stream + Optional chain it used to be. The returned Optional still allocates; that one the JIT
+     * escape-analyses away, the stream pipeline it does not.
+     */
     public static Optional<AntiKBMode> findMode(String string) {
-        return modes.values().stream().filter(antiKBMode -> antiKBMode.name.equals(string)).findFirst();
+        return Optional.ofNullable(byName.get(string));
     }
 
     public abstract void onRotation(RotationEvent var1);

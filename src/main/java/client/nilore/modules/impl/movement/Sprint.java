@@ -9,12 +9,12 @@ import client.nilore.modules.Category;
 import client.nilore.modules.Module;
 import client.nilore.modules.impl.combat.KillAura;
 import client.nilore.modules.impl.player.InventoryManager;
+import client.nilore.modules.impl.player.Stuck;
 import client.nilore.event.EventTarget;
 
 public class Sprint
 extends Module {
     // private final HashMap<String, String> keyMappings = new HashMap<>();
-    private boolean wasSprinting;
 
     public Sprint() {
         super("Sprint", Category.MOVEMENT);
@@ -26,19 +26,21 @@ extends Module {
         if (mc.player == null || InventoryManager.isPerformingAction) {
             return;
         }
-        boolean nowSprinting = mc.player.isSprinting();
-        boolean forcedStop = this.wasSprinting && !nowSprinting;
-        this.wasSprinting = nowSprinting;
-        if (KillAura.shouldStopSprint()) {
+        // Reference SprintModule: Stuck is a stop condition of its own, on top of KillAura's gate.
+        if ((Stuck.INSTANCE != null && Stuck.INSTANCE.isEnabled()) || KillAura.shouldStopSprint()) {
             mc.options.keySprint.setDown(false);
             mc.player.setSprinting(false);
             return;
         }
-        if (forcedStop) {
-            mc.options.keySprint.setDown(false);
-            return;
-        }
         mc.options.toggleSprint().set(false);
         KeyMapping.set(mc.options.keySprint.getKey(), true);
+        // Reference: while eating and moving forward the sprint flag is asserted directly.
+        // Vanilla's own re-derivation refuses to start sprinting while an item is in use, so
+        // without this the sprint is lost for the whole eat and the antikb counter (which
+        // requires isSprinting(), like the reference) stalls on that gate and holds KillAura's
+        // attack window shut with it.
+        if (mc.player.isUsingItem() && mc.player.zza != 0) {
+            mc.player.setSprinting(true);
+        }
     }
 }

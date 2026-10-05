@@ -81,12 +81,19 @@ void InjectionOverlay::start() {
     // overlay stays animated. Use invokeMethod with a queued connection to
     // bounce the result back to the GUI thread.
     //
-    // Early Mode (default OFF) is handled one layer up (MainWindow): when it
-    // is on, a freshly-detected Minecraft window is injected automatically
-    // via onInjectRequested -> this same overlay. There is no re-launch /
-    // CREATE_SUSPENDED path anymore.
+    // Early Mode (default OFF) is about WHEN, not HOW: the loader's watcher fires
+    // it the second a java process appears (see MainWindow::maybeAutoInject), so
+    // the DLL is already mapped in while the JVM is still coming up - long before
+    // the game window, which is where the old window-driven trigger used to wait.
+    //
+    // Deliberately a plain attach: an earlier revision restarted the instance with
+    // CREATE_SUSPENDED to be "first". That loses a launcher's child process, and
+    // NetEase-style launchers (which pass -DlauncherControlPort/-DToken and watch
+    // that child) then declare "fatal error during startup" and tear the game
+    // down. Attaching to the process the launcher itself started keeps the
+    // launcher happy and still gets in before the window.
     std::thread([this]() {
-        std::wstring err = inject(pid_);
+        std::wstring err = inject(static_cast<DWORD>(pid_));
         QString qerr = QString::fromWCharArray(err.c_str(),
                                                static_cast<int>(err.size()));
         QMetaObject::invokeMethod(this, [this, qerr]() {
