@@ -24,7 +24,6 @@ import net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket;
 import net.minecraft.network.protocol.game.ClientboundSoundPacket;
 import net.minecraft.network.protocol.game.ClientboundSystemChatPacket;
 import net.minecraft.network.protocol.game.ClientboundTeleportEntityPacket;
-import net.minecraft.network.protocol.game.ServerboundInteractPacket;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.block.Blocks;
@@ -85,6 +84,10 @@ public class NoXZMode
         return INSTANCE != null && INSTANCE.counterRemaining > 0;
     }
 
+    public static boolean isInAttackWindow() {
+        return isCountering();
+    }
+
     public static boolean isInDelayWindow() {
         return INSTANCE != null && INSTANCE.delaying;
     }
@@ -126,12 +129,6 @@ public class NoXZMode
 
     @Override
     public void onMotion(MotionEvent motionEvent) {
-        if (!motionEvent.isPost()) {
-            return;
-        }
-        // Second release check, at the end of the tick - see tryOpenWindow(). This is the only phase
-        // that can see this tick's landing.
-        this.tryOpenWindow();
     }
 
     @Override
@@ -259,9 +256,7 @@ public class NoXZMode
         }
         // Entity position sync must never be choked: holding the opponent's move packets
         // back makes our client see an outdated hitbox while the server judges against the
-        // current one -> Grim Hitboxes / Reach. The reference keeps a tracked copy of those
-        // positions for its Target ESP only; its aim and gates use the entity's own box, so
-        // the aura has to keep seeing the live one.
+        // current one -> Grim Hitboxes / Reach.
         if (packet instanceof ClientboundMoveEntityPacket
                 || packet instanceof ClientboundTeleportEntityPacket) {
             return;
@@ -280,12 +275,9 @@ public class NoXZMode
         if (mc.player == null) {
             return;
         }
-        // Reference Reduce branch: Auto Forwards only forces the input forward while the
-        // knockback window is live - strafe is left alone, zeroing it belongs to the
-        // Jump Reset / Both path which we do not have.
-        if (this.compensating && AntiKB.INSTANCE.autoForwards.getValue()
-                && (!this.delaying || KillAura.shouldKeepSprintInDelayWindow())) {
+        if (this.compensating && (!this.delaying || mc.player.onGround())) {
             strafeEvent.setForward(1.0f);
+            strafeEvent.setStrafe(0.0f);
         }
     }
 
@@ -303,7 +295,7 @@ public class NoXZMode
             this.compensateUntilMs = -1L;
         }
 
-        if (mc.player.isDeadOrDying() || this.shouldNotEngage() || this.noAimTicks >= 3) {
+        if (mc.player.isDeadOrDying() || this.shouldNotEngage() || this.noAimTicks >= 5) {
             this.resetAll();
             return;
         }
@@ -316,9 +308,19 @@ public class NoXZMode
                 this.resetAll();
                 return;
             }
-            // Delay semantics (what our config is): the window only opens on the ground, aiming
-            // at the target and sprinting - same as the reference's Reduce + Delay path.
-            this.tryOpenWindow();
+            // Release as soon as we are aiming + sprinting, on the ground or not: holding
+            // everything until landing stacks several knockback packets and dumps them in
+            // one tick, which reads as a way bigger knockback than the server sent.
+            if (this.isAimingAtTarget() && mc.player.isSprinting()) {
+                this.counterRemaining = this.getAttackCount();
+                this.noAimTicks = 0;
+                this.delaying = false;
+                handlingVelocity = false;
+                this.flushQueue();
+                if (AntiKB.INSTANCE.jumpReset.getValue() && mc.player.onGround()) {
+                    this.jumpTicks = 1;
+                }
+            }
         }
 
         if (this.counterRemaining > 0) {
@@ -326,21 +328,12 @@ public class NoXZMode
                 ++this.noAimTicks;
                 return;
             }
-            // Sprinting is required, as in the reference. It has to be actually present, which is
-            // what the Sprint module's forced sprint (including the eat-and-move case) is for -
-            // when the player really is not sprinting the counter waits, exactly like the res one.
             if (!mc.player.isSprinting()) {
                 this.debug("not sprinting");
                 return;
             }
-            // The reference leans on vanilla's crosshair for this, which caps the attack at
-            // 3.0 against the un-inflated box. isAimingAtTarget() goes through a raycast, so
-            // without this gate the counter reaches past 3.0 and Grim Reach fires.
             if (!this.canReachTarget()) {
                 this.debug("raycast fail");
-                // Count every stalled tick towards the same >= 3 give-up as a missed aim, so no
-                // branch can keep counterRemaining > 0 and hold KillAura's attack window hostage.
-                ++this.noAimTicks;
                 return;
             }
             this.attackReduce(this.target);
@@ -350,63 +343,20 @@ public class NoXZMode
         }
     }
 
-    /**
-     * Opens the window once the release condition holds. Called twice per tick - from {@link #onTick}
-     * and again from the post {@link #onMotion} - because of where the two phases sit:
-     * {@code onTick} runs from {@code TickEvent}, which is injected at the head of
-     * {@code Minecraft.tick} and therefore reads the previous tick's {@code onGround}. With fast
-     * bunny-hopping a landing lasts only a tick or two, so that stale read skips whole landings.
-     * {@code MotionEvent.isPost()} fires from {@code sendPosition}, after {@code aiStep}'s move, so
-     * it sees the landing that happened in this tick. {@code delayTicks} is only advanced in
-     * {@code onTick}, so the window length is unchanged.
-     */
-    private void tryOpenWindow() {
-        if (mc.player == null || mc.level == null || !this.delaying) {
-            return;
-        }
-        // Delay semantics (what our config is): the window only opens on the ground, aiming at the
-        // target and sprinting - same as the reference's Reduce + Delay path.
-        if (!mc.player.onGround() || !this.isAimingAtTarget() || !mc.player.isSprinting()) {
-            return;
-        }
-        this.counterRemaining = this.getAttackCount();
-        this.noAimTicks = 0;
-        this.delaying = false;
-        handlingVelocity = false;
-        this.flushQueue();
-        if (AntiKB.INSTANCE.jumpReset.getValue() && mc.player.onGround()) {
-            this.jumpTicks = 1;
-        }
-    }
-
     private void attackReduce(Entity entity) {
-        if (entity == null || mc.player == null || mc.getConnection() == null) {
-            return;
-        }
-        // Same hand-rolled send the aura uses (KillAura.attackEntity). gameMode.attack would first
-        // push an ensureHasSentCarriedItem slot packet ahead of the interact, and it sidesteps the
-        // aura's per-tick lock, so the counter and the aura could each land a hit in the same tick.
-        if (!KillAura.attackAndLock()) {
+        if (entity == null || mc.player == null || mc.gameMode == null || mc.getConnection() == null) {
             return;
         }
         boolean wasSprinting = mc.player.isSprinting();
         if (wasSprinting) {
             mc.player.setSprinting(false);
         }
-        mc.getConnection().send(ServerboundInteractPacket.createAttackPacket(entity, mc.player.isShiftKeyDown()));
-        mc.player.attack(entity);
-        mc.player.resetAttackStrengthTicker();
+        mc.gameMode.attack(mc.player, entity);
         mc.player.swing(InteractionHand.MAIN_HAND);
         // Vanilla never applies the post-attack self-deceleration for us, so simulate it.
         if (wasSprinting) {
             Vec3 movement = mc.player.getDeltaMovement();
             mc.player.setDeltaMovement(movement.x * 0.6, movement.y, movement.z * 0.6);
-            // Every counter tick re-checks isSprinting(), and vanilla only re-derives that from
-            // the movement input in aiStep (forwardImpulse >= 0.8), which the silent rotation's
-            // input remap can starve. Put the flag back here so the remaining attacks do not
-            // stall on it - a stall leaves the knockback unreduced and the queued velocity
-            // gets dumped mid-air when the delay window times out.
-            mc.player.setSprinting(true);
         }
     }
 
@@ -427,11 +377,17 @@ public class NoXZMode
         if (this.target == null) {
             return false;
         }
-        // Hard cap at vanilla's 3.0; isWithinReach carries the margin and both checks judge the
-        // server-side box while we are the one holding its packets.
-        double cap = Math.min(RotationUtil.getReachLimit(), 3.0);
-        return RotationUtil.isWithinReach(this.target)
-                && RotationUtil.isLookingAt(this.target, cap, 0.1f);
+        return RotationUtil.isLookingAt(this.target, 2.95, 0.1f)
+                && this.getAABBDistance(this.target) <= 2.95;
+    }
+
+    private double getAABBDistance(Entity entity) {
+        Vec3 eyePos = mc.player.getEyePosition(1.0f);
+        net.minecraft.world.phys.AABB box = entity.getBoundingBox();
+        double clampedX = Math.max(box.minX, Math.min(eyePos.x, box.maxX));
+        double clampedY = Math.max(box.minY, Math.min(eyePos.y, box.maxY));
+        double clampedZ = Math.max(box.minZ, Math.min(eyePos.z, box.maxZ));
+        return eyePos.distanceTo(new Vec3(clampedX, clampedY, clampedZ));
     }
 
     private boolean shouldNotEngage() {
