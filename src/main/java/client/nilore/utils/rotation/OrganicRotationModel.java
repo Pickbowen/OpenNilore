@@ -5,7 +5,6 @@ import java.util.Random;
 
 /**
  * Organic 转头模型 —— 模拟人类鼠标移动的自然感，包含正弦漂移和随机抖动。
- * 移植自 Candy Alpha 的 OrganicRotationModel，适配 LiquidBounce 的 Rotation 类。
  */
 public class OrganicRotationModel {
 

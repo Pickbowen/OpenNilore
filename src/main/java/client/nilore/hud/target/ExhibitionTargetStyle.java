@@ -13,7 +13,7 @@ import client.nilore.render.RoundedRectangle;
 import client.nilore.utils.animation.SmoothAnimationTimer;
 
 /**
- * Exhibition style (ported from LiquidBounce TargetHUD.kt renderExhibitionHUD).
+ * Exhibition style.
  * Dark solid background + 1px grey border + left avatar + vanilla-font name /
  * HP / distance + segmented health bar. The left side uses a rounded player
  * head instead of the full player model (1.20.1 GUI-layer model rendering is

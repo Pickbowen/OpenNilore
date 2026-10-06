@@ -252,14 +252,18 @@ public class Scaffold extends Module {
         if (this.velocityDelay > 0) this.velocityDelay--;
         if (mc.player.onGround() && this.velocityDelay <= 30) this.velocityDelay = 0;
 
+        boolean offhandPlaceable = BlockUtil.isPlaceable(mc.player.getOffhandItem());
         int placeableSlot = -1;
-        for (int i = 0; i < 9; i++) {
-            ItemStack stack = mc.player.getInventory().getItem(i);
-            if (stack.getItem() instanceof BlockItem && BlockUtil.isPlaceable(stack)) {
-                placeableSlot = i;
-                break;
+        if (!offhandPlaceable) {
+            for (int i = 0; i < 9; i++) {
+                ItemStack stack = mc.player.getInventory().getItem(i);
+                if (stack.getItem() instanceof BlockItem && BlockUtil.isPlaceable(stack)) {
+                    placeableSlot = i;
+                    break;
+                }
             }
         }
+        boolean hasBlocks = offhandPlaceable || placeableSlot != -1;
 
         // Switch Mode logic
         if (placeableSlot != -1 && placeableSlot != mc.player.getInventory().selected) {
@@ -288,7 +292,7 @@ public class Scaffold extends Module {
             this.tellyPlaceDelayTimer++;
         }
         this.canBuildNow = true;
-        if (this.currentPlacement != null && placeableSlot != -1) {
+        if (this.currentPlacement != null && hasBlocks) {
             if (this.clutch.getValue() && mc.player.getDeltaMovement().y < -0.1) {
                 MotionSimulator sim = new MotionSimulator(mc.player);
                 sim.simulateWithFriction(2);
@@ -647,6 +651,10 @@ public class Scaffold extends Module {
                 total += stack.getCount();
             }
         }
+        ItemStack offhand = mc.player.getOffhandItem();
+        if (offhand.getItem() instanceof BlockItem && BlockUtil.isPlaceable(offhand)) {
+            total += offhand.getCount();
+        }
         return total;
     }
 
@@ -668,7 +676,7 @@ public class Scaffold extends Module {
     private void calculateTargetRotation() {
         if (this.currentPlacement == null || mc.player == null) return;
 
-        // 1. 基于移动方向计算基础yaw (Naven风格)
+        // 1. 基于移动方向计算基础yaw
         float realYaw = mc.player.getYRot();
         if (mc.options.keyDown.isDown()) {
             realYaw += 180.0f;
@@ -912,10 +920,25 @@ public class Scaffold extends Module {
         return false;
     }
 
+    private boolean hasPlaceableInHand() {
+        if (mc.player == null) return false;
+        return BlockUtil.isPlaceable(mc.player.getMainHandItem())
+                || BlockUtil.isPlaceable(mc.player.getOffhandItem());
+    }
+
+    private InteractionHand placementHand() {
+        if (mc.player == null || BlockUtil.isPlaceable(mc.player.getMainHandItem())) {
+            return InteractionHand.MAIN_HAND;
+        }
+        return BlockUtil.isPlaceable(mc.player.getOffhandItem())
+                ? InteractionHand.OFF_HAND
+                : InteractionHand.MAIN_HAND;
+    }
+
     private boolean shouldBuild() {
         if (mc.player == null || mc.level == null) return false;
         BlockPos below = BlockPos.containing(mc.player.getX(), mc.player.getY() - 0.5, mc.player.getZ());
-        return mc.level.isEmptyBlock(below) && BlockUtil.isPlaceable(mc.player.getMainHandItem());
+        return mc.level.isEmptyBlock(below) && this.hasPlaceableInHand();
     }
 
     private float rotationJitter() {
@@ -931,7 +954,8 @@ public class Scaffold extends Module {
         if (facing == Direction.UP && !mc.player.onGround() && MovementUtil.isMoving()
                 && !mc.options.keyJump.isDown() && !this.mode.is("Normal")) return;
 
-        if (!BlockUtil.isPlaceable(mc.player.getMainHandItem())) return;
+        if (!this.hasPlaceableInHand()) return;
+        InteractionHand hand = this.placementHand();
 
         // 计算朝向放置面的旋转
         Vec3 faceCenter = getFaceCenter(this.currentPlacement.position, facing);
@@ -958,11 +982,11 @@ public class Scaffold extends Module {
         BlockHitResult hit = new BlockHitResult(
                 getHitVec(this.currentPlacement.position, facing), facing,
                 this.currentPlacement.position, false);
-        InteractionResult result = mc.gameMode.useItemOn(mc.player, InteractionHand.MAIN_HAND, hit);
+        InteractionResult result = mc.gameMode.useItemOn(mc.player, hand, hit);
 
         if (result == InteractionResult.SUCCESS) {
             if (!this.swingMode.is("Server")) {
-                mc.player.swing(InteractionHand.MAIN_HAND);
+                mc.player.swing(hand);
             }
         }
 
@@ -978,7 +1002,8 @@ public class Scaffold extends Module {
     private void doSnap() {
         if (this.currentPlacement == null || mc.player == null || mc.gameMode == null) return;
 
-        if (!BlockUtil.isPlaceable(mc.player.getMainHandItem())) return;
+        if (!this.hasPlaceableInHand()) return;
+        InteractionHand hand = this.placementHand();
 
         // SkipTicks时每次放置前都发送对准目标方块面的C05. Fix By StarSky
         if (!this.canBuildNow && this.clutch.getValue() && !this.currentPlacement.position.equals(this.lastC05Position)) {
@@ -1004,9 +1029,9 @@ public class Scaffold extends Module {
         if (!this.shouldBuild()) return;
         if (!this.isAimingAtPlacementFace()) return;
         BlockHitResult hit = new BlockHitResult(getHitVec(this.currentPlacement.position, facing), facing, this.currentPlacement.position, false);
-        InteractionResult result = mc.gameMode.useItemOn(mc.player, InteractionHand.MAIN_HAND, hit);
+        InteractionResult result = mc.gameMode.useItemOn(mc.player, hand, hit);
         if (result == InteractionResult.SUCCESS && !this.swingMode.is("Server")) {
-            mc.player.swing(InteractionHand.MAIN_HAND);
+            mc.player.swing(hand);
         }
     }
 

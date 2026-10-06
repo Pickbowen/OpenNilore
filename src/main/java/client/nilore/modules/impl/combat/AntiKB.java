@@ -36,13 +36,12 @@ public class AntiKB
     public final BooleanSetting rotate = new BooleanSetting("Rotate", false, () -> mode.is("Jump Reset"));
     public final BooleanSetting followDirection = new BooleanSetting("Follow Direction", false, () -> mode.is("Jump Reset"));
     public final NumberSetting rotateTicks = new NumberSetting("Rotate Ticks", 12, 3, 20, 1, () -> mode.is("Jump Reset") && (this.rotate.getValue() != false || this.followDirection.getValue() != false));
-    public final BooleanSetting autoAttackCount = new BooleanSetting("Auto Attack Count", true, () -> mode.is("NoXZ"));
     public final BooleanSetting delayEnable = new BooleanSetting("Delay", true, () -> mode.is("NoXZ"));
     public final NumberSetting maxDelayTicks = new NumberSetting("Max Delay Ticks", 10.0, 1.0, 120.0, 1.0, () -> mode.is("NoXZ") && this.delayEnable.getValue());
     public final BooleanSetting autoForwards = new BooleanSetting("Auto Forwards", false, () -> mode.is("NoXZ"));
     public final BooleanSetting requireKillAura = new BooleanSetting("Require KillAura", true, () -> mode.is("NoXZ"));
     public final BooleanSetting jumpReset = new BooleanSetting("Jump Reset", false, () -> mode.is("NoXZ"));
-    public final NumberSetting attackAmount = new NumberSetting("Attack Amount", 5.0, 0.0, 20.0, 1, () -> mode.is("NoXZ") && !this.autoAttackCount.getValue());
+    public final NumberSetting attackAmount = new NumberSetting("Attack Amount", 5.0, 0.0, 20.0, 1, () -> mode.is("NoXZ"));
     public final BooleanSetting renderBar = new BooleanSetting("Render Bar", false, () -> mode.is("NoXZ"));
     public final BooleanSetting debugLog = new BooleanSetting("Debug Log", false);
     private final Timer grimSyncTimer = new Timer();

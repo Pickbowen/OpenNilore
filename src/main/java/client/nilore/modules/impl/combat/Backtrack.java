@@ -244,8 +244,7 @@ public class Backtrack extends Module {
         if (this.target == null || mc.player == null) return false;
 
         // Time limit: only applies when trackingStartTime is set (non-zero).
-        // If trackingStartTime == 0 (no start recorded), the time gate is
-        // skipped entirely, matching the reference implementation.
+        // If trackingStartTime == 0 (no start recorded), the time gate is skipped entirely.
         if (this.trackingStartTime != 0L) {
             long elapsed = System.currentTimeMillis() - this.trackingStartTime;
             if (elapsed > this.maxTime.getValue().longValue()) return false;

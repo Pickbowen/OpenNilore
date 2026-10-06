@@ -122,6 +122,9 @@ extends ClientBase {
             if (block instanceof SlabBlock) {
                 return false;
             }
+            if (block instanceof TntBlock) {
+                return false;
+            }
             return !blacklist.contains(block);
         }
         return false;

@@ -7,8 +7,7 @@ import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.TypeInsnNode;
 
 /**
- * Boxing / unboxing helpers used by the patchify-style transformer. Ported from
- * <a href="https://github.com/xiaojiang233/izmk-reborn">izmk-reborn</a>'s {@code ASMUtil}.
+ * Boxing / unboxing helpers used by the patchify-style transformer.
  */
 public final class ASMHelpers {
     private ASMHelpers() {

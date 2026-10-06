@@ -170,6 +170,10 @@ public class JumpResetMode extends AntiKBMode {
             return;
         }
         if (this.jumpTicks > 0 && !Scaffold.INSTANCE.isEnabled()) {
+            if (player.isOnFire()) {
+                this.resetState();
+                return;
+            }
             mc.options.keyJump.setDown(true);
             this.jumpTicks--;
             logger.info("[AntiKB] JumpReset jump tick={} onGround={}", player.tickCount, player.onGround());

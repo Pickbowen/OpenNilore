@@ -40,7 +40,7 @@ public class Watermark extends Module {
     private static final FontRenderer fpsFont = Fonts.getRenderer("quicksand.ttf", 20.0f);
     private static final float MARGIN = 8.0f;
 
-    // Simple capsule style (centered, like LiquidBounce Normal)
+    // Simple capsule style (centered)
     private static final FontRenderer iconFont = FontPresets.niloreIcon(24.0f);
     private static final FontRenderer textFont = FontPresets.pingfang(24.0f);
     private static final int TEXT_COLOR = 0xFFFFFFFF;

@@ -1,6 +1,7 @@
 package client.nilore.modules.impl.player;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ClipContext;
@@ -251,7 +252,7 @@ extends Module {
                     BlockHitResult hit;
                     double distSq;
                     BlockPos candidatePos = playerPos.offset(dx, dy, dz);
-                    if (!this.isWaterSource(candidatePos) || (distSq = mc.player.position().distanceToSqr((double)candidatePos.getX() + 0.5, (double)candidatePos.getY() + 0.5, (double)candidatePos.getZ() + 0.5)) >= closestDistSq || (hit = this.raycastFluid(rotation = RotationUtil.rotationToBlock(candidatePos, 0.0f), 4.5)).getType() == HitResult.Type.MISS || !hit.getBlockPos().equals(candidatePos)) continue;
+                    if (!this.isWaterSource(candidatePos) || !this.isNaturalWaterBody(candidatePos) || (distSq = mc.player.position().distanceToSqr((double)candidatePos.getX() + 0.5, (double)candidatePos.getY() + 0.5, (double)candidatePos.getZ() + 0.5)) >= closestDistSq || (hit = this.raycastFluid(rotation = RotationUtil.rotationToBlock(candidatePos, 0.0f), 4.5)).getType() == HitResult.Type.MISS || !hit.getBlockPos().equals(candidatePos)) continue;
                     closestPos = candidatePos;
                     closestDistSq = distSq;
                 }
@@ -309,6 +310,16 @@ extends Module {
     private boolean isWaterSource(BlockPos blockPos) {
         FluidState fluidState = mc.level.getFluidState(blockPos);
         return fluidState.getType() == Fluids.WATER && fluidState.isSource();
+    }
+
+    private boolean isNaturalWaterBody(BlockPos blockPos) {
+        int waterNeighbours = 0;
+        for (Direction direction : Direction.Plane.HORIZONTAL) {
+            if (mc.level.getFluidState(blockPos.relative(direction)).getType() == Fluids.WATER) {
+                waterNeighbours++;
+            }
+        }
+        return waterNeighbours >= 2;
     }
 
     private boolean hasSolidBelow(BlockPos blockPos) {

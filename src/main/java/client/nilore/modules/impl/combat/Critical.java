@@ -125,15 +125,13 @@ public class Critical extends Module {
     }
 
     /**
-     * asaka's Criticals.onUpdate(PostUpdateEvent): the state machine and the sprint release live in
-     * the post phase, not on TickEvent.
+     * The state machine and the sprint release live in the post phase, not on TickEvent.
      *
      * <p>TickEvent fires at the head of Minecraft.tick, a whole LocalPlayer.tick before aiStep, so a
      * {@code setSprinting(false)} there was re-derived back to true from the still-pressed sprint key
      * inside the same tick's aiStep, {@code wasSprinting} never flipped and the server never received
      * a STOP_SPRINTING - the release was dead code. The post MotionEvent is the hop that lands after
-     * aiStep's derivation and before sendPosition's sendIsSprintingIfNeeded, which is where asaka's
-     * PostUpdateEvent (aiStep, before super.aiStep) sits too.
+     * aiStep's derivation and before sendPosition's sendIsSprintingIfNeeded.
      */
     @EventTarget
     public void onPostMotion(MotionEvent event) {

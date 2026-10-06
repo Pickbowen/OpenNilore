@@ -24,10 +24,12 @@ import net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket;
 import net.minecraft.network.protocol.game.ClientboundSoundPacket;
 import net.minecraft.network.protocol.game.ClientboundSystemChatPacket;
 import net.minecraft.network.protocol.game.ClientboundTeleportEntityPacket;
+import net.minecraft.network.protocol.game.ServerboundInteractPacket;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.Vec3;
+import client.nilore.NiloreClient;
 import client.nilore.event.impl.DisconnectEvent;
 import client.nilore.event.impl.EntityHurtEvent;
 import client.nilore.event.impl.EntityRemoveEvent;
@@ -50,8 +52,8 @@ import client.nilore.utils.misc.ChatUtil;
 import client.nilore.utils.render.RenderUtil;
 
 /**
- * Port of EdNaven Velocity's Reduce + Delay execution path:
- * choke own knockback packet, release on aim+sprint (Delay = airborne allowed),
+ * Reduce + delay execution path:
+ * choke the own knockback packet, release on aim+sprint (Delay = airborne allowed),
  * then attack-reduce with the x0.6 self-deceleration the vanilla client never applies.
  */
 public class NoXZMode
@@ -168,6 +170,11 @@ public class NoXZMode
             return;
         }
         if (Scaffold.INSTANCE != null && Scaffold.INSTANCE.isEnabled()) {
+            return;
+        }
+        if (mc.player.isOnFire()) {
+            this.jumpTicks = 0;
+            this.restoreJumpKey();
             return;
         }
         this.jumpKeyForced = true;
@@ -295,7 +302,7 @@ public class NoXZMode
             this.compensateUntilMs = -1L;
         }
 
-        if (mc.player.isDeadOrDying() || this.shouldNotEngage() || this.noAimTicks >= 5) {
+        if (mc.player.isDeadOrDying() || this.shouldNotEngage() || this.noAimTicks >= 3) {
             this.resetAll();
             return;
         }
@@ -308,9 +315,6 @@ public class NoXZMode
                 this.resetAll();
                 return;
             }
-            // Release as soon as we are aiming + sprinting, on the ground or not: holding
-            // everything until landing stacks several knockback packets and dumps them in
-            // one tick, which reads as a way bigger knockback than the server sent.
             if (this.isAimingAtTarget() && mc.player.isSprinting()) {
                 this.counterRemaining = this.getAttackCount();
                 this.noAimTicks = 0;
@@ -332,10 +336,6 @@ public class NoXZMode
                 this.debug("not sprinting");
                 return;
             }
-            if (!this.canReachTarget()) {
-                this.debug("raycast fail");
-                return;
-            }
             this.attackReduce(this.target);
             --this.counterRemaining;
         } else if (this.compensating) {
@@ -344,20 +344,21 @@ public class NoXZMode
     }
 
     private void attackReduce(Entity entity) {
-        if (entity == null || mc.player == null || mc.gameMode == null || mc.getConnection() == null) {
+        if (entity == null || mc.player == null || mc.getConnection() == null) {
             return;
         }
-        boolean wasSprinting = mc.player.isSprinting();
-        if (wasSprinting) {
-            mc.player.setSprinting(false);
+        if (!KillAura.attackAndLock()) {
+            return;
         }
-        mc.gameMode.attack(mc.player, entity);
+        if (NiloreClient.isReady()) {
+            NiloreClient.getInstance().getEventBus().call(new EntityRemoveEvent(false, entity));
+        }
+        mc.getConnection().send(ServerboundInteractPacket.createAttackPacket(entity, mc.player.isShiftKeyDown()));
         mc.player.swing(InteractionHand.MAIN_HAND);
         // Vanilla never applies the post-attack self-deceleration for us, so simulate it.
-        if (wasSprinting) {
-            Vec3 movement = mc.player.getDeltaMovement();
-            mc.player.setDeltaMovement(movement.x * 0.6, movement.y, movement.z * 0.6);
-        }
+        Vec3 movement = mc.player.getDeltaMovement();
+        mc.player.setDeltaMovement(movement.x * 0.6, movement.y, movement.z * 0.6);
+        mc.player.setSprinting(false);
     }
 
     private int getAttackCount() {
@@ -371,23 +372,6 @@ public class NoXZMode
         // Silent-rotation client: mc.hitResult reflects the local view which the aura
         // never moves, so aim must be judged against the rotation actually sent.
         return RotationUtil.isLookingAt(this.target, 3.0, 0.1f);
-    }
-
-    private boolean canReachTarget() {
-        if (this.target == null) {
-            return false;
-        }
-        return RotationUtil.isLookingAt(this.target, 2.95, 0.1f)
-                && this.getAABBDistance(this.target) <= 2.95;
-    }
-
-    private double getAABBDistance(Entity entity) {
-        Vec3 eyePos = mc.player.getEyePosition(1.0f);
-        net.minecraft.world.phys.AABB box = entity.getBoundingBox();
-        double clampedX = Math.max(box.minX, Math.min(eyePos.x, box.maxX));
-        double clampedY = Math.max(box.minY, Math.min(eyePos.y, box.maxY));
-        double clampedZ = Math.max(box.minZ, Math.min(eyePos.z, box.maxZ));
-        return eyePos.distanceTo(new Vec3(clampedX, clampedY, clampedZ));
     }
 
     private boolean shouldNotEngage() {

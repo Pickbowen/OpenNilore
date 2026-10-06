@@ -399,7 +399,7 @@ public class Projectiles extends Module {
             yawRad = Math.toRadians(MidPearl.targetRotation.getYaw());
             pitchRad = Math.toRadians(MidPearl.targetRotation.getPitch());
         } else {
-            yawRad = Math.toRadians(Mth.lerp(partial, localPlayer.yRotO, localPlayer.getYRot()));
+            yawRad = Math.toRadians(Mth.rotLerp(partial, localPlayer.yRotO, localPlayer.getYRot()));
             pitchRad = Math.toRadians(Mth.lerp(partial, localPlayer.xRotO, localPlayer.getXRot()));
         }
         double dx = -Math.sin(yawRad) * Math.cos(pitchRad) * power;

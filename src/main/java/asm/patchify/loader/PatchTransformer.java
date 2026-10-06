@@ -45,8 +45,6 @@ import client.nilore.patch.CallbackInfo;
 
 /**
  * Applies all {@link Patch}-annotated handlers from a patch class to a target {@link ClassNode}.
- * Ported from <a href="https://github.com/xiaojiang233/izmk-reborn">izmk-reborn</a>'s
- * {@code PatchLoader}.
  *
  * <p>Supports:</p>
  * <ul>
@@ -828,7 +826,7 @@ public final class PatchTransformer {
 
     /**
      * Swap a value just pushed below the CallbackInfo / Invocation reference. Long/double take
-     * two slots and need DUP2_X1+POP2 instead of SWAP. Mirrors izmk's helper.
+     * two slots and need DUP2_X1+POP2 instead of SWAP.
      */
     private static void swapForCallback(Type type, InsnList insns) {
         if (type == Type.LONG_TYPE || type == Type.DOUBLE_TYPE) {
@@ -850,7 +848,7 @@ public final class PatchTransformer {
         }
     }
 
-    /** Suppresses an unused-warning for {@link Arrays} import (kept for parity with izmk). */
+    /** Suppresses an unused-warning for the {@link Arrays} import. */
     @SuppressWarnings("unused")
     private static void keepArraysImport() {
         Arrays.asList();

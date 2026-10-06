@@ -33,7 +33,6 @@ import client.nilore.utils.misc.PacketUtil;
 /**
  * FakeLag — 缓存出站位置数据包，模拟高延迟
  *
- * 基于 LiquidBounce NextGen ModuleFakeLag 逻辑移植
  * 核心机制: 拦截并延迟发送 ServerboundMovePlayerPacket，释放时瞬间发送所有缓存包
  *
  * Dynamic 模式: 仅在敌人进入范围时缓存

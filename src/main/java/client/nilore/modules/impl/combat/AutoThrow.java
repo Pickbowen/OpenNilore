@@ -117,7 +117,7 @@ extends Module {
             if (this.targetRotation != null) {
                 RotationHandler.setTargetRotation(this.targetRotation);
                 RotationHandler.isRotating = true;
-                this.ticksUntilThrow = 2;
+                this.ticksUntilThrow = THROW_WINDUP_TICKS;
             }
             this.throwTimer.reset();
         }
@@ -135,31 +135,39 @@ extends Module {
         }
     }
 
+    private static final int THROW_WINDUP_TICKS = 2;
+    private static final double THROW_SPEED = 1.5;
+    private static final double THROW_GRAVITY = 0.03;
+
     private Rotation calculateThrowRotation(Entity entity) {
         Vec3 velocity = entity.getDeltaMovement();
+        Vec3 eye = new Vec3(mc.player.getX(),
+                mc.player.getY() + mc.player.getEyeHeight(mc.player.getPose()) - 0.1,
+                mc.player.getZ());
         double targetX = entity.getX();
         double targetY = entity.getY() + entity.getBbHeight() * 0.55;
         double targetZ = entity.getZ();
 
-        double time = 0.0;
+        double time = THROW_WINDUP_TICKS;
         for (int i = 0; i < 3; i++) {
             double predictedX = targetX + velocity.x * time;
             double predictedZ = targetZ + velocity.z * time;
-            double dx = predictedX - mc.player.getX();
-            double dz = predictedZ - mc.player.getZ();
-            time = Math.sqrt(dx * dx + dz * dz) / 0.6;
+            double dx = predictedX - eye.x;
+            double dz = predictedZ - eye.z;
+            time = THROW_WINDUP_TICKS + Math.sqrt(dx * dx + dz * dz) / THROW_SPEED;
         }
 
         double predictedX = targetX + velocity.x * time;
+        double predictedY = targetY + (entity.onGround() ? 0.0 : velocity.y * time - 0.04 * time * time);
         double predictedZ = targetZ + velocity.z * time;
 
-        double dx = predictedX - mc.player.getX();
-        double dy = targetY - (mc.player.getY() + mc.player.getEyeHeight(mc.player.getPose()));
-        double dz = predictedZ - mc.player.getZ();
+        double dx = predictedX - eye.x;
+        double dy = predictedY - eye.y;
+        double dz = predictedZ - eye.z;
         double horizDist = Math.sqrt(dx * dx + dz * dz);
 
         float yaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90.0f;
-        float pitch = -getLowArcPitch((float) horizDist, (float) dy, 0.6f, 0.006f);
+        float pitch = -getLowArcPitch((float) horizDist, (float) dy, (float) THROW_SPEED, (float) THROW_GRAVITY);
         pitch = Mth.clamp(pitch, -90.0f, 90.0f);
         return new Rotation(yaw, pitch);
     }

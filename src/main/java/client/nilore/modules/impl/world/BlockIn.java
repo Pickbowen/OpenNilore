@@ -9,6 +9,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
 import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.BlockItem;
@@ -28,8 +29,8 @@ import client.nilore.utils.game.BlockUtil;
 import client.nilore.utils.game.RayTraceUtil;
 import client.nilore.utils.game.RotationUtil;
 import client.nilore.utils.misc.ChatUtil;
+import client.nilore.utils.misc.PacketUtil;
 import client.nilore.utils.rotation.Rotation;
-import client.nilore.utils.rotation.RotationHandler;
 
 public class BlockIn extends Module {
     public static BlockIn INSTANCE;
@@ -53,6 +54,7 @@ public class BlockIn extends Module {
 
 
     public Rotation targetRotation = null;
+    private static final int OFFHAND_SLOT = 40;
     private BlockPos startPos;
     private boolean rotateClockwise;
     private int oldSlot = -1;
@@ -232,7 +234,10 @@ public class BlockIn extends Module {
             return false;
         }
 
-        if (slot != mc.player.getInventory().selected) {
+        InteractionHand hand = InteractionHand.MAIN_HAND;
+        if (slot == OFFHAND_SLOT) {
+            hand = InteractionHand.OFF_HAND;
+        } else if (slot != mc.player.getInventory().selected) {
             mc.player.getInventory().selected = slot;
         }
 
@@ -260,12 +265,12 @@ public class BlockIn extends Module {
                 this.targetRotation = targetRot;
             }
 
-            if (RotationHandler.targetRotation != null) {
-                boolean canRayTrace = RayTraceUtil.canRayTrace(RotationHandler.targetRotation, face, againstPos, false);
-                if (!canRayTrace) {
-                    return false;
-                }
+            if (this.targetRotation == null
+                    || !RayTraceUtil.canRayTrace(this.targetRotation, face, againstPos, false)) {
+                return false;
             }
+            PacketUtil.sendQueued(new ServerboundMovePlayerPacket.Rot(
+                    this.targetRotation.getYaw(), this.targetRotation.getPitch(), mc.player.onGround()));
         } else {
             this.targetRotation = null;
 
@@ -278,9 +283,9 @@ public class BlockIn extends Module {
                         againstPos.getZ() + 0.5 + face.getStepZ() * 0.5),
                 face, againstPos, false);
 
-        var result = mc.gameMode.useItemOn(mc.player, InteractionHand.MAIN_HAND, hit);
+        var result = mc.gameMode.useItemOn(mc.player, hand, hit);
         if (result.consumesAction()) {
-            mc.player.swing(InteractionHand.MAIN_HAND);
+            mc.player.swing(hand);
             if (this.debug.getValue()) {
                 ChatUtil.print("[BlockIn] Placed at " + this.fmtPos(targetPos));
             }
@@ -324,7 +329,7 @@ public class BlockIn extends Module {
         if (this.useOffhand.getValue()) {
             ItemStack offhand = mc.player.getOffhandItem();
             if (offhand.getItem() instanceof BlockItem && BlockUtil.isPlaceable(offhand)) {
-                return 40; // offhand slot
+                return OFFHAND_SLOT;
             }
         }
 
