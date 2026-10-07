@@ -44,7 +44,6 @@ import org.joml.Matrix4f;
 import client.nilore.ClientBase;
 import client.nilore.NiloreClient;
 import client.nilore.event.impl.RenderEvent;
-import client.nilore.event.impl.MotionEvent;
 import client.nilore.event.impl.StrafeEvent;
 import client.nilore.event.impl.TickEvent;
 import client.nilore.event.impl.WorldChangeEvent;
@@ -361,6 +360,9 @@ public class KillAura extends Module {
         if (!NiloreClient.isReady()) {
             return;
         }
+        if (!isSprintReleaseWindow()) {
+            this.sprintCancelled = false;
+        }
         double reach = Mth.clamp(this.reach.getValue().doubleValue(),
                 this.reach.getMin().doubleValue(),
                 this.reach.getMax().doubleValue());
@@ -431,7 +433,7 @@ public class KillAura extends Module {
                         ? RotationHandler.prevRotation
                         : new Rotation(mc.player.getYRot(), mc.player.getXRot());
                 this.rotation = this.computeRotation(this.aimingTarget, from, speed,
-                        Math.max(REFERENCE_AIM_RANGE, reach));
+                        Math.max(reach, 3.05));
             }
         } else {
             this.rotation = null;
@@ -462,24 +464,6 @@ public class KillAura extends Module {
             this.attacks = 0.0f;
             return;
         }
-        // Hold the swing for as long as the sprint is on: while "Keep Sprint" is on, a swing made on a
-        // sprint tick can never crit, so none is made at all and the sprint has to be released first
-        // (Sprint module / Critical).
-        if (this.keepSprint.getValue() && mc.player.isSprinting() && isSprintReleaseWindow()) {
-            // The hold resets the one-shot release flag unconditionally, and that reset must stay
-            // unconditional: the release arms the flag even while the antikb window is open (only its
-            // setSprinting call is skipped there), so skipping the reset left the flag armed for the
-            // whole window, the release never fired again and the server never saw a single
-            // STOP_SPRINTING. Only the swing is held back by the window, never the flag reset.
-            this.sprintCancelled = false;
-            if (!NoXZMode.isInDelayWindow()) {
-                return;
-            }
-        }
-        if (!this.canAttackNow()) {
-            this.attacks = 0.0f;
-            return;
-        }
         while (this.attacks >= 1.0f) {
             this.doAttack();
             this.attacks -= 1.0f;
@@ -500,23 +484,7 @@ public class KillAura extends Module {
                 return false;
             }
         }
-        // Attack charge gate: getAttackStrengthScale(0.0f) >= 0.95f, always on while Critical is
-        // enabled, and on the 1.9 delay mode as before. Vanilla crits need charge > 0.9
-        // (Player.attack flag), so 0.95 covers it with margin.
-        boolean chargeGated = this.delayMode.is("1.9")
-                || (Critical.INSTANCE != null && Critical.INSTANCE.isEnabled());
-        if (chargeGated && mc.player.getAttackStrengthScale(0.0f) < 0.95f) {
-            return false;
-        }
-        if (Critical.INSTANCE != null && Critical.INSTANCE.isEnabled()) {
-            // Second half of vanilla's crit condition: fallDistance > 0 && !onGround. The charge alone
-            // leaves the swing to land wherever the jump happens to be, and a swing on the way up can
-            // never crit - roughly half of them. Waiting for the fall costs nothing here.
-            if (Critical.INSTANCE.canCritSoon()) {
-                return false;
-            }
-        }
-        if (Critical.stopAttack) {
+        if (this.delayMode.is("1.9") && mc.player.getAttackStrengthScale(0.0f) < 0.95f) {
             return false;
         }
         if (!(this.ignoreSkipTicks.getValue() || ClientBase.delayPackets.isEmpty()
@@ -531,34 +499,6 @@ public class KillAura extends Module {
             return false;
         }
         return RotationUtil.isWithinReach(target);
-    }
-
-    /**
-     * Arms the release flag while the release window is open and drops the sprint in the post phase.
-     * The drop has to land after aiStep's own sprint derivation: released any earlier (TickEvent or
-     * SprintEvent, both before aiStep) vanilla re-derives it from the still-pressed key inside the
-     * same tick, {@code wasSprinting} never flips and no STOP_SPRINTING leaves the client.
-     *
-     * <p>The gate must not be tightened to a raycast: the aura's attack gate runs an inflate of 0.1
-     * precisely because a quantised aim misses a 0.0 raycast, so gating the release on 0.0 held the
-     * sprint on exactly when the aim was merely close, and the swing then went out as a sprint hit
-     * with no crit.
-     *
-     * <p>keySprint is deliberately left alone here; the Sprint module owns the key.
-     */
-    @EventTarget
-    public void onPostMotion(MotionEvent motionEvent) {
-        if (mc.player == null || !motionEvent.isPost()) {
-            return;
-        }
-        if (!this.keepSprint.getValue() || !this.canAttackTarget() || !isSprintReleaseWindow()) {
-            this.sprintCancelled = false;
-            return;
-        }
-        if (!NoXZMode.isCountering() && !NoXZMode.isInDelayWindow()) {
-            mc.player.setSprinting(false);
-        }
-        this.sprintCancelled = true;
     }
 
     /** No jumping between a release and the sprint coming back. */
@@ -603,14 +543,23 @@ public class KillAura extends Module {
         return this.throughWalls.getValue() || mc.player.hasLineOfSight(entity);
     }
 
+    public void markSprintReleased() {
+        this.sprintCancelled = true;
+    }
+
+    public boolean isSprintReleased() {
+        return this.sprintCancelled;
+    }
+
     public static boolean isSprintReleaseWindow() {
         if (mc.player == null) return false;
-        return !mc.player.onGround() && mc.player.fallDistance > 0.0f;
+        return !mc.player.onGround();
     }
 
     public static boolean shouldStopSprint() {
         KillAura aura = INSTANCE;
         if (aura == null || !aura.isEnabled() || !aura.keepSprint.getValue()) return false;
+        if (aura.sprintCancelled) return false;
         if (mc.player == null || target == null) return false;
         if (mc.player.isUsingItem()) return false;
         // The Jump Reset gate belongs to that branch only. Checking the flag unconditionally also
@@ -619,9 +568,8 @@ public class KillAura extends Module {
         // away mid-jump-reset leaves the flag stuck true, every sprint release in the client stops
         // firing, and the Keep Sprint hold has nothing to wait for.
         if (AntiKB.mode.is("Jump Reset") && JumpResetMode.isJumping) return false;
-        if (NoXZMode.isCountering()) return false;
         if (NoXZMode.isInDelayWindow() && shouldKeepSprintInDelayWindow()) return false;
-        if (target.getBoundingBox().distanceToSqr(mc.player.getEyePosition()) > 12.25) return false;
+        if (!aura.canAttackTarget()) return false;
         // No damage prediction here: the prediction belongs to CriticalsModule's crit-sync
         // predicate, not to the sprint release, and putting it here let the sprint stay on
         // for good whenever the estimate could not beat the recorded swing - with Keep Sprint's
@@ -743,7 +691,7 @@ public class KillAura extends Module {
         }
         // Gathering radius, not the hit radius: reach is enforced later (isLookingAt / isWithinReach),
         // this only decides who counts as "the opponent" for the sprint and crit machinery.
-        AABB box = mc.player.getBoundingBox().inflate(Math.max(REFERENCE_AIM_RANGE, this.reach.getValue().doubleValue()));
+        AABB box = mc.player.getBoundingBox().inflate(Math.max(this.reach.getValue().doubleValue(), 3.05));
         // Plain loop, one pass, no stream: this runs every tick for the whole fight, and the old
         // version built a parallel-stream pipeline (ForkJoin tasks on the render thread), collected a
         // list, then made three more passes over it. Same filter set, same order (the sorts below are
@@ -795,15 +743,6 @@ public class KillAura extends Module {
     private static boolean isBaby(Entity entity) {
         return entity instanceof LivingEntity && ((LivingEntity) entity).isBaby();
     }
-
-    /**
-     * Lower bound for the radius the opponent list is gathered with; the effective radius is
-     * {@code max(this, reach)}. The attack gate ({@code reach} + isWithinReach) is what limits hits,
-     * so gathering wider only decides who counts as the opponent for the sprint and crit machinery.
-     * Pinning this to {@code reach} makes {@code target} drop the moment the opponent leaves reach,
-     * which is what the sprint release flickers on.
-     */
-    private static final float REFERENCE_AIM_RANGE = 3.5f;
 
     private static boolean hasBaby(List<Entity> entities) {
         for (Entity entity : entities) {

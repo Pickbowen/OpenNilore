@@ -43,6 +43,7 @@ public class AntiKB
     public final BooleanSetting jumpReset = new BooleanSetting("Jump Reset", false, () -> mode.is("NoXZ"));
     public final NumberSetting attackAmount = new NumberSetting("Attack Amount", 5.0, 0.0, 20.0, 1, () -> mode.is("NoXZ"));
     public final BooleanSetting renderBar = new BooleanSetting("Render Bar", false, () -> mode.is("NoXZ"));
+    public final BooleanSetting targetEsp = new BooleanSetting("Target ESP", false, () -> mode.is("NoXZ"));
     public final BooleanSetting debugLog = new BooleanSetting("Debug Log", false);
     private final Timer grimSyncTimer = new Timer();
     public AntiKB() {
