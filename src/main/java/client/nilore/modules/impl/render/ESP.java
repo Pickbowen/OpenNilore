@@ -21,7 +21,6 @@ import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.Arrow;
 import net.minecraft.world.phys.AABB;
-import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 import org.joml.Vector4d;
 import client.nilore.event.impl.Render2DEvent;
@@ -59,7 +58,8 @@ public class ESP extends Module {
     private final BooleanSetting showHealthBarSetting = new BooleanSetting("Show Health Bar", true);
     private final ModeSetting healthBarPositionSetting = new ModeSetting("Health Bar Position", "Bottom", "Top", "Left", "Right").withDefault("Left");
     private final List<Entity> visibleEntities = new ArrayList<>();
-    private final List<Vector2f> projectedPoints = new ArrayList<>();
+    private static final ThreadLocal<float[][]> CORNERS =
+            ThreadLocal.withInitial(() -> new float[8][3]);
 
     public ESP() {
         super("ESP", Category.RENDER);
@@ -128,31 +128,33 @@ public class ESP extends Module {
         }
         for (Entity entity : this.visibleEntities) {
             AABB aabb = EntityUtil.getInterpolatedAABB(entity, partial);
-            Vec3[] corners = new Vec3[]{
-                    new Vec3(aabb.minX, aabb.minY, aabb.minZ), new Vec3(aabb.maxX, aabb.minY, aabb.minZ),
-                    new Vec3(aabb.maxX, aabb.minY, aabb.maxZ), new Vec3(aabb.minX, aabb.minY, aabb.maxZ),
-                    new Vec3(aabb.minX, aabb.maxY, aabb.minZ), new Vec3(aabb.maxX, aabb.maxY, aabb.minZ),
-                    new Vec3(aabb.maxX, aabb.maxY, aabb.maxZ), new Vec3(aabb.minX, aabb.maxY, aabb.maxZ)
-            };
-            this.projectedPoints.clear();
+            Vector2f scratch = ProjectionUtil.scratch();
             boolean ok = true;
-            for (Vec3 corner : corners) {
-                Vector2f projected = ProjectionUtil.project(corner.x, corner.y, corner.z);
+            int projectedCount = 0;
+            float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE;
+            float maxX = Float.MIN_VALUE, maxY = Float.MIN_VALUE;
+            float[][] corners = CORNERS.get();
+            corners[0][0] = (float) aabb.minX; corners[0][1] = (float) aabb.minY; corners[0][2] = (float) aabb.minZ;
+            corners[1][0] = (float) aabb.maxX; corners[1][1] = (float) aabb.minY; corners[1][2] = (float) aabb.minZ;
+            corners[2][0] = (float) aabb.maxX; corners[2][1] = (float) aabb.minY; corners[2][2] = (float) aabb.maxZ;
+            corners[3][0] = (float) aabb.minX; corners[3][1] = (float) aabb.minY; corners[3][2] = (float) aabb.maxZ;
+            corners[4][0] = (float) aabb.minX; corners[4][1] = (float) aabb.maxY; corners[4][2] = (float) aabb.minZ;
+            corners[5][0] = (float) aabb.maxX; corners[5][1] = (float) aabb.maxY; corners[5][2] = (float) aabb.minZ;
+            corners[6][0] = (float) aabb.maxX; corners[6][1] = (float) aabb.maxY; corners[6][2] = (float) aabb.maxZ;
+            corners[7][0] = (float) aabb.minX; corners[7][1] = (float) aabb.maxY; corners[7][2] = (float) aabb.maxZ;
+            for (float[] corner : corners) {
+                Vector2f projected = ProjectionUtil.projectInto(corner[0], corner[1], corner[2], scratch);
                 if (projected == null) {
                     ok = false;
                     break;
                 }
-                this.projectedPoints.add(projected);
+                ++projectedCount;
+                if (projected.x < minX) minX = projected.x;
+                if (projected.y < minY) minY = projected.y;
+                if (projected.x > maxX) maxX = projected.x;
+                if (projected.y > maxY) maxY = projected.y;
             }
-            if (!ok || this.projectedPoints.isEmpty()) continue;
-            float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE;
-            float maxX = Float.MIN_VALUE, maxY = Float.MIN_VALUE;
-            for (Vector2f point : this.projectedPoints) {
-                if (point.x < minX) minX = point.x;
-                if (point.y < minY) minY = point.y;
-                if (point.x > maxX) maxX = point.x;
-                if (point.y > maxY) maxY = point.y;
-            }
+            if (!ok || projectedCount == 0) continue;
             int pad = 3;
             Vector4d box = new Vector4d((int) (minX - pad), (int) (minY - pad), (int) (maxX - minX + pad * 2), (int) (maxY - minY + pad * 2));
             this.entityBoxPositions.put(entity, Pair.of(box, true));

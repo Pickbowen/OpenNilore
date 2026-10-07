@@ -201,54 +201,60 @@ public class Projectiles extends Module {
         if (projectileMap.isEmpty()) return;
         float scale = this.lineWidth.getValue().floatValue();
         PoseStack poseStack = event.poseStack();
-        projectileMap.forEach((id, entry) -> {
-            if (entry.getItem() instanceof EnderpearlItem) {
-                Vec3 vel = entry.getVelocity();
-                Vector2f screenPos = ProjectionUtil.project(vel.x, vel.y, vel.z);
-                if (screenPos == null) return;
-                String text = String.format("Thrown by: %s%nLands in: %.1fs%nDistance: %.1fm",
-                        entry.getName(), entry.getX(), entry.getZ());
-                float maxW = 0.0f;
-                for (String line : text.split("\n")) {
-                    float w = this.fontRenderer.getBounds(line).getWidth();
-                    if (w > maxW) maxW = w;
-                }
-                float lineH = this.fontRenderer.getMetrics().getLineHeight() + 2.0f;
-                float blockH = lineH * 3.0f - 2.0f;
-                float totalW = maxW + 16.0f;
-                float totalH = blockH + 8.0f;
-                float xOff = -totalW / 2.0f;
-                float yOff = -totalH / 2.0f - 20.0f;
-                poseStack.pushPose();
-                poseStack.translate(screenPos.x, screenPos.y, 0.0f);
-                poseStack.scale(scale, scale, 1.0f);
-                RenderUtil.drawBlurredRect(poseStack, xOff, yOff, totalW, totalH, 4.0f, 8.0f, 1.0f, -1);
-                poseStack.popPose();
+        List<ProjectileEntry> pearls = new ArrayList<>();
+        List<Vector2f> positions = new ArrayList<>();
+        for (ProjectileEntry entry : projectileMap.values()) {
+            if (!(entry.getItem() instanceof EnderpearlItem)) continue;
+            Vec3 vel = entry.getVelocity();
+            Vector2f screenPos = ProjectionUtil.project(vel.x, vel.y, vel.z);
+            if (screenPos == null) continue;
+            pearls.add(entry);
+            positions.add(screenPos);
+        }
+        if (pearls.isEmpty()) return;
+        String[] lines = buildLabelLines(pearls.get(0));
+        float maxW = measureWidest(lines);
+        float lineH = this.fontRenderer.getMetrics().getLineHeight() + 2.0f;
+        float blockH = lineH * 3.0f - 2.0f;
+        float totalW = maxW + 16.0f;
+        float totalH = blockH + 8.0f;
+        float xOff = -totalW / 2.0f;
+        float yOff = -totalH / 2.0f - 20.0f;
+        for (Vector2f screenPos : positions) {
+            poseStack.pushPose();
+            poseStack.translate(screenPos.x, screenPos.y, 0.0f);
+            poseStack.scale(scale, scale, 1.0f);
+            RenderUtil.drawBlurredRect(poseStack, xOff, yOff, totalW, totalH, 4.0f, 8.0f, 1.0f, -1);
+            poseStack.popPose();
+        }
+        Renderer.renderConsumer(drawContext -> {
+            for (int i = 0; i < pearls.size(); i++) {
+                this.drawProjectileLabel(drawContext, pearls.get(i), scale, positions.get(i), maxW, lineH);
             }
         });
-        Renderer.renderConsumer(drawContext -> projectileMap.forEach((id, entry) -> {
-            if (entry.getItem() instanceof EnderpearlItem) {
-                Vec3 vel = entry.getVelocity();
-                Vector2f screenPos = ProjectionUtil.project(vel.x, vel.y, vel.z);
-                if (screenPos == null) return;
-                this.drawProjectileLabel(drawContext, entry, scale, screenPos);
-            }
-        }));
     }
 
-    private void drawProjectileLabel(DrawContext drawContext, ProjectileEntry entry, float scale, Vector2f pos) {
-        drawContext.save();
-        drawContext.translate(pos.x, pos.y);
-        drawContext.scale(scale, scale);
-        String text = String.format("Thrown by: %s%nLands in: %.1fs%nDistance: %.1fm",
-                entry.getName(), entry.getX(), entry.getZ());
-        String[] lines = text.split("\n");
+    private String[] buildLabelLines(ProjectileEntry entry) {
+        return String.format("Thrown by: %s%nLands in: %.1fs%nDistance: %.1fm",
+                entry.getName(), entry.getX(), entry.getZ()).split("\n");
+    }
+
+    private float measureWidest(String[] lines) {
         float maxW = 0.0f;
         for (String line : lines) {
             float w = this.fontRenderer.getBounds(line).getWidth();
             if (w > maxW) maxW = w;
         }
-        float lineH = this.fontRenderer.getMetrics().getLineHeight() + 2.0f;
+        return maxW;
+    }
+
+    private void drawProjectileLabel(DrawContext drawContext, ProjectileEntry entry, float scale, Vector2f pos,
+            float precomputedMaxW, float lineH) {
+        drawContext.save();
+        drawContext.translate(pos.x, pos.y);
+        drawContext.scale(scale, scale);
+        String[] lines = buildLabelLines(entry);
+        float maxW = precomputedMaxW;
         float blockH = lineH * lines.length - 2.0f;
         float totalW = maxW + 16.0f;
         float totalH = blockH + 8.0f;

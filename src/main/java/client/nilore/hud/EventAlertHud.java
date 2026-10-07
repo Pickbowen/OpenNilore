@@ -77,21 +77,55 @@ implements IHudElement {
             return Optional.empty();
         }
         long now = System.currentTimeMillis();
-        StreamSupport.stream(mc.level.entitiesForRendering().spliterator(), false).filter(entity -> entity instanceof LightningBolt && entity.isAlive()).forEach(entity -> this.activeAlerts.put(entity.position(), now));
+        for (Entity entity : mc.level.entitiesForRendering()) {
+            if (entity instanceof LightningBolt && entity.isAlive()) {
+                this.activeAlerts.put(entity.position(), now);
+            }
+        }
         this.activeAlerts.entrySet().removeIf(entry -> now - entry.getValue() > 5000L);
         if (this.activeAlerts.isEmpty()) {
             return Optional.empty();
         }
-        return this.activeAlerts.keySet().stream().filter(v -> mc.player.position().distanceToSqr(v) < 65536.0).min(Comparator.comparingDouble(v -> mc.player.position().distanceToSqr(v))).map(v -> new EventAlertHud.AlertEntry(v, mc.player.position().distanceTo(v), Optional.empty(), "Found a lightning strike!", ""));
+        Vec3 playerPos = mc.player.position();
+        Vec3 nearestPos = null;
+        double nearestDistSq = 65536.0;
+        for (Vec3 v : this.activeAlerts.keySet()) {
+            double distSq = playerPos.distanceToSqr(v);
+            if (distSq < 65536.0 && distSq < nearestDistSq) {
+                nearestDistSq = distSq;
+                nearestPos = v;
+            }
+        }
+        if (nearestPos == null) {
+            return Optional.empty();
+        }
+        return Optional.of(new EventAlertHud.AlertEntry(nearestPos, playerPos.distanceTo(nearestPos),
+                Optional.empty(), "Found a lightning strike!", ""));
     }
 
     private Optional<EventAlertHud.AlertEntry> findBestAlert() {
         return java.util.stream.Stream.of(this.findProjectileAlert(), this.findEntityAlert()).filter(Optional::isPresent).map(Optional::get).min(Comparator.comparingDouble(a -> a.distance));
     }
 
+    private Optional<EventAlertHud.AlertEntry> cachedAlert;
+    private long cachedAlertFrame = -1L;
+
+    /**
+     * isVisible() and render() both ask for the best alert within one frame, and computing it walks
+     * every rendered entity. Cache per frame so the scan runs once instead of twice.
+     */
+    private Optional<EventAlertHud.AlertEntry> bestAlert() {
+        long frame = mc.level != null ? mc.level.getGameTime() : 0L;
+        if (frame != this.cachedAlertFrame) {
+            this.cachedAlertFrame = frame;
+            this.cachedAlert = this.findBestAlert();
+        }
+        return this.cachedAlert;
+    }
+
     @Override
     public boolean isVisible() {
-        return this.findBestAlert().isPresent();
+        return this.bestAlert().isPresent();
     }
 
     @Override
@@ -118,7 +152,7 @@ implements IHudElement {
         if (mc == null || mc.player == null || alpha <= 0.01f) {
             return;
         }
-        this.findBestAlert().ifPresent(alert -> {
+        this.bestAlert().ifPresent(alert -> {
             float padding = 12.0f;
             float iconX = x + padding;
             float centerY = y + height / 2.0f;

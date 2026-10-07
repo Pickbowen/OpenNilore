@@ -83,9 +83,11 @@ public class Helper extends Module {
         }
         processBucketTracker();
         cleanupPlacementMaps();
-        this.subModuleList.stream()
-                .filter(sub -> this.modulesSetting.isSelected(sub.getName()))
-                .forEach(sub -> sub.onTick(event));
+        for (HelperBase sub : this.subModuleList) {
+            if (this.modulesSetting.isSelected(sub.getName())) {
+                sub.onTick(event);
+            }
+        }
     }
 
     @EventTarget
@@ -94,14 +96,15 @@ public class Helper extends Module {
             return;
         }
         targetRotation = null;
-        this.subModuleList.stream()
-                .filter(sub -> this.modulesSetting.isSelected(sub.getName()))
-                .forEach(sub -> {
-                    sub.onMotion(event);
-                    if (sub.isActive() && sub.getTargetRotation() != null) {
-                        targetRotation = sub.getTargetRotation();
-                    }
-                });
+        for (HelperBase sub : this.subModuleList) {
+            if (!this.modulesSetting.isSelected(sub.getName())) {
+                continue;
+            }
+            sub.onMotion(event);
+            if (sub.isActive() && sub.getTargetRotation() != null) {
+                targetRotation = sub.getTargetRotation();
+            }
+        }
         if (this.smoothRotationSetting.getValue() && targetRotation != null && event.isPost()) {
             this.lastTargetRotation = targetRotation;
             Rotation prev = RotationHandler.prevRotation;
@@ -119,9 +122,11 @@ public class Helper extends Module {
         if (FireballBlink.INSTANCE != null && FireballBlink.INSTANCE.isEnabled()) {
             return;
         }
-        this.subModuleList.stream()
-                .filter(sub -> this.modulesSetting.isSelected(sub.getName()))
-                .forEach(sub -> sub.onRender(event));
+        for (HelperBase sub : this.subModuleList) {
+            if (this.modulesSetting.isSelected(sub.getName())) {
+                sub.onRender(event);
+            }
+        }
     }
 
     @EventTarget
@@ -130,9 +135,11 @@ public class Helper extends Module {
             return;
         }
         updateBucketTracker();
-        this.subModuleList.stream()
-                .filter(sub -> this.modulesSetting.isSelected(sub.getName()))
-                .forEach(sub -> sub.onPreMotion(event));
+        for (HelperBase sub : this.subModuleList) {
+            if (this.modulesSetting.isSelected(sub.getName())) {
+                sub.onPreMotion(event);
+            }
+        }
     }
 
     public boolean hasTargetRotation() {

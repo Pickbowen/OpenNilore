@@ -142,6 +142,47 @@ extends ClientBase {
         return new Vector2f(screenX, screenY);
     }
 
+    private static final ThreadLocal<Vector2f> SCRATCH =
+            ThreadLocal.withInitial(() -> new Vector2f(0.0f, 0.0f));
+
+    /**
+     * Same projection as {@link #project(double, double, double)} but writes into a caller-owned
+     * buffer. This runs once per box corner per entity per frame, so returning a fresh Vector2f
+     * each time was the single largest allocation source in the ESP overlay. The scratch buffer
+     * lets the caller project all eight corners and still keep the results.
+     */
+    public static Vector2f projectInto(double worldX, double worldY, double worldZ, Vector2f out) {
+        Camera camera = mc.gameRenderer.getMainCamera();
+        Vec3 cameraPos = camera.getPosition();
+        tempVec3.set((float)(worldX - cameraPos.x), (float)(worldY - cameraPos.y), (float)(worldZ - cameraPos.z));
+        tempQuat.set(camera.rotation()).conjugate();
+        tempVec3.rotate(tempQuat);
+        ProjectionUtil.tempVec3.x = -ProjectionUtil.tempVec3.x;
+        tempVec4b.set(ProjectionUtil.tempVec3.x, ProjectionUtil.tempVec3.y, -ProjectionUtil.tempVec3.z, 1.0f);
+        projectionMatrix.transform(tempVec4b);
+        if (ProjectionUtil.tempVec4b.w <= 0.0f) {
+            return null;
+        }
+        float ndcX = ProjectionUtil.tempVec4b.x / ProjectionUtil.tempVec4b.w;
+        float ndcY = ProjectionUtil.tempVec4b.y / ProjectionUtil.tempVec4b.w;
+        if (Float.isNaN(ndcX) || Float.isNaN(ndcY) || ndcX < -1.2f || ndcX > 1.2f || ndcY < -1.2f || ndcY > 1.2f) {
+            return null;
+        }
+        float screenX = tempVec4a.x() + (1.0f + ndcX) * tempVec4a.z() / 2.0f;
+        float screenY = tempVec4a.y() + (1.0f - ndcY) * tempVec4a.w() / 2.0f;
+        double guiScale = mc.getWindow().getGuiScale();
+        if (guiScale == 0.0) {
+            guiScale = 1.0;
+        }
+        out.x = (float)((double)screenX / guiScale);
+        out.y = (float)((double)screenY / guiScale);
+        return out;
+    }
+
+    public static Vector2f scratch() {
+        return SCRATCH.get();
+    }
+
     @Generated
     private ProjectionUtil() {
         throw new UnsupportedOperationException("This is a utility class and cannot be instantiated");

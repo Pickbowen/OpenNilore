@@ -3,7 +3,6 @@ package client.nilore.modules.impl.player;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.renderer.GameRenderer;
@@ -141,7 +140,22 @@ extends Module {
     }
 
     private PrimedTnt findNearestTNT() {
-        return mc.level.getEntitiesOfClass(PrimedTnt.class, mc.player.getBoundingBox().inflate(20.0)).stream().filter(primedTnt -> primedTnt.getFuse() > 0).filter(primedTnt -> this.isMovingTowardsPlayer(primedTnt) || this.hasLineOfSight(primedTnt)).min(Comparator.comparingDouble(primedTnt -> primedTnt.distanceToSqr(mc.player))).orElse(null);
+        PrimedTnt nearest = null;
+        double nearestDistSq = 0.0;
+        for (PrimedTnt primedTnt : mc.level.getEntitiesOfClass(PrimedTnt.class, mc.player.getBoundingBox().inflate(20.0))) {
+            if (primedTnt.getFuse() <= 0) {
+                continue;
+            }
+            if (!this.isMovingTowardsPlayer(primedTnt) && !this.hasLineOfSight(primedTnt)) {
+                continue;
+            }
+            double distSq = primedTnt.distanceToSqr(mc.player);
+            if (nearest == null || distSq < nearestDistSq) {
+                nearest = primedTnt;
+                nearestDistSq = distSq;
+            }
+        }
+        return nearest;
     }
 
     private boolean hasLineOfSight(PrimedTnt primedTnt) {

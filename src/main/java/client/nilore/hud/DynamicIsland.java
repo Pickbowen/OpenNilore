@@ -99,7 +99,7 @@ public class DynamicIsland {
         if (this.activeElement.hasBackground()) {
             Renderer.renderConsumer((drawContext -> {
                 try (Paint paint = new Paint()){
-                    paint.setColor(new Color(0, 0, 0, 40).getRGB());
+                    paint.setColor(0x00000028);
                     drawContext.drawRoundedRect(RoundedRectangle.ofXYWHR(islandX, finalY, islandWidth, islandHeight, finalCornerRadius), paint);
                 }
                 drawContext.save();

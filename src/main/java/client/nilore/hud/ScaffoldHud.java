@@ -74,10 +74,10 @@ implements IHudElement {
         float progressPct = Math.min(1.0f, (float)blockCount / 64.0f);
         this.setX(progressPct);
         try (Paint paint = new Paint()){
-            paint.setColor(this.colorWithAlpha(new Color(30, 30, 30).getRGB(), alpha));
+            paint.setColor(this.colorWithAlpha(0x1E1E1E, alpha));
             drawContext.drawRoundedRect(RoundedRectangle.ofXYWHR(barX, barY, barWidth, barHeight, barHeight / 2.0f), paint);
             if (this.progressAnim.getValue() > 0.0f) {
-                paint.setColor(this.colorWithAlpha(new Color(153, 0, 255).getRGB(), alpha));
+                paint.setColor(this.colorWithAlpha(0x9900FF, alpha));
                 drawContext.drawRoundedRect(RoundedRectangle.ofXYWHR(barX, barY, barWidth * this.progressAnim.getValue(), barHeight, barHeight / 2.0f), paint);
             }
         }

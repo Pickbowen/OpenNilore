@@ -151,7 +151,18 @@ extends HudElement {
             return;
         }
         Collection<MobEffectInstance> collection = mc.player.getActiveEffects();
-        this.effectEntryList.stream().filter(e -> collection.stream().noneMatch(eff -> eff.getEffect() == e.getEffect())).forEach(PotionEffectsHud.EffectEntry::startRemove);
+        for (PotionEffectsHud.EffectEntry entry : this.effectEntryList) {
+            boolean stillActive = false;
+            for (MobEffectInstance active : collection) {
+                if (active.getEffect() == entry.getEffect()) {
+                    stillActive = true;
+                    break;
+                }
+            }
+            if (!stillActive) {
+                entry.startRemove();
+            }
+        }
         for (MobEffectInstance mobEffectInstance : collection) {
             Optional<PotionEffectsHud.EffectEntry> existing = this.effectEntryList.stream().filter(e -> !e.removing && e.getEffect() == mobEffectInstance.getEffect()).findFirst();
             if (existing.isEmpty()) {

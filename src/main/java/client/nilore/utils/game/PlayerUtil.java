@@ -41,11 +41,21 @@ extends ClientBase {
         mc.player.walkAnimation.update(speed, 0.4f);
     }
 
+    private static Method carriedItemMethod;
+    private static boolean carriedItemMethodResolved;
+
     public static void sendCarriedItem() {
         try {
-            Method method = mc.gameMode.getClass().getDeclaredMethod(ReflectionUtil.getMappedMethodName(mc.gameMode.getClass(), "ensureHasSentCarriedItem", "()V"));
-            method.setAccessible(true);
-            method.invoke(mc.gameMode);
+            if (!carriedItemMethodResolved) {
+                carriedItemMethodResolved = true;
+                Method method = mc.gameMode.getClass().getDeclaredMethod(ReflectionUtil.getMappedMethodName(mc.gameMode.getClass(), "ensureHasSentCarriedItem", "()V"));
+                method.setAccessible(true);
+                carriedItemMethod = method;
+            }
+            if (carriedItemMethod == null) {
+                return;
+            }
+            carriedItemMethod.invoke(mc.gameMode);
         } catch (Exception exception) {
             exception.printStackTrace();
             ChatUtil.print("Failed to set item!");

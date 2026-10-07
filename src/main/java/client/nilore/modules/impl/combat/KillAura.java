@@ -491,14 +491,32 @@ public class KillAura extends Module {
                 || (Critical.INSTANCE != null && Critical.INSTANCE.isEnabled()))) {
             return false;
         }
-        // While the counter still has shots queued the aura stays silent and lets it swing. Its
-        // counter hits are deliberately sprint hits (NoXZMode.attackReduce keeps isSprinting()
-        // satisfied), so they cannot crit - swinging the aura into the same window only queues swings
-        // that are non-crit by construction and competes with the counter for the per-tick lock.
+        // Velocity gate, mirroring the reference's canCrit(). The counter hits are sprint hits by
+        // construction - the NoXZ counter only swings while isSprinting() holds - so they cannot
+        // crit, and swinging the aura into the same window would just fight it for the per-tick
+        // attack lock. The isInDelayWindow branch is the keepsprint half of the contract: while the
+        // delay window still owns the input (on ground, mid-counter, or about to land) the aura
+        // stays out so the window's own isSprinting() gate stays true.
         if (NoXZMode.isCountering()) {
             return false;
         }
+        if (NoXZMode.isInDelayWindow() && shouldKeepSprintInDelayWindow()) {
+            return false;
+        }
         return RotationUtil.isWithinReach(target);
+    }
+
+    /**
+     * The reference's canCrit() gate, kept separate from {@link #canAttackNow()} because it is
+     * consulted when the sprint lock has to be released, not when a swing is queued. Velocity's
+     * reduce+delay chain requires isSprinting() to stay true for the whole counter window, so the
+     * crit path has to stand down for exactly as long as that window owns the input.
+     */
+    public boolean canCritUnderVelocity() {
+        if (mc.player == null || target == null || NoXZMode.isCountering()) {
+            return false;
+        }
+        return !(NoXZMode.isInDelayWindow() && shouldKeepSprintInDelayWindow());
     }
 
     /** No jumping between a release and the sprint coming back. */

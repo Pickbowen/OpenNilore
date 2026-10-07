@@ -183,7 +183,7 @@ implements IHudElement {
             checkMidY = arcBottom + font.getMetrics().descent() + 8.0f;
             checkEndX = x + width - arcProgress - 18.0f;
             paint.setStrokeCap(Paint.StrokeCap.FILL);
-            paint.setColor(this.colorWithAlpha(new Color(0, 0, 0, 40).getRGB(), alpha));
+            paint.setColor(this.colorWithAlpha(0x00000028, alpha));
             if (this.animProgress > 0.0f) {
                 paint.setColor(this.colorWithAlpha(Color.WHITE.getRGB(), alpha));
                 checkEndY = checkEndX * this.animProgress;

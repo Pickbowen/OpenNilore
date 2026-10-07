@@ -32,6 +32,32 @@ public final class PacketUtil
 extends ClientBase {
     public static final ArrayList<Packet<ServerGamePacketListener>> queuedPackets = new ArrayList<>();
 
+    private static Field predictionHandlerField;
+    private static boolean predictionHandlerFieldResolved;
+
+    /**
+     * The prediction handler lives on ClientLevel and both predictive senders reach it on hot
+     * paths. getDeclaredField walks the whole field table and hands back a fresh copy that then
+     * has to be made accessible again, so the result is resolved once and kept. Resolution
+     * failures are cached too: a rename that does not apply stays a rename that does not apply,
+     * and retrying it on every send would cost the same lookup it just failed.
+     */
+    private static BlockStatePredictionHandler predictionHandler() throws ReflectiveOperationException {
+        if (!predictionHandlerFieldResolved) {
+            predictionHandlerFieldResolved = true;
+            String fieldName = ReflectionUtil.getMappedFieldName(ClientLevel.class, "blockStatePredictionHandler");
+            if (fieldName != null) {
+                Field field = ClientLevel.class.getDeclaredField(fieldName);
+                field.setAccessible(true);
+                predictionHandlerField = field;
+            }
+        }
+        if (predictionHandlerField == null) {
+            throw new NoSuchFieldException("blockStatePredictionHandler");
+        }
+        return (BlockStatePredictionHandler)predictionHandlerField.get(mc.level);
+    }
+
     public static boolean shouldBypass(Packet<ServerGamePacketListener> packet) {
         PacketSendEvent packetSendEvent = new PacketSendEvent(packet);
         NiloreClient.getInstance().getEventBus().call(packetSendEvent);
@@ -50,13 +76,7 @@ extends ClientBase {
             return;
         }
         try {
-            String fieldName = ReflectionUtil.getMappedFieldName(ClientLevel.class, "blockStatePredictionHandler");
-            if (fieldName == null) {
-                return;
-            }
-            Field field = ClientLevel.class.getDeclaredField(fieldName);
-            field.setAccessible(true);
-            BlockStatePredictionHandler predictionHandler = (BlockStatePredictionHandler)field.get(mc.level);
+            BlockStatePredictionHandler predictionHandler = predictionHandler();
             try (BlockStatePredictionHandler predicting = predictionHandler.startPredicting()){
                 int sequence = predicting.currentSequence();
                 mc.getConnection().send(predictiveAction.predict(sequence));
@@ -72,13 +92,7 @@ extends ClientBase {
             return;
         }
         try {
-            String fieldName = ReflectionUtil.getMappedFieldName(ClientLevel.class, "blockStatePredictionHandler");
-            if (fieldName == null) {
-                return;
-            }
-            Field field = ClientLevel.class.getDeclaredField(fieldName);
-            field.setAccessible(true);
-            BlockStatePredictionHandler predictionHandler = (BlockStatePredictionHandler)field.get(mc.level);
+            BlockStatePredictionHandler predictionHandler = predictionHandler();
             try (BlockStatePredictionHandler predicting = predictionHandler.startPredicting()){
                 int sequence = predicting.currentSequence();
                 PacketUtil.sendQueued(predictiveAction.predict(sequence));

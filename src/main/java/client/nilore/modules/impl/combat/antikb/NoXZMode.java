@@ -71,6 +71,7 @@ extends AntiKBMode {
     private boolean positionCorrection;
     private int delayTicks;
     private int noAimTicks;
+    private int noSprintTicks;
     private int jumpTicks;
     private boolean jumpKeyForced;
     private float barProgress;
@@ -274,7 +275,7 @@ extends AntiKBMode {
                 return;
             }
             ++this.delayTicks;
-            if (this.isAimingAtTarget() && mc.player.onGround()) {
+            if (this.isAimingAtTarget() && mc.player.isSprinting() && mc.player.onGround()) {
                 counterRemaining = AntiKB.INSTANCE.attackAmount.getValue().intValue();
                 this.noAimTicks = 0;
                 inDelayWindow = false;
@@ -292,6 +293,15 @@ extends AntiKBMode {
                 this.debug("Failed (RayCast)");
                 return;
             }
+            if (!mc.player.isSprinting()) {
+                ++this.noSprintTicks;
+                this.debug("Failed (Sprint)");
+                if (this.noSprintTicks >= 3) {
+                    this.resetAll();
+                }
+                return;
+            }
+            this.noSprintTicks = 0;
             this.attackReduce(this.target);
             --counterRemaining;
         } else if (compensating) {
@@ -396,7 +406,6 @@ extends AntiKBMode {
         mc.player.swing(InteractionHand.MAIN_HAND);
         Vec3 movement = mc.player.getDeltaMovement();
         mc.player.setDeltaMovement(movement.x * 0.6, movement.y, movement.z * 0.6);
-        mc.player.setSprinting(false);
     }
 
     private Entity crosshairTarget() {
@@ -501,6 +510,7 @@ extends AntiKBMode {
         this.delayTicks = 0;
         counterRemaining = 0;
         this.noAimTicks = 0;
+        this.noSprintTicks = 0;
         this.compensateUntilMs = -1L;
         this.jumpTicks = 0;
         this.restoreJumpKey();
