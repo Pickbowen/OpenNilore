@@ -3,8 +3,6 @@ package client.nilore.render;
 import com.mojang.blaze3d.systems.RenderSystem;
 import java.nio.FloatBuffer;
 import org.joml.Matrix4f;
-import org.joml.Matrix4fc;
-import org.joml.Vector4f;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL13;
 import org.lwjgl.opengl.GL15;
@@ -13,7 +11,12 @@ import org.lwjgl.opengl.GL30;
 import org.lwjgl.system.MemoryStack;
 
 public final class RoundedRectShader {
+    private static final String VERTEX_SOURCE = "#version 150\nin vec2 Position;\nin vec2 LocalPos;\nin vec2 UV;\nuniform mat4 ModelViewMat;\nuniform mat4 ProjMat;\nout vec2 localPos;\nout vec2 uvCoord;\nvoid main() {\n    gl_Position = ProjMat * ModelViewMat * vec4(Position, 0.0, 1.0);\n    localPos = LocalPos;\n    uvCoord = UV;\n}\n";
+    private static final String FRAGMENT_SOURCE = "#version 150\nuniform vec2 HalfSize;\nuniform vec4 Radii;\nuniform vec4 Color1;\nuniform vec4 Color2;\nuniform int UseGradient;\nuniform int UseTexture;\nuniform sampler2D Sampler0;\nuniform float StrokeWidth;\nin vec2 localPos;\nin vec2 uvCoord;\nout vec4 fragColor;\nvoid main() {\n    vec2 p = localPos;\n    float r;\n    if (p.x < 0.0) {\n        r = (p.y < 0.0) ? Radii.x : Radii.w;\n    } else {\n        r = (p.y < 0.0) ? Radii.y : Radii.z;\n    }\n    vec2 q = abs(p) - HalfSize + r;\n    float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;\n    float aa = max(fwidth(d), 0.0001) * 0.5;\n    float alpha;\n    if (StrokeWidth > 0.0) {\n        float halfStroke = StrokeWidth * 0.5;\n        alpha = 1.0 - smoothstep(halfStroke - aa, halfStroke + aa, abs(d));\n    } else {\n        alpha = 1.0 - smoothstep(-aa, aa, d);\n    }\n    vec4 col;\n    if (UseTexture == 1) {\n        col = texture(Sampler0, uvCoord) * Color1;\n    } else if (UseGradient == 1) {\n        float t = clamp((p.y + HalfSize.y) / max(2.0 * HalfSize.y, 0.0001), 0.0, 1.0);\n        col = mix(Color1, Color2, t);\n    } else {\n        col = Color1;\n    }\n    fragColor = vec4(col.rgb, col.a * alpha);\n}\n";
+    private static final String GLOW_FRAGMENT_SOURCE = "#version 150\nuniform vec2 HalfSize;\nuniform vec4 Radii;\nuniform vec4 Color;\nuniform float GlowRadius;\nin vec2 localPos;\nout vec4 fragColor;\nvoid main() {\n    vec2 p = localPos;\n    float r;\n    if (p.x < 0.0) {\n        r = (p.y < 0.0) ? Radii.x : Radii.w;\n    } else {\n        r = (p.y < 0.0) ? Radii.y : Radii.z;\n    }\n    vec2 q = abs(p) - HalfSize + r;\n    float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;\n    float glow = (1.0 - smoothstep(0.0, max(GlowRadius, 0.0001), d)) * smoothstep(-max(fwidth(d), 0.0001), 0.0, d);\n    glow = glow * glow;\n    fragColor = vec4(Color.rgb, Color.a * glow);\n}\n";
+
     private int programId = 0;
+    private int glowProgramId = 0;
     private int uModelViewMat = -1;
     private int uProjMat = -1;
     private int uHalfSize = -1;
@@ -24,6 +27,12 @@ public final class RoundedRectShader {
     private int uUseTexture = -1;
     private int uSampler0 = -1;
     private int uStrokeWidth = -1;
+    private int gModelViewMat = -1;
+    private int gProjMat = -1;
+    private int gHalfSize = -1;
+    private int gRadii = -1;
+    private int gColor = -1;
+    private int gGlowRadius = -1;
     private int vboId = 0;
     private int vaoId = 0;
 
@@ -31,8 +40,8 @@ public final class RoundedRectShader {
         if (this.programId != 0) {
             return;
         }
-        int vertexShader = RoundedRectShader.compileShader(35633, "#version 150\nin vec2 Position;\nin vec2 LocalPos;\nin vec2 UV;\nuniform mat4 ModelViewMat;\nuniform mat4 ProjMat;\nout vec2 localPos;\nout vec2 uvCoord;\nvoid main() {\n    gl_Position = ProjMat * ModelViewMat * vec4(Position, 0.0, 1.0);\n    localPos = LocalPos;\n    uvCoord = UV;\n}\n");
-        int fragmentShader = RoundedRectShader.compileShader(35632, "#version 150\nuniform vec2 HalfSize;\nuniform vec4 Radii;\nuniform vec4 Color1;\nuniform vec4 Color2;\nuniform int UseGradient;\nuniform int UseTexture;\nuniform sampler2D Sampler0;\nuniform float StrokeWidth;\nin vec2 localPos;\nin vec2 uvCoord;\nout vec4 fragColor;\nvoid main() {\n    vec2 p = localPos;\n    float r;\n    if (p.x < 0.0) {\n        r = (p.y < 0.0) ? Radii.x : Radii.w;\n    } else {\n        r = (p.y < 0.0) ? Radii.y : Radii.z;\n    }\n    vec2 q = abs(p) - HalfSize + r;\n    float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;\n    float aa = max(fwidth(d), 0.0001) * 0.5;\n    float alpha;\n    if (StrokeWidth > 0.0) {\n        float halfStroke = StrokeWidth * 0.5;\n        alpha = 1.0 - smoothstep(halfStroke - aa, halfStroke + aa, abs(d));\n    } else {\n        alpha = 1.0 - smoothstep(-aa, aa, d);\n    }\n    vec4 col;\n    if (UseTexture == 1) {\n        col = texture(Sampler0, uvCoord) * Color1;\n    } else if (UseGradient == 1) {\n        float t = clamp((p.y + HalfSize.y) / max(2.0 * HalfSize.y, 0.0001), 0.0, 1.0);\n        col = mix(Color1, Color2, t);\n    } else {\n        col = Color1;\n    }\n    fragColor = vec4(col.rgb, col.a * alpha);\n}\n");
+        int vertexShader = RoundedRectShader.compileShader(35633, VERTEX_SOURCE);
+        int fragmentShader = RoundedRectShader.compileShader(35632, FRAGMENT_SOURCE);
         int program = GL20.glCreateProgram();
         GL20.glAttachShader(program, vertexShader);
         GL20.glAttachShader(program, fragmentShader);
@@ -60,6 +69,7 @@ public final class RoundedRectShader {
         this.uUseTexture = GL20.glGetUniformLocation(this.programId, "UseTexture");
         this.uSampler0 = GL20.glGetUniformLocation(this.programId, "Sampler0");
         this.uStrokeWidth = GL20.glGetUniformLocation(this.programId, "StrokeWidth");
+        this.initGlowProgram();
         this.vaoId = GL30.glGenVertexArrays();
         this.vboId = GL15.glGenBuffers();
         int prevVao = GL11.glGetInteger(34229);
@@ -78,12 +88,109 @@ public final class RoundedRectShader {
         GL15.glBindBuffer(34962, prevVbo);
     }
 
+    private void initGlowProgram() {
+        if (this.glowProgramId != 0) {
+            return;
+        }
+        int vertexShader = RoundedRectShader.compileShader(35633, VERTEX_SOURCE);
+        int fragmentShader = RoundedRectShader.compileShader(35632, GLOW_FRAGMENT_SOURCE);
+        int program = GL20.glCreateProgram();
+        GL20.glAttachShader(program, vertexShader);
+        GL20.glAttachShader(program, fragmentShader);
+        GL20.glBindAttribLocation(program, 0, "Position");
+        GL20.glBindAttribLocation(program, 1, "LocalPos");
+        GL20.glBindAttribLocation(program, 2, "UV");
+        GL20.glLinkProgram(program);
+        GL20.glDeleteShader(vertexShader);
+        GL20.glDeleteShader(fragmentShader);
+        if (GL20.glGetProgrami(program, 35714) == 0) {
+            GL20.glDeleteProgram(program);
+            return;
+        }
+        this.glowProgramId = program;
+        this.gModelViewMat = GL20.glGetUniformLocation(program, "ModelViewMat");
+        this.gProjMat = GL20.glGetUniformLocation(program, "ProjMat");
+        this.gHalfSize = GL20.glGetUniformLocation(program, "HalfSize");
+        this.gRadii = GL20.glGetUniformLocation(program, "Radii");
+        this.gColor = GL20.glGetUniformLocation(program, "Color");
+        this.gGlowRadius = GL20.glGetUniformLocation(program, "GlowRadius");
+    }
+
     public void draw(Matrix4f pose, float x1, float y1, float x2, float y2, float tlRadius, float trRadius, float brRadius, float blRadius, int color1, int color2, boolean useGradient, float strokeWidth) {
         this.drawInternal(pose, x1, y1, x2, y2, tlRadius, trRadius, brRadius, blRadius, color1, color2, useGradient, strokeWidth, -1, 0.0f, 0.0f, 1.0f, 1.0f);
     }
 
     public void drawTextured(Matrix4f pose, float x1, float y1, float x2, float y2, float tlRadius, float trRadius, float brRadius, float blRadius, int color, int textureId, float u1, float v1, float u2, float v2) {
         this.drawInternal(pose, x1, y1, x2, y2, tlRadius, trRadius, brRadius, blRadius, color, color, false, 0.0f, textureId, u1, v1, u2, v2);
+    }
+
+    /**
+     * Draws an outer glow ring hugging the rounded-rect border. The interior of the
+     * rectangle is never filled, so the glow can sit behind a translucent background
+     * without brightening its centre.
+     */
+    public void drawGlow(Matrix4f pose, float x1, float y1, float x2, float y2, float tlRadius, float trRadius, float brRadius, float blRadius, float glowRadius, int color) {
+        this.init();
+        if (this.glowProgramId == 0 || glowRadius <= 0.0f) {
+            return;
+        }
+        float centerX = (x1 + x2) * 0.5f;
+        float centerY = (y1 + y2) * 0.5f;
+        float halfWidth = (x2 - x1) * 0.5f;
+        float halfHeight = (y2 - y1) * 0.5f;
+        if (halfWidth <= 0.0f || halfHeight <= 0.0f) {
+            return;
+        }
+        float maxRadius = Math.min(halfWidth, halfHeight);
+        tlRadius = Math.min(Math.max(tlRadius, 0.0f), maxRadius);
+        trRadius = Math.min(Math.max(trRadius, 0.0f), maxRadius);
+        brRadius = Math.min(Math.max(brRadius, 0.0f), maxRadius);
+        blRadius = Math.min(Math.max(blRadius, 0.0f), maxRadius);
+        float expandedHalfW = halfWidth + glowRadius + 1.0f;
+        float expandedHalfH = halfHeight + glowRadius + 1.0f;
+        org.joml.Vector4f vertexPos = new org.joml.Vector4f();
+        float[] vertexData = new float[36];
+        float[][] cornerOffsets = new float[][]{{-expandedHalfW, -expandedHalfH}, {expandedHalfW, -expandedHalfH}, {expandedHalfW, expandedHalfH}, {-expandedHalfW, -expandedHalfH}, {expandedHalfW, expandedHalfH}, {-expandedHalfW, expandedHalfH}};
+        for (int i = 0; i < 6; ++i) {
+            float localX = cornerOffsets[i][0];
+            float localY = cornerOffsets[i][1];
+            vertexPos.set(centerX + localX, centerY + localY, 0.0f, 1.0f).mul(pose);
+            int base = i * 6;
+            vertexData[base] = vertexPos.x;
+            vertexData[base + 1] = vertexPos.y;
+            vertexData[base + 2] = localX;
+            vertexData[base + 3] = localY;
+            vertexData[base + 4] = 0.0f;
+            vertexData[base + 5] = 0.0f;
+        }
+        int prevProgram = GL11.glGetInteger(35725);
+        int prevVao = GL11.glGetInteger(34229);
+        int prevVbo = GL11.glGetInteger(34964);
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.disableCull();
+        GL20.glUseProgram(this.glowProgramId);
+        GL30.glBindVertexArray(this.vaoId);
+        GL15.glBindBuffer(34962, this.vboId);
+        try (MemoryStack memoryStack = MemoryStack.stackPush()) {
+            FloatBuffer vertexBuffer = memoryStack.mallocFloat(vertexData.length);
+            vertexBuffer.put(vertexData).flip();
+            GL15.glBufferSubData(34962, 0L, vertexBuffer);
+            FloatBuffer modelViewBuffer = memoryStack.mallocFloat(16);
+            RenderSystem.getModelViewMatrix().get(modelViewBuffer);
+            GL20.glUniformMatrix4fv(this.gModelViewMat, false, modelViewBuffer);
+            FloatBuffer projBuffer = memoryStack.mallocFloat(16);
+            RenderSystem.getProjectionMatrix().get(projBuffer);
+            GL20.glUniformMatrix4fv(this.gProjMat, false, projBuffer);
+        }
+        GL20.glUniform2f(this.gHalfSize, halfWidth, halfHeight);
+        GL20.glUniform4f(this.gRadii, tlRadius, trRadius, brRadius, blRadius);
+        GL20.glUniform4f(this.gColor, (float)(color >> 16 & 0xFF) / 255.0f, (float)(color >> 8 & 0xFF) / 255.0f, (float)(color & 0xFF) / 255.0f, (float)(color >>> 24 & 0xFF) / 255.0f);
+        GL20.glUniform1f(this.gGlowRadius, glowRadius);
+        GL11.glDrawArrays(4, 0, 6);
+        GL15.glBindBuffer(34962, prevVbo);
+        GL30.glBindVertexArray(prevVao);
+        GL20.glUseProgram(prevProgram);
     }
 
     private void drawInternal(Matrix4f pose, float x1, float y1, float x2, float y2, float tlRadius, float trRadius, float brRadius, float blRadius, int color1, int color2, boolean useGradient, float strokeWidth, int textureId, float u1, float v1, float u2, float v2) {
@@ -103,7 +210,7 @@ public final class RoundedRectShader {
         blRadius = Math.min(Math.max(blRadius, 0.0f), maxRadius);
         float expandedHalfW = halfWidth + 1.0f;
         float expandedHalfH = halfHeight + 1.0f;
-        Vector4f vertexPos = new Vector4f();
+        org.joml.Vector4f vertexPos = new org.joml.Vector4f();
         float[] vertexData = new float[36];
         float[][] cornerOffsets = new float[][]{{-expandedHalfW, -expandedHalfH}, {expandedHalfW, -expandedHalfH}, {expandedHalfW, expandedHalfH}, {-expandedHalfW, -expandedHalfH}, {expandedHalfW, expandedHalfH}, {-expandedHalfW, expandedHalfH}};
         for (i = 0; i < 6; ++i) {
@@ -170,6 +277,10 @@ public final class RoundedRectShader {
         if (this.programId != 0) {
             GL20.glDeleteProgram(this.programId);
             this.programId = 0;
+        }
+        if (this.glowProgramId != 0) {
+            GL20.glDeleteProgram(this.glowProgramId);
+            this.glowProgramId = 0;
         }
         if (this.vboId != 0) {
             GL15.glDeleteBuffers(this.vboId);

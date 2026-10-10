@@ -6,6 +6,7 @@ import it.unimi.dsi.fastutil.chars.Char2ObjectArrayMap;
 import java.awt.Color;
 import java.awt.Font;
 import java.awt.FontMetrics;
+import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.font.FontRenderContext;
 import java.awt.geom.AffineTransform;
@@ -15,10 +16,11 @@ import java.awt.image.ColorModel;
 import java.awt.image.WritableRaster;
 import java.nio.IntBuffer;
 import java.util.ArrayList;
-import net.minecraft.client.renderer.texture.AbstractTexture;
+import java.util.BitSet;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.resources.ResourceLocation;
 import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL30;
 import org.lwjgl.system.MemoryUtil;
 import client.nilore.ClientBase;
 import client.nilore.render.Glyph;
@@ -45,9 +47,14 @@ class GlyphPage {
      */
     private final Font[] fallbacks;
     private final Char2ObjectArrayMap<Glyph> glyphMap = new Char2ObjectArrayMap();
+    private final BitSet rasterized = new BitSet();
     int imageWidth;
     int imageHeight;
     boolean uploaded = false;
+    private BufferedImage atlasImage;
+    private Graphics2D atlasGraphics;
+    private NativeImage nativeImage;
+    private DynamicTexture texture;
 
     public GlyphPage(char startChar, char endChar, Font font, ResourceLocation textureLocation, int padding) {
         this(startChar, endChar, font, textureLocation, padding, 0, null);
@@ -68,16 +75,36 @@ class GlyphPage {
         this.fallbacks = fallbacks == null ? new Font[0] : fallbacks;
     }
 
+    /**
+     * Returns the glyph for {@code c}, rasterizing it on demand.
+     *
+     * <p>Only the glyphs that are actually drawn get rasterized; the page layout is
+     * still computed up front (bounds measuring is cheap), so the atlas keeps the same
+     * compact packing as before while avoiding the one-shot cost of rasterizing a whole
+     * 64-character block whenever a single character appears.
+     */
     public Glyph getGlyph(char c) {
         if (!this.uploaded) {
             this.buildAtlas();
         }
-        return this.glyphMap.get(c);
+        Glyph glyph = this.glyphMap.get(c);
+        if (glyph != null && !this.rasterized.get(c - this.startChar)) {
+            this.rasterizeGlyph(glyph);
+        }
+        return glyph;
     }
 
     public void reset() {
         ClientBase.mc.getTextureManager().release(this.textureLocation);
+        if (this.atlasGraphics != null) {
+            this.atlasGraphics.dispose();
+            this.atlasGraphics = null;
+        }
         this.glyphMap.clear();
+        this.rasterized.clear();
+        this.atlasImage = null;
+        this.nativeImage = null;
+        this.texture = null;
         this.imageWidth = -1;
         this.imageHeight = -1;
         this.uploaded = false;
@@ -137,81 +164,122 @@ class GlyphPage {
             curX += width + this.padding;
             ++colCount;
         }
-        BufferedImage atlasImage = new BufferedImage(
+        this.atlasImage = new BufferedImage(
                 Math.max(maxWidth + this.padding, 1),
                 Math.max(maxHeight + this.padding, 1), 2);
-        this.imageWidth = atlasImage.getWidth();
-        this.imageHeight = atlasImage.getHeight();
-        java.awt.Graphics2D graphics = atlasImage.createGraphics();
-        graphics.setColor(new Color(255, 255, 255, 1));
-        graphics.fillRect(0, 0, this.imageWidth, this.imageHeight);
-        graphics.setColor(Color.WHITE);
-        graphics.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_ON);
-        graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-        graphics.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_GASP);
-        graphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
-        graphics.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
+        this.imageWidth = this.atlasImage.getWidth();
+        this.imageHeight = this.atlasImage.getHeight();
+        this.atlasGraphics = this.atlasImage.createGraphics();
+        this.atlasGraphics.setColor(Color.WHITE);
+        this.atlasGraphics.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_ON);
+        this.atlasGraphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        this.atlasGraphics.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+        this.atlasGraphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+        this.atlasGraphics.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
         for (Glyph glyph : glyphs) {
-            graphics.setFont(this.getFontForChar(glyph.value()));
-            FontMetrics fontMetrics = graphics.getFontMetrics();
-            String text = String.valueOf(glyph.value());
-            int baseline = glyph.v() + fontMetrics.getAscent();
-            graphics.drawString(text, glyph.u(), baseline);
-            if (this.boldPx > 0) {
-                // 伪粗体：同一个字形往右再画一遍，笔画就撑粗了。
-                // 真正的 Bold 变体要有对应的 ttf 才有用，而中文字体只有一个 Regular，
-                // 所以只能这样合成（和 STB 那套 fauxBold 是同一个思路）。
-                graphics.drawString(text, glyph.u() + this.boldPx, baseline);
-            }
             this.glyphMap.put(glyph.value(), glyph);
         }
-        GlyphPage.uploadTexture(this.textureLocation, atlasImage);
+        this.createTexture();
         this.uploaded = true;
     }
 
-    public static void uploadTexture(ResourceLocation resourceLocation, BufferedImage source) {
+    private void createTexture() {
         try {
-            int width = source.getWidth();
-            int height = source.getHeight();
-            NativeImage nativeImage = new NativeImage(NativeImage.Format.RGBA, width, height, false);
-            long pixelsPtr = (Long)ReflectionUtil.getStaticField(nativeImage, "pixels", "com/mojang/blaze3d/platform/NativeImage");
-            IntBuffer intBuffer = MemoryUtil.memIntBuffer(pixelsPtr, nativeImage.getWidth() * nativeImage.getHeight());
-            boolean unused = false;
-            WritableRaster raster = source.getRaster();
-            ColorModel colorModel = source.getColorModel();
-            int numBands = raster.getNumBands();
-            int dataType = raster.getDataBuffer().getDataType();
-            Object pixelData = switch (dataType) {
-                case 0 -> new byte[numBands];
-                case 1 -> new short[numBands];
-                case 3 -> new int[numBands];
-                case 4 -> new float[numBands];
-                case 5 -> new double[numBands];
-                default -> throw new IllegalArgumentException("Unknown data buffer type: " + dataType);
-            };
-            for (int i = 0; i < height; ++i) {
-                for (int j = 0; j < width; ++j) {
-                    raster.getDataElements(j, i, pixelData);
-                    int a = colorModel.getAlpha(pixelData);
-                    int r = colorModel.getRed(pixelData);
-                    int g = colorModel.getGreen(pixelData);
-                    int b = colorModel.getBlue(pixelData);
-                    int abgr = a << 24 | b << 16 | g << 8 | r;
-                    intBuffer.put(abgr);
-                }
-            }
-            DynamicTexture dynamicTexture = new DynamicTexture(nativeImage);
-            dynamicTexture.upload();
-            RenderSystem.bindTexture(dynamicTexture.getId());
+            this.nativeImage = new NativeImage(NativeImage.Format.RGBA, this.imageWidth, this.imageHeight, false);
+            GlyphPage.fillBackground(this.nativeImage);
+            this.texture = new DynamicTexture(this.nativeImage);
+            RenderSystem.bindTexture(this.texture.getId());
+            // TextureUtil.prepareImage pins TEXTURE_MAX_LEVEL to 0; release it so a mip chain can be
+            // generated. The atlas is rasterized at twice the physical resolution, so drawing it
+            // without mipmaps minifies with a bare 2x2 tap and the text shimmers.
+            GL11.glTexParameteri(3553, 33085, 4);
             GL11.glTexParameteri(3553, 10241, 9729);
             GL11.glTexParameteri(3553, 10240, 9729);
-            if (RenderSystem.isOnRenderThread()) {
-                ClientBase.mc.getTextureManager().register(resourceLocation, dynamicTexture);
-            } else {
-                RenderSystem.recordRenderCall(() -> ClientBase.mc.getTextureManager().register(resourceLocation, dynamicTexture));
-            }
+            ClientBase.mc.getTextureManager().register(this.textureLocation, this.texture);
         } catch (Throwable throwable) {
             throwable.printStackTrace();
+        }
+    }
+
+    private void rasterizeGlyph(Glyph glyph) {
+        if (this.atlasGraphics == null || this.nativeImage == null || this.texture == null) {
+            return;
+        }
+        if (!RenderSystem.isOnRenderThreadOrInit()) {
+            return;
+        }
+        try {
+            this.atlasGraphics.setFont(this.getFontForChar(glyph.value()));
+            FontMetrics fontMetrics = this.atlasGraphics.getFontMetrics();
+            String text = String.valueOf(glyph.value());
+            int baseline = glyph.v() + fontMetrics.getAscent();
+            this.atlasGraphics.drawString(text, glyph.u(), baseline);
+            if (this.boldPx > 0) {
+                // Synthetic bold: draw the same glyph again shifted right to thicken the strokes.
+                this.atlasGraphics.drawString(text, glyph.u() + this.boldPx, baseline);
+            }
+            int width = Math.max(1, glyph.width());
+            int height = Math.max(1, glyph.height());
+            this.writeRegion(glyph.u(), glyph.v(), width, height);
+            this.texture.bind();
+            this.nativeImage.upload(0, glyph.u(), glyph.v(), glyph.u(), glyph.v(), width, height, false, false);
+            // NativeImage.upload() calls setFilter(false, false), which drops the texture back to
+            // GL_NEAREST. Re-apply linear filtering after every region upload or the atlas ends up
+            // minified with nearest sampling and the text looks aliased.
+            this.texture.setFilter(true, true);
+            GL30.glGenerateMipmap(3553);
+            this.rasterized.set(glyph.value() - this.startChar);
+        } catch (Throwable throwable) {
+            throwable.printStackTrace();
+        }
+    }
+
+    private void writeRegion(int x, int y, int width, int height) {
+        long pixelsPtr = (Long)ReflectionUtil.getStaticField(this.nativeImage, "pixels", "com/mojang/blaze3d/platform/NativeImage");
+        IntBuffer intBuffer = MemoryUtil.memIntBuffer(pixelsPtr, this.nativeImage.getWidth() * this.nativeImage.getHeight());
+        WritableRaster raster = this.atlasImage.getRaster();
+        ColorModel colorModel = this.atlasImage.getColorModel();
+        int numBands = raster.getNumBands();
+        int dataType = raster.getDataBuffer().getDataType();
+        Object pixelData = switch (dataType) {
+            case 0 -> new byte[numBands];
+            case 1 -> new short[numBands];
+            case 3 -> new int[numBands];
+            case 4 -> new float[numBands];
+            case 5 -> new double[numBands];
+            default -> throw new IllegalArgumentException("Unknown data buffer type: " + dataType);
+        };
+        for (int row = 0; row < height; ++row) {
+            int srcY = y + row;
+            if (srcY < 0 || srcY >= this.atlasImage.getHeight()) {
+                continue;
+            }
+            int rowBase = srcY * this.nativeImage.getWidth();
+            for (int col = 0; col < width; ++col) {
+                int srcX = x + col;
+                if (srcX < 0 || srcX >= this.atlasImage.getWidth()) {
+                    continue;
+                }
+                raster.getDataElements(srcX, srcY, pixelData);
+                int a = colorModel.getAlpha(pixelData);
+                int r = colorModel.getRed(pixelData);
+                int g = colorModel.getGreen(pixelData);
+                int b = colorModel.getBlue(pixelData);
+                intBuffer.put(rowBase + srcX, a << 24 | b << 16 | g << 8 | r);
+            }
+        }
+    }
+
+    /**
+     * Fills the atlas with an almost transparent white wash so bilinear sampling at
+     * glyph edges never bleeds the fully transparent black of unset pixels.
+     */
+    private static void fillBackground(NativeImage image) {
+        long pixelsPtr = (Long)ReflectionUtil.getStaticField(image, "pixels", "com/mojang/blaze3d/platform/NativeImage");
+        int count = image.getWidth() * image.getHeight();
+        IntBuffer intBuffer = MemoryUtil.memIntBuffer(pixelsPtr, count);
+        for (int i = 0; i < count; ++i) {
+            intBuffer.put(i, 0x01FFFFFF);
         }
     }
 }

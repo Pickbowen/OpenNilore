@@ -125,6 +125,7 @@ public class ModuleManager extends ClientBase {
         this.register(new Stuck());
 
         this.register(new AspectRatio());
+        this.register(new BetterChat());
         this.register(new ChestESP());
         this.register(new ClickGuiModule());
         this.register(new Compass());

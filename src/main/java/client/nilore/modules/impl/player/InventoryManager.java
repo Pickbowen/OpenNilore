@@ -37,6 +37,7 @@ import client.nilore.modules.Module;
 import client.nilore.modules.impl.combat.KillAura;
 import client.nilore.modules.impl.movement.NoSlow;
 import client.nilore.modules.impl.movement.Scaffold;
+import java.util.concurrent.ThreadLocalRandom;
 import client.nilore.settings.impl.BooleanSetting;
 import client.nilore.settings.impl.ModeSetting;
 import client.nilore.settings.impl.NumberSetting;
@@ -77,6 +78,7 @@ public class InventoryManager extends Module {
     public final BooleanSetting functionalBlocksFix = new BooleanSetting("Functional Blocks Fix", true);
 
     private static final Timer actionTimer = new Timer();
+    private static final int ACTION_JITTER_MS = 20;
 
     private boolean didInventoryAction = false;
     private boolean pendingOffhandPlace = false;
@@ -306,7 +308,7 @@ public class InventoryManager extends Module {
                 ItemStack equipped = mc.player.getInventory().armor.get(i);
                 if (equipped.getItem() instanceof ArmorItem armor
                         && !equipped.isEmpty()
-                        && actionTimer.hasPassed(this.actionDelaySetting.getValue().intValue())
+                        && actionTimer.hasPassed(this.jitteredActionDelay())
                         && ItemUtil.getBestArmorScore(armor.getEquipmentSlot()) > ItemUtil.getArmorScore(equipped)) {
                     this.silentClick(
                             mc.player.inventoryMenu.containerId,
@@ -324,7 +326,7 @@ public class InventoryManager extends Module {
                 boolean isBest = ItemUtil.getBestArmorScore(armor.getEquipmentSlot()) == candidateScore;
                 boolean betterThanEquipped = ItemUtil.getEquippedArmorScore(armor.getEquipmentSlot()) < candidateScore;
                 if (isBest && betterThanEquipped
-                        && actionTimer.hasPassed(this.actionDelaySetting.getValue().intValue())) {
+                        && actionTimer.hasPassed(this.jitteredActionDelay())) {
                     int target = i < 9 ? i + 36 : i;
                     this.silentClick(
                             mc.player.inventoryMenu.containerId,
@@ -338,7 +340,7 @@ public class InventoryManager extends Module {
 
         // --- finish a pending offhand swap from the previous tick ---
         if (this.pendingOffhandPlace
-                && actionTimer.hasPassed(this.actionDelaySetting.getValue().intValue())) {
+                && actionTimer.hasPassed(this.jitteredActionDelay())) {
             this.silentClick(mc.player.inventoryMenu.containerId,
                     45, 0, ClickType.PICKUP);
             this.didInventoryAction = true;
@@ -351,7 +353,7 @@ public class InventoryManager extends Module {
         if ("Golden Apple".equals(offhandPref)) {
             ItemStack offhand = mc.player.getInventory().offhand.get(0);
             int slot = ItemUtil.getSlot(Items.GOLDEN_APPLE);
-            if (slot != -1 && actionTimer.hasPassed(this.actionDelaySetting.getValue().intValue())) {
+            if (slot != -1 && actionTimer.hasPassed(this.jitteredActionDelay())) {
                 if (offhand.getItem() != Items.GOLDEN_APPLE) {
                     this.moveToOffhand(slot);
                     return true;
@@ -379,7 +381,7 @@ public class InventoryManager extends Module {
                     shouldSwap = offhand.getCount() < bestProjectile.getCount();
                 }
                 if (shouldSwap && slot != -1
-                        && actionTimer.hasPassed(this.actionDelaySetting.getValue().intValue())) {
+                        && actionTimer.hasPassed(this.jitteredActionDelay())) {
                     this.moveToOffhand(slot);
                     return true;
                 }
@@ -388,7 +390,7 @@ public class InventoryManager extends Module {
             ItemStack offhand = mc.player.getInventory().offhand.get(0);
             int slot = ItemUtil.getSlot(Items.FISHING_ROD);
             if (slot != -1
-                    && actionTimer.hasPassed(this.actionDelaySetting.getValue().intValue())
+                    && actionTimer.hasPassed(this.jitteredActionDelay())
                     && offhand.getItem() != Items.FISHING_ROD) {
                 this.moveToOffhand(slot);
                 return true;
@@ -405,7 +407,7 @@ public class InventoryManager extends Module {
                     shouldSwap = true;
                 }
                 if (shouldSwap && slot != -1
-                        && actionTimer.hasPassed(this.actionDelaySetting.getValue().intValue())) {
+                        && actionTimer.hasPassed(this.jitteredActionDelay())) {
                     this.moveToOffhand(slot);
                     return true;
                 }
@@ -836,7 +838,7 @@ public class InventoryManager extends Module {
         if (mc.gameMode == null || mc.player == null) return false;
         ItemStack current = mc.player.getInventory().items.get(targetSlot);
         if (!ItemUtil.isUsable(current) || stack == current
-                || !actionTimer.hasPassed(this.actionDelaySetting.getValue().intValue())) {
+                || !actionTimer.hasPassed(this.jitteredActionDelay())) {
             return false;
         }
         int source = ItemUtil.getSlot(stack);
@@ -853,7 +855,7 @@ public class InventoryManager extends Module {
         if (mc.gameMode == null || mc.player == null) return false;
         ItemStack current = mc.player.getInventory().items.get(targetSlot);
         if (!ItemUtil.isUsable(current)
-                || !actionTimer.hasPassed(this.actionDelaySetting.getValue().intValue())) {
+                || !actionTimer.hasPassed(this.jitteredActionDelay())) {
             return false;
         }
         int source = ItemUtil.getSlot(item);
@@ -893,6 +895,18 @@ public class InventoryManager extends Module {
 
     public static int getMaxLavaBuckets() {
         return 1;
+    }
+
+    /**
+     * Organize interval with a symmetric +/-20ms jitter, so consecutive inventory clicks are not
+     * emitted on a perfectly constant period.
+     */
+    private int jitteredActionDelay() {
+        int base = this.actionDelaySetting.getValue().intValue();
+        if (base <= 0) {
+            return 0;
+        }
+        return Math.max(0, base + ThreadLocalRandom.current().nextInt(-ACTION_JITTER_MS, ACTION_JITTER_MS + 1));
     }
 
     public boolean isUsefulItem(ItemStack stack) {

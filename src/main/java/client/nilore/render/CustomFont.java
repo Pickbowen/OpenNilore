@@ -107,14 +107,12 @@ implements Closeable {
     }
 
     /**
-     * 字形图集的分页大小。
+     * Size of a glyph atlas block, in code points.
      *
-     * <p>光栅化是**整页**做的：第一次用到某页里任何一个字符，就会把这一页的字符全部渲染出来。
-     * 原来取 256，碰上中文歌词（每个字都可能落在不同的 256 区间）一次要渲染 256 个字形，
-     * 表现就是歌词一出来卡一下。降到 64 之后单次渲染量减少到四分之一，
-     * 而一行歌词通常还挤在同一页里，页数不会涨太多。
-     *
-     * <p>彻底不卡得改成逐字形按需光栅化（像 STB 那样），那是另一个量级的改动。
+     * <p>Glyphs are rasterized strictly on demand: the block layout is computed up
+     * front from cheap bounds measuring, but a glyph only becomes a texture region the
+     * first time it is actually drawn. A Chinese lyric line therefore costs one glyph
+     * per unseen character instead of a whole block.
      */
     private static final int DEFAULT_PAGE_SIZE = 64;
 

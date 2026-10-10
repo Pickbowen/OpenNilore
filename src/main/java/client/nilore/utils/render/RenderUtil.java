@@ -220,16 +220,15 @@ extends ClientBase {
     public static void drawBlurredRect(PoseStack poseStack, float x, float y, float width, float height, float radius, float blurRadius, float opacity, int color) {
         try {
             PoseStack blitPoseStack;
-            boolean shouldBlur;
             if (blurFailed) {
                 return;
             }
             if (blurShader == null) {
                 blurShader = new ShaderProgram("blur", ShaderFormats.POSITION_UV_COLOR);
             }
-            if (mainRenderTarget == null) {
-                mainRenderTarget = mc.getMainRenderTarget();
-            }
+            // Always read the live target: the static holding a stale instance is one more way to
+            // end up compositing a copy of a framebuffer nobody has drawn into this frame.
+            mainRenderTarget = mc.getMainRenderTarget();
             TextureTarget textureTarget = textureTargetSupplier.get();
             if (textureTarget.width != RenderUtil.mainRenderTarget.width || textureTarget.height != RenderUtil.mainRenderTarget.height) {
                 textureTarget.resize(RenderUtil.mainRenderTarget.width, RenderUtil.mainRenderTarget.height, Minecraft.ON_OSX);
@@ -237,24 +236,48 @@ extends ClientBase {
             Matrix4f matrix4f = poseStack.last().pose();
             int blendColor = color == 0 ? ColorUtil.fromARGB(255, 255, 255, 255) : color;
             blendColor = ColorUtil.withAlpha(blendColor, opacity);
+
+            // The capture has to run with a normalised GL state. Besides the click GUI this is also
+            // called from the middle of the vanilla HUD pass, where the scissor, the depth test and
+            // the colour modulator can all be left over from the previous element. A clipped or
+            // tinted blit silently copies nothing, which leaves the shared target holding an older
+            // frame — the panel then shows a frozen backdrop until some other caller refreshes it.
+            int[] viewport = new int[4];
+            int[] scissorBox = new int[4];
+            GL11.glGetIntegerv(2978, viewport);
+            GL11.glGetIntegerv(3088, scissorBox);
+            boolean scissorWasEnabled = GL11.glIsEnabled(3089);
+            boolean depthWasEnabled = GL11.glIsEnabled(2929);
+            float[] shaderColor = RenderSystem.getShaderColor();
+            RenderSystem.disableScissor();
+            RenderSystem.disableDepthTest();
             RenderSystem.enableBlend();
             RenderSystem.defaultBlendFunc();
-            float screenArea = RenderUtil.mainRenderTarget.width * RenderUtil.mainRenderTarget.height;
-            float rectArea = width * height;
-            boolean isLargeRect = rectArea / screenArea >= 0.05f;
-            long gameTime = mc.level != null ? mc.level.getGameTime() : -1L;
-            boolean shouldBlurTmp = shouldBlur = !isLargeRect || gameTime != -1L;
-            if (shouldBlur) {
-                textureTarget.bindWrite(false);
-                blitPoseStack = new PoseStack();
-                RenderHelper.blitRenderTarget(mainRenderTarget, blitPoseStack, textureTarget.width, textureTarget.height);
-                mainRenderTarget.bindWrite(false);
+            RenderSystem.disableCull();
+            RenderHelper.resetShaderColor();
+
+            // The capture used to be skipped for "large" rects, which left the shared target
+            // holding an older frame while the composite still sampled it — the panel then sat on a
+            // frozen copy of whatever the last caller captured. Always capture.
+            textureTarget.bindWrite(false);
+            GL11.glViewport(0, 0, textureTarget.width, textureTarget.height);
+            blitPoseStack = new PoseStack();
+            RenderHelper.blitRenderTarget(mainRenderTarget, blitPoseStack, textureTarget.width, textureTarget.height);
+            mainRenderTarget.bindWrite(false);
+            GL11.glViewport(0, 0, RenderUtil.mainRenderTarget.width, RenderUtil.mainRenderTarget.height);
+            // Re-arm the caller's scissor for the composite — only the capture above had to run
+            // unclipped, since it copies the whole target.
+            if (scissorWasEnabled) {
+                RenderSystem.enableScissor(scissorBox[0], scissorBox[1], scissorBox[2], scissorBox[3]);
             }
             blurShader.use();
             GL20.glUniform1i(blurShader.getUniformLocation("Sampler0"), 0);
             GlStateManager._activeTexture(33984);
             GlStateManager._bindTexture(textureTarget.getColorTextureId());
-            GL20.glUniform2f(blurShader.getUniformLocation("Size"), width, height);
+            // +2 because common.glsl's ralpha insets its rounded-rect sdf by one unit on every side
+            // ("center - 1.0"), which would otherwise leave a one pixel ring where nothing is
+            // blurred and the panel/glow edges stop lining up.
+            GL20.glUniform2f(blurShader.getUniformLocation("Size"), width + 2.0f, height + 2.0f);
             GL20.glUniform4f(blurShader.getUniformLocation("Radius"), radius, radius, radius, radius);
             GL20.glUniform1f(blurShader.getUniformLocation("Smoothness"), 1.0f);
             GL20.glUniform1f(blurShader.getUniformLocation("BlurRadius"), blurRadius);
@@ -269,6 +292,21 @@ extends ClientBase {
             BufferUploader.draw(bufferBuilder.end());
             GlStateManager._bindTexture(0);
             blurShader.stopUsing();
+
+            // Hand the state back exactly as it was found, so a blur drawn mid-pass does not
+            // disturb whatever the caller is about to render next.
+            RenderSystem.setShaderColor(shaderColor[0], shaderColor[1], shaderColor[2], shaderColor[3]);
+            GL11.glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+            if (scissorWasEnabled) {
+                RenderSystem.enableScissor(scissorBox[0], scissorBox[1], scissorBox[2], scissorBox[3]);
+            } else {
+                RenderSystem.disableScissor();
+            }
+            if (depthWasEnabled) {
+                RenderSystem.enableDepthTest();
+            } else {
+                RenderSystem.disableDepthTest();
+            }
             RenderSystem.disableBlend();
         } catch (Exception exception) {
             logger.error("Error while rendering blur", exception);

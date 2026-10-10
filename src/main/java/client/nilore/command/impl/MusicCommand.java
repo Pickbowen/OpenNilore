@@ -7,7 +7,7 @@ import client.nilore.utils.misc.ChatUtil;
 
 public class MusicCommand extends Command {
     public MusicCommand() {
-        super("music", new String[]{"m"});
+        super("music", new String[0]);
     }
 
     @Override

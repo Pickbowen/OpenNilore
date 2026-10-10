@@ -22,6 +22,7 @@ import client.nilore.manager.HudManager;
 import client.nilore.manager.LagManager;
 import client.nilore.manager.ModuleManager;
 import client.nilore.manager.TargetManager;
+import client.nilore.patch.ChatComponentPatch;
 import client.nilore.patch.ChatScreenPatch;
 import client.nilore.patch.ClientLevelPatch;
 import client.nilore.patch.ConnectionPatch;
@@ -185,6 +186,7 @@ public class NiloreClient extends ClientBase {
         PatchRegistry.register(KeyboardHandlerPatch.class);
         PatchRegistry.register(KeyboardInputPatch.class);
         PatchRegistry.register(ChatScreenPatch.class);
+        PatchRegistry.register(ChatComponentPatch.class);
         PatchRegistry.register(EntityRendererPatch.class);
         PatchRegistry.register(EntityRenderDispatcherPatch.class);
         PatchRegistry.register(LevelRendererPatch.class);

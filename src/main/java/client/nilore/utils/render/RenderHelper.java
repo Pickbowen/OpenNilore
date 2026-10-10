@@ -20,20 +20,37 @@ import client.nilore.ClientBase;
 import client.nilore.utils.render.ColorUtil;
 
 public final class RenderHelper {
+    /**
+     * Blits {@code renderTarget} over the currently bound framebuffer.
+     *
+     * <p>The blit shader is not driven by {@code RenderSystem}'s matrices, so this mirrors
+     * {@code RenderTarget.blitToScreen}: a pixel-space ortho, a -2000 modelview translation, and
+     * clip-space-free pixel coordinates. {@code poseStack} is deliberately ignored — the copy is
+     * screen space, and honouring a caller's transform (the scoreboard and the player list both
+     * render under one) leaves the quad outside the clip volume, i.e. nothing is copied and the
+     * shared target keeps whatever it held from an earlier frame.
+     */
     public static void blitRenderTarget(RenderTarget renderTarget, PoseStack poseStack, int width, int height) {
-        Matrix4f matrix4f = poseStack.last().pose();
         ShaderInstance shaderInstance = ClientBase.mc.gameRenderer.blitShader;
         shaderInstance.setSampler("DiffuseSampler", renderTarget.getColorTextureId());
+        Matrix4f ortho = new Matrix4f().setOrtho(0.0f, (float)width, (float)height, 0.0f, 1000.0f, 3000.0f);
+        if (shaderInstance.MODEL_VIEW_MATRIX != null) {
+            shaderInstance.MODEL_VIEW_MATRIX.set(new Matrix4f().translate(0.0f, 0.0f, -2000.0f));
+        }
+        if (shaderInstance.PROJECTION_MATRIX != null) {
+            shaderInstance.PROJECTION_MATRIX.set(ortho);
+        }
         shaderInstance.apply();
         float uMax = (float)renderTarget.viewWidth / (float)renderTarget.width;
         float vMax = (float)renderTarget.viewHeight / (float)renderTarget.height;
+        Matrix4f identity = new Matrix4f();
         Tesselator tesselator = RenderSystem.renderThreadTesselator();
         BufferBuilder bufferBuilder = tesselator.getBuilder();
         bufferBuilder.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_TEX_COLOR);
-        bufferBuilder.vertex(matrix4f, 0.0f, (float)height, 0.0f).uv(0.0f, 0.0f).color(255, 255, 255, 255).endVertex();
-        bufferBuilder.vertex(matrix4f, (float)width, (float)height, 0.0f).uv(uMax, 0.0f).color(255, 255, 255, 255).endVertex();
-        bufferBuilder.vertex(matrix4f, (float)width, 0.0f, 0.0f).uv(uMax, vMax).color(255, 255, 255, 255).endVertex();
-        bufferBuilder.vertex(matrix4f, 0.0f, 0.0f, 0.0f).uv(0.0f, vMax).color(255, 255, 255, 255).endVertex();
+        bufferBuilder.vertex(identity, 0.0f, (float)height, 0.0f).uv(0.0f, 0.0f).color(255, 255, 255, 255).endVertex();
+        bufferBuilder.vertex(identity, (float)width, (float)height, 0.0f).uv(uMax, 0.0f).color(255, 255, 255, 255).endVertex();
+        bufferBuilder.vertex(identity, (float)width, 0.0f, 0.0f).uv(uMax, vMax).color(255, 255, 255, 255).endVertex();
+        bufferBuilder.vertex(identity, 0.0f, 0.0f, 0.0f).uv(0.0f, vMax).color(255, 255, 255, 255).endVertex();
         BufferUploader.draw(bufferBuilder.end());
         shaderInstance.clear();
     }

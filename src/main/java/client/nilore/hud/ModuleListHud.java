@@ -164,7 +164,7 @@ public class ModuleListHud extends HudElement {
     private NumberSetting rainbowSaturation;
     private NumberSetting rainbowBrightness;
     private NumberSetting rainbowOffset;
-    private BooleanSetting useMinecraftFont;
+    private ModeSetting fontMode;
 
     // Font glow (fixed)
     private static final boolean FONT_GLOW_ENABLED = true;
@@ -225,7 +225,8 @@ public class ModuleListHud extends HudElement {
         this.rainbowSaturation = new NumberSetting("Rainbow Saturation", 90.0f, 0.0f, 100.0f, 1.0f);
         this.rainbowBrightness = new NumberSetting("Rainbow Brightness", 100.0f, 10.0f, 100.0f, 1.0f);
         this.rainbowOffset = new NumberSetting("Rainbow Offset", 85.0f, 0.0f, 90.0f, 1.0f);
-        this.useMinecraftFont = new BooleanSetting("Minecraft Font", false);
+        this.fontMode = new ModeSetting("Font", "Minecraft", "Minecraft", "PingFang", "Product Sans")
+                .withDefault("PingFang");
 
         // Register all settings
         this.registerSetting(sideMode, breakEnabled, showSuffix, suffixColorEnabled, suffixLowercaseEnabled,
@@ -233,13 +234,13 @@ public class ModuleListHud extends HudElement {
                 paddingX, paddingY, rowHeight, rowSpacing, backgroundEnabled, backgroundRadius, backgroundAlpha,
                 sideLineEnabled, sideLineMode, sideLineWidth,
                 glowEnabled, glowRadius, glowAlpha,
-                useClientColor, useMinecraftFont, textColorMode, gradientTheme, rainbowSpeed, rainbowSaturation, rainbowBrightness, rainbowOffset);
+                useClientColor, fontMode, textColorMode, gradientTheme, rainbowSpeed, rainbowSaturation, rainbowBrightness, rainbowOffset);
     }
 
     private List<AnimatedRow> updateRows() {
-        FontRenderer font = FontPresets.pingfang(18.0f);
+        FontRenderer font = this.resolveCustomFont();
         boolean importantOnly = this.important.getValue();
-        boolean useMcFont = this.useMinecraftFont.getValue();
+        boolean useMcFont = this.usesMinecraftFont();
         for (Module module : NiloreClient.getInstance().getModuleManager().getModules()) {
             if (module == this || module.getName().isEmpty() || module.isHiddenInModuleList()) {
                 this.rowStates.remove(module);
@@ -271,6 +272,17 @@ public class ModuleListHud extends HudElement {
         List<AnimatedRow> rows = new ArrayList<>(this.rowStates.values());
         rows.sort((a, b) -> Float.compare(b.textWidth, a.textWidth));
         return rows;
+    }
+
+    private boolean usesMinecraftFont() {
+        return this.fontMode == null || "Minecraft".equals(this.fontMode.getValue());
+    }
+
+    private FontRenderer resolveCustomFont() {
+        if (this.fontMode != null && "Product Sans".equals(this.fontMode.getValue())) {
+            return FontPresets.productSans(18.0f);
+        }
+        return FontPresets.pingfang(18.0f);
     }
 
     private String displayName(Module module) {
@@ -527,7 +539,7 @@ public class ModuleListHud extends HudElement {
 
     private void drawModuleName(DrawContext drawContext, String text, float rowX, float rowY, float rowWidth, float rowHeight,
                                 int rowIndex, int rowCount, float alpha, Alignment alignment) {
-        boolean useMcFont = this.useMinecraftFont.getValue();
+        boolean useMcFont = this.usesMinecraftFont();
         float textWidth;
         float textY;
         if (useMcFont) {
@@ -536,7 +548,7 @@ public class ModuleListHud extends HudElement {
                     - 10.0f
                     + this.paddingY.getValue().floatValue() * 0.25f;
         } else {
-            FontRenderer font = FontPresets.pingfang(18.0f);
+            FontRenderer font = this.resolveCustomFont();
             textWidth = GlHelper.getStringWidth(text, font);
             textY = rowY + (rowHeight - (float) GlHelper.getFontAscent(font)) / 2.0f
                     + this.paddingY.getValue().floatValue() * 0.25f;
@@ -557,7 +569,7 @@ public class ModuleListHud extends HudElement {
                     net.minecraft.client.gui.Font.DisplayMode.NORMAL, 0, 0xF000F0);
             bufferSource.endBatch();
         } else {
-            FontRenderer font = FontPresets.pingfang(18.0f);
+            FontRenderer font = this.resolveCustomFont();
             if (FONT_GLOW_ENABLED) {
                 int glowAlphaValue = FONT_GLOW_ALPHA;
                 float radius = FONT_GLOW_RADIUS;

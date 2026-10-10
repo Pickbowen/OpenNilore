@@ -1,5 +1,6 @@
 package client.nilore.modules.impl.player;
 
+import io.netty.buffer.Unpooled;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -10,7 +11,9 @@ import java.util.Map;
 import java.util.Random;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.inventory.ContainerScreen;
+import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.Container;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.AbstractFurnaceMenu;
@@ -18,9 +21,9 @@ import net.minecraft.world.inventory.BrewingStandMenu;
 import net.minecraft.world.inventory.ChestMenu;
 import net.minecraft.world.inventory.ClickType;
 import net.minecraft.world.inventory.FurnaceMenu;
-import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
-import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
-import net.minecraft.network.protocol.game.ServerboundContainerClickPacket;
+import net.minecraft.network.protocol.game.ClientboundPingPacket;
+import net.minecraft.network.protocol.game.ServerboundCustomPayloadPacket;
+import net.minecraft.network.protocol.game.ServerboundPongPacket;
 import net.minecraft.world.item.ArmorItem;
 import net.minecraft.world.item.AxeItem;
 import net.minecraft.world.item.BlockItem;
@@ -38,12 +41,12 @@ import net.minecraft.world.item.SwordItem;
 import client.nilore.event.impl.DisconnectEvent;
 import client.nilore.event.impl.GameTickEvent;
 import client.nilore.event.impl.MotionEvent;
+import client.nilore.event.impl.ReceivePacketEvent;
 import client.nilore.modules.Category;
 import client.nilore.modules.Module;
 import client.nilore.modules.impl.combat.KillAura;
 import client.nilore.modules.impl.movement.Scaffold;
 import client.nilore.settings.impl.BooleanSetting;
-import client.nilore.settings.impl.ModeSetting;
 import client.nilore.settings.impl.NumberSetting;
 import client.nilore.utils.animation.Timer;
 import client.nilore.utils.game.BlockUtil;
@@ -70,7 +73,7 @@ extends Module {
     private final BooleanSetting onlyBestSetting = new BooleanSetting("Only Best", true);
     private final BooleanSetting randomClickSetting = new BooleanSetting("Random Click", true);
     private final BooleanSetting smartStealingSetting = new BooleanSetting("Smart Stealing", true);
-    private final ModeSetting clickMode = new ModeSetting("Click Mode", "Windows Click", "Packet").withDefault("Windows Click");
+    private final BooleanSetting dangerSetting = new BooleanSetting("Danger", false);
     private static final Timer stealTimer;
     private static final Timer openTimer;
     private final Random random = new Random();
@@ -80,6 +83,7 @@ extends Module {
     private int pendingSlot = -1;
     private int ticksSinceMenu = 0;
     private static long clickDelayMs;
+    private int serverPing = -1;
     private int accessCount;
     private Screen lastScreen;
     private int openDelayTicks = 0;
@@ -104,6 +108,13 @@ extends Module {
     @EventTarget
     public void onDisconnect(DisconnectEvent disconnectEvent) {
         this.resetAll();
+    }
+
+    @EventTarget
+    public void onReceivePacket(ReceivePacketEvent receivePacketEvent) {
+        if (receivePacketEvent.getPacket() instanceof ClientboundPingPacket pingPacket) {
+            this.serverPing = pingPacket.getId();
+        }
     }
 
     @EventTarget
@@ -525,26 +536,19 @@ extends Module {
     private void executePendingClick() {
         if (this.pendingMenu != null && this.pendingSlot >= 0) {
             clickDelayMs = this.clickDelaySetting.getValue().longValue();
-            if (clickMode.is("Packet")) {
-                // 先本地应用点击
-                // (同步容器槽位/光标状态), 再以 Packet 形式发出 —— 避免裸发包导致本地容器
-                // 状态失步, 使后续 Smart 判空/连点选中与实际一致。stateId 需在 clicked() 之后读
-                // (clicked 会推进本地 stateId), 与 vanilla 发包时序一致。
-                ItemStack carriedItem = this.pendingMenu.getCarried().copy();
-                Int2ObjectMap<ItemStack> changedSlots = new Int2ObjectOpenHashMap<>();
-                for (int i = 0; i < this.pendingMenu.slots.size(); ++i) {
-                    ItemStack slotStack = this.pendingMenu.slots.get(i).getItem();
-                    if (!slotStack.isEmpty()) {
-                        changedSlots.put(this.pendingMenu.slots.get(i).index, slotStack.copy());
-                    }
+            if (this.pendingSlot < this.pendingMenu.slots.size()) {
+                if (this.dangerSetting.getValue() && mc.getConnection() != null) {
+                    // Reference parity: the custom payload plus a pong with the max id, both per
+                    // click. Disabler's Themis Blink emits its own pong at id 0 on a 200ms cadence,
+                    // which is a different trick on a different trigger, so this one is not folded
+                    // into it — the id and the per-slot timing are the part that has to match.
+                    PacketUtil.sendQueued(new ServerboundCustomPayloadPacket(
+                            ResourceLocation.tryBuild("minecraft", "test"), new FriendlyByteBuf(Unpooled.buffer())));
+                    PacketUtil.sendQueued(new ServerboundPongPacket(Integer.MAX_VALUE));
                 }
-                if (this.pendingSlot >= 0 && this.pendingSlot < this.pendingMenu.slots.size()) {
-                    this.pendingMenu.clicked(this.pendingSlot, 0, ClickType.QUICK_MOVE, mc.player);
-                    int stateId = this.pendingMenu.getStateId();
-                    PacketUtil.sendQueued(new ServerboundContainerClickPacket(this.pendingMenu.containerId, stateId, this.pendingSlot, 0, ClickType.QUICK_MOVE, carriedItem, changedSlots));
-                }
-            } else {
-                mc.gameMode.handleInventoryMouseClick(this.pendingMenu.containerId, this.pendingSlot, 0, ClickType.QUICK_MOVE, mc.player);
+                mc.gameMode.handleInventoryMouseClick(
+                        this.pendingMenu.containerId, this.pendingSlot,
+                        0, ClickType.QUICK_MOVE, mc.player);
             }
             openTimer.reset();
             stealTimer.reset();
@@ -564,6 +568,7 @@ extends Module {
     private void resetAll() {
         this.resetState();
         this.openDelayTicks = 0;
+        this.serverPing = -1;
     }
 
     private void resetState() {

@@ -44,6 +44,7 @@ import org.joml.Matrix4f;
 import client.nilore.ClientBase;
 import client.nilore.NiloreClient;
 import client.nilore.event.impl.RenderEvent;
+import client.nilore.event.impl.SprintEvent;
 import client.nilore.event.impl.StrafeEvent;
 import client.nilore.event.impl.TickEvent;
 import client.nilore.event.impl.WorldChangeEvent;
@@ -507,16 +508,44 @@ public class KillAura extends Module {
     }
 
     /**
-     * The reference's canCrit() gate, kept separate from {@link #canAttackNow()} because it is
-     * consulted when the sprint lock has to be released, not when a swing is queued. Velocity's
-     * reduce+delay chain requires isSprinting() to stay true for the whole counter window, so the
-     * crit path has to stand down for exactly as long as that window owns the input.
+     * The reference's canCrit() gate. While it holds, the reference drops the sprint key and clears
+     * the sprint flag from its SprintEvent handler, so the swing that follows lands as a crit
+     * instead of a sprint hit. Ported verbatim including the 3.5-block reach (12.25 squared) and the
+     * velocity interlocks, because those are what keep the release from firing at the wrong time.
      */
     public boolean canCritUnderVelocity() {
-        if (mc.player == null || target == null || NoXZMode.isCountering()) {
+        if (mc.player == null || mc.level == null || target == null) {
             return false;
         }
-        return !(NoXZMode.isInDelayWindow() && shouldKeepSprintInDelayWindow());
+        if (NoXZMode.isInDelayWindow() && shouldKeepSprintInDelayWindow()) {
+            return false;
+        }
+        if (NoXZMode.isCountering()) {
+            return false;
+        }
+        if (target.distanceToSqr(mc.player) > 12.25) {
+            return false;
+        }
+        if (mc.player.isDeadOrDying() || !this.keepSprint.getValue()) {
+            return false;
+        }
+        return !mc.player.onGround() || !mc.options.keyJump.isDown();
+    }
+
+    /**
+     * SprintEvent sits right before LocalPlayer.tick() calls super.tick(), which is the only window
+     * where releasing the sprint still produces a STOP_SPRINTING packet before the attack. Later
+     * than this the client has already moved with the +30% sprint attribute for the tick.
+     */
+    @EventTarget
+    public void onSprint(SprintEvent sprintEvent) {
+        if (!this.canCritUnderVelocity()) {
+            return;
+        }
+        mc.options.keySprint.setDown(false);
+        if (mc.player != null && mc.player.isSprinting()) {
+            mc.player.setSprinting(false);
+        }
     }
 
     /** No jumping between a release and the sprint coming back. */
@@ -576,7 +605,11 @@ public class KillAura extends Module {
 
     public static boolean shouldStopSprint() {
         KillAura aura = INSTANCE;
-        if (aura == null || !aura.isEnabled() || !aura.keepSprint.getValue()) return false;
+        if (aura == null) return false;
+        // The reference checks nothing about the aura being enabled - canCrit() stands on its own.
+        // With the aura off there is no target, so the reach gate never opens on its own.
+        if (aura.canCritUnderVelocity()) return true;
+        if (!aura.keepSprint.getValue()) return false;
         if (aura.sprintCancelled) return false;
         if (mc.player == null || target == null) return false;
         if (mc.player.isUsingItem()) return false;

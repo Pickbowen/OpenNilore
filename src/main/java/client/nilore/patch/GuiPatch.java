@@ -104,30 +104,48 @@ public class GuiPatch {
             hud.markPositionLoaded();
         }
 
-        // ── glow ──
+        float radius = Math.min(hud.backgroundRadius.getValue().floatValue(), Math.min(cw, ch) * 0.5f);
+
+        // The scoreboard is drawn from the middle of the vanilla HUD pass, where a half-built GUI
+        // batch is still pending. Flush it before the immediate-mode glow/blur draws below, so they
+        // cannot interleave with it and the blur captures everything drawn so far this frame.
+        guiGraphics.flush();
+
+        // ── glow (outer ring only — never fills the centre, so it can sit behind a
+        //      translucent background without brightening it) ──
         if (hud.glowEnabled.getValue()) {
             int gRadius = hud.glowRadius.getValue().intValue();
             int gAlpha = hud.glowAlpha.getValue().intValue();
             if (gAlpha > 0 && gRadius > 0) {
-                RenderUtil.drawShadow(guiGraphics.pose(), dx, dy, cw, ch, gRadius, (gAlpha << 24) | 0x000000);
-                RenderUtil.enableBlend();
+                DrawContext.getRoundedRectShader().drawGlow(guiGraphics.pose().last().pose(),
+                        dx, dy, dx + cw, dy + ch,
+                        radius, radius, radius, radius,
+                        gRadius, gAlpha << 24);
             }
         }
 
-        // ── background (rounded rect via DrawContext) ──
+        // ── background / blur ──
+        if (hud.blurEnabled.getValue()) {
+            float opacity = hud.blurOpacity.getValue().floatValue();
+            if (opacity > 0.0f) {
+                RenderUtil.drawBlurredRect(guiGraphics.pose(), dx, dy, cw, ch, radius,
+                        hud.blurStrength.getValue().floatValue(), opacity, 0);
+            }
+        }
         if (hud.backgroundEnabled.getValue()) {
             int alpha = hud.backgroundAlpha.getValue().intValue();
-            float radius = hud.backgroundRadius.getValue().floatValue();
-            Paint bgPaint = new Paint();
-            bgPaint.setColor((alpha << 24) | 0x000000);
-            bgPaint.setAntialias(true);
-            DrawContext dc = new DrawContext(guiGraphics, guiGraphics.pose());
-            if (radius <= 0.0f) {
-                dc.drawRectXYWH(dx, dy, cw, ch, bgPaint);
-            } else {
-                dc.drawRoundedRect(RoundedRectangle.ofXYWHR(dx, dy, cw, ch, radius), bgPaint);
+            if (alpha > 0) {
+                Paint bgPaint = new Paint();
+                bgPaint.setColor((alpha << 24) | 0x000000);
+                bgPaint.setAntialias(true);
+                DrawContext dc = new DrawContext(guiGraphics, guiGraphics.pose());
+                if (radius <= 0.0f) {
+                    dc.drawRectXYWH(dx, dy, cw, ch, bgPaint);
+                } else {
+                    dc.drawRoundedRect(RoundedRectangle.ofXYWHR(dx, dy, cw, ch, radius), bgPaint);
+                }
+                bgPaint.close();
             }
-            bgPaint.close();
         }
 
         // ── title (centered) ──
