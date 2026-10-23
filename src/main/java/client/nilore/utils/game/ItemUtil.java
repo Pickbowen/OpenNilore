@@ -48,13 +48,28 @@ extends ClientBase {
         return item == Items.TNT || item == Items.COBWEB;
     }
     public static boolean hasServerItem() {
-        return ItemUtil.getAllItems().stream().anyMatch(itemStack -> {
-            if (!itemStack.isEmpty()) {
-                String displayName = itemStack.getDisplayName().getString();
-                return displayName.contains("长按点击") || displayName.contains("点击使用") || displayName.contains("离开游戏") || displayName.contains("选择一个队伍") || displayName.contains("再来一局");
-            }
+        if (mc.player == null) {
             return false;
-        });
+        }
+        // KillAura calls this every tick. The old version built a 40-slot list and ran stream +
+        // getDisplayName().getString() over every entry - a component translation per slot, per
+        // tick. Only a renamed stack can carry those menu labels, so filter on the cheap flag first.
+        net.minecraft.world.entity.player.Inventory inventory = mc.player.getInventory();
+        return matchesServerMenu(inventory.items) || matchesServerMenu(inventory.armor);
+    }
+
+    private static boolean matchesServerMenu(List<ItemStack> stacks) {
+        for (int i = 0, size = stacks.size(); i < size; i++) {
+            ItemStack stack = stacks.get(i);
+            if (stack.isEmpty() || !stack.hasCustomHoverName()) continue;
+            String displayName = stack.getDisplayName().getString();
+            if (displayName.contains("长按点击") || displayName.contains("点击使用")
+                    || displayName.contains("离开游戏") || displayName.contains("选择一个队伍")
+                    || displayName.contains("再来一局")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static int getSlot(ItemStack itemStack) {

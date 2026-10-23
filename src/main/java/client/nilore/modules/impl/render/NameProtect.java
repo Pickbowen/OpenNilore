@@ -34,17 +34,18 @@ extends Module {
     }
 
     public static String replacePlayerName(String string) {
-        if (INSTANCE == null) {
+        if (INSTANCE == null || !INSTANCE.isEnabled()) {
             return string;
         }
         if (mc.player == null) {
             return string;
         }
         String string2 = mc.player.getName().getString();
-        String string3=INSTANCE.generateRandomName();
-        if (INSTANCE.modeSetting.is("Hidden")) {
-            string3="Hidden";
-        }
+        // Hidden needs no lookups at all; the random branch used to run its online-player scan on
+        // every call, which the player list does once per entry per tick.
+        String string3 = INSTANCE.modeSetting.is("Hidden")
+                ? "Hidden"
+                : INSTANCE.generateRandomName();
         if (string3 != null && !string3.equals(string2) && string.contains(string2)) {
             return StringUtils.replace(string, string2, string3);
         }
@@ -52,7 +53,7 @@ extends Module {
     }
 
     public static String getProtectedName() {
-        if (mc.player == null) {
+        if (mc.player == null || INSTANCE == null || !INSTANCE.isEnabled()) {
             return mc.player != null ? mc.player.getName().getString() : "Player";
         }
         String string = mc.player.getName().getString();

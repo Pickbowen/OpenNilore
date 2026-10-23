@@ -181,6 +181,13 @@ extends AntiKBMode {
             this.restoreJumpKey();
             return;
         }
+        // Same rule as JumpResetMode: only press the key on a tick where vanilla would accept it,
+        // otherwise the pending jump is spent while airborne and nothing happens.
+        if (!canJumpNow(mc.player)) {
+            this.jumpTicks = 0;
+            this.restoreJumpKey();
+            return;
+        }
         this.jumpKeyForced = true;
         mc.options.keyJump.setDown(true);
         --this.jumpTicks;

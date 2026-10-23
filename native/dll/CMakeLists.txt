@@ -19,6 +19,7 @@ add_library(OpenZen SHARED
     src/diagnostics.cpp
     src/hwid_hook.cpp
     src/hwid_wmi.cpp
+    src/spoof_values.cpp
     res/openzen.rc
 )
 

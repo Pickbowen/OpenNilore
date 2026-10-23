@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "spoof_values.h"
+
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "oleaut32.lib")
 #pragma comment(lib, "psapi.lib")
@@ -27,46 +29,8 @@ CoCreateInstance_t g_real_CoCreate = nullptr;
 bool g_wmi_active = false;
 std::mutex g_mtx;
 
-// Per-run fake values (shared with hwid_hook for consistency).
-std::wstring g_fake_uuid;        // Win32_ComputerSystemProduct.UUID
-std::wstring g_fake_serial;      // Win32_ComputerSystemProduct.SerialNumber
-std::wstring g_fake_machine_guid;// same as registry MachineGuid
-std::wstring g_fake_processor_id;   // Win32_Processor.ProcessorId
-std::wstring g_fake_volume_serial;  // Win32_LogicalDisk.VolumeSerialNumber
-
-// ---- RtlGenRandom (SystemFunction036) ----
-bool rtl_random(BYTE* out, ULONG n) {
-    using RtlGenRandom_t = BOOLEAN(WINAPI*)(PVOID, ULONG);
-    static RtlGenRandom_t pRtl = reinterpret_cast<RtlGenRandom_t>(
-        GetProcAddress(GetModuleHandleA("advapi32.dll"), "SystemFunction036"));
-    if (!pRtl) return false;
-    return pRtl(out, n) != FALSE;
-}
-
-std::wstring random_hex(size_t bytes) {
-    static const wchar_t* kHex = L"0123456789ABCDEF";
-    std::wstring s; s.reserve(bytes*2);
-    BYTE buf[64] = {0};
-    if (!rtl_random(buf, (ULONG)bytes)) {
-        for (size_t i=0;i<bytes;i++) buf[i] = (BYTE)(rand() & 0xFF);
-    }
-    for (size_t i=0;i<bytes;i++) {
-        s.push_back(kHex[buf[i]>>4]); s.push_back(kHex[buf[i]&0xF]);
-    }
-    return s;
-}
-
-std::wstring fake_uuid() {
-    // WMI UUID format: "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
-    auto h = random_hex(16);
-    return h.substr(0,8) + L"-" + h.substr(8,4) + L"-" + h.substr(12,4)
-         + L"-" + h.substr(16,4) + L"-" + h.substr(20,12);
-}
-
-std::wstring fake_serial() {
-    // SMBIOS serial: usually alphanumeric, 6-12 chars. "OENZ" + 8 hex.
-    return L"OENZ" + random_hex(4);
-}
+// The fake set lives in spoof_values.cpp so the registry hook and this one
+// report the same machine, and so each device class gets its own value.
 
 // ---- fake IWbemClassObject ------------------------------------------------
 // We forward the real one but override Get() for fingerprint properties.
@@ -81,44 +45,125 @@ using WbemGetFn = HRESULT (STDMETHODCALLTYPE*)(IWbemClassObject*, LPCWSTR, long,
 
 WbemGetFn g_real_wbem_get = nullptr;
 void** g_patched_wbem_vtable = nullptr;
-constexpr size_t kWbemVtableSlots = 32;   // 27 real slots + margin
+constexpr size_t kWbemVtableSlots = 27;   // IUnknown(3) + IWbemClassObject(24)
 constexpr size_t kWbemGetSlot = 4;        // IUnknown(3) + GetQualifierSet(1)
+std::once_flag g_vtable_once;
 
-bool fill_fingerprint(LPCWSTR name, VARIANT* pVal, CIMTYPE* pType) {
-    if (!name || !pVal) return false;
-    const std::wstring* fake = nullptr;
-    if (_wcsicmp(name, L"UUID") == 0)                 fake = &g_fake_uuid;
-    else if (_wcsicmp(name, L"SerialNumber") == 0)     fake = &g_fake_serial;
-    else if (_wcsicmp(name, L"IdentifyingNumber") == 0) fake = &g_fake_serial;
-    else if (_wcsicmp(name, L"MachineGUID") == 0)      fake = &g_fake_machine_guid;
-    else if (_wcsicmp(name, L"ProcessorId") == 0)      fake = &g_fake_processor_id;
-    else if (_wcsicmp(name, L"VolumeSerialNumber") == 0) fake = &g_fake_volume_serial;
-    if (!fake || fake->empty()) return false;
+/** Class of the object being read, e.g. "Win32_BIOS". Empty when unavailable. */
+std::wstring wbem_class(IWbemClassObject* obj) {
+    VARIANT v;
+    VariantInit(&v);
+    std::wstring out;
+    if (g_real_wbem_get
+            && SUCCEEDED(g_real_wbem_get(obj, L"__CLASS", 0, &v, nullptr, nullptr))
+            && V_VT(&v) == VT_BSTR && V_BSTR(&v)) {
+        out.assign(V_BSTR(&v), SysStringLen(V_BSTR(&v)));
+    }
+    VariantClear(&v);
+    return out;
+}
+
+bool assign_string(VARIANT* pVal, CIMTYPE* pType, long* plFlavor, const std::wstring& fake) {
+    if (fake.empty()) return false;
     VariantInit(pVal);
     V_VT(pVal) = VT_BSTR;
-    V_BSTR(pVal) = SysAllocString(fake->c_str());
+    V_BSTR(pVal) = SysAllocString(fake.c_str());
+    if (!V_BSTR(pVal)) {
+        VariantInit(pVal);
+        return false;
+    }
     if (pType) *pType = CIM_STRING;
+    if (plFlavor) *plFlavor = WBEM_FLAVOR_FLAG_PROPAGATE_TO_INSTANCE;
     return true;
+}
+
+/**
+ * Per-class dispatch. Matching on the property name alone made every class that has
+ * a SerialNumber report the same value - on a real machine the BIOS, the board and
+ * the disk never share one - so the class decides which fake is returned.
+ */
+bool fill_fingerprint(const std::wstring& cls, LPCWSTR name, VARIANT* pVal,
+                      CIMTYPE* pType, long* plFlavor) {
+    if (!name || !pVal) return false;
+    const SpoofValues& v = values();
+
+    if (cls == L"Win32_ComputerSystemProduct") {
+        if (_wcsicmp(name, L"UUID") == 0)              return assign_string(pVal, pType, plFlavor, v.product_uuid);
+        if (_wcsicmp(name, L"IdentifyingNumber") == 0) return assign_string(pVal, pType, plFlavor, v.system_serial);
+        return false;
+    }
+    if (cls == L"Win32_BIOS") {
+        if (_wcsicmp(name, L"SerialNumber") == 0)      return assign_string(pVal, pType, plFlavor, v.bios_serial);
+        return false;
+    }
+    if (cls == L"Win32_BaseBoard") {
+        if (_wcsicmp(name, L"SerialNumber") == 0)      return assign_string(pVal, pType, plFlavor, v.baseboard_serial);
+        return false;
+    }
+    if (cls == L"Win32_DiskDrive" || cls == L"Win32_PhysicalMedia") {
+        if (_wcsicmp(name, L"SerialNumber") == 0)      return assign_string(pVal, pType, plFlavor, v.disk_serial);
+        return false;
+    }
+    if (cls == L"Win32_Processor") {
+        if (_wcsicmp(name, L"ProcessorId") == 0)       return assign_string(pVal, pType, plFlavor, v.processor_id);
+        return false;
+    }
+    // Win32_LogicalDisk.VolumeSerialNumber is a string; Win32_Volume.SerialNumber is a
+    // UINT32, so that class is deliberately not answered with a BSTR here.
+    if (cls == L"Win32_LogicalDisk") {
+        if (_wcsicmp(name, L"VolumeSerialNumber") == 0)
+            return assign_string(pVal, pType, plFlavor, v.volume_serial);
+        return false;
+    }
+    if (cls == L"Win32_ComputerSystem") {
+        if (_wcsicmp(name, L"Name") == 0)              return assign_string(pVal, pType, plFlavor, v.computer_name);
+        return false;
+    }
+    if (cls == L"Win32_OperatingSystem") {
+        if (_wcsicmp(name, L"SerialNumber") == 0)      return assign_string(pVal, pType, plFlavor, v.product_id);
+        return false;
+    }
+
+    // Unknown class: only names that cannot belong to anything else.
+    if (_wcsicmp(name, L"UUID") == 0)                  return assign_string(pVal, pType, plFlavor, v.product_uuid);
+    if (_wcsicmp(name, L"ProcessorId") == 0)           return assign_string(pVal, pType, plFlavor, v.processor_id);
+    return false;
+}
+
+bool is_fingerprint_name(LPCWSTR name) {
+    static const wchar_t* kNames[] = {
+        L"UUID", L"SerialNumber", L"IdentifyingNumber", L"ProcessorId",
+        L"VolumeSerialNumber", L"Name", nullptr,
+    };
+    for (int i = 0; kNames[i]; ++i) {
+        if (_wcsicmp(name, kNames[i]) == 0) return true;
+    }
+    return false;
 }
 
 HRESULT STDMETHODCALLTYPE HookWbemGet(IWbemClassObject* self, LPCWSTR name, long flags,
                                       VARIANT* pVal, CIMTYPE* pType, long* plFlavor) {
-    if (fill_fingerprint(name, pVal, pType)) return WBEM_S_NO_ERROR;
+    if (g_real_wbem_get && name && pVal && is_fingerprint_name(name)) {
+        if (fill_fingerprint(wbem_class(self), name, pVal, pType, plFlavor)) {
+            return WBEM_S_NO_ERROR;
+        }
+    }
     return g_real_wbem_get(self, name, flags, pVal, pType, plFlavor);
 }
 
-// Idempotent: first call builds the patched vtable, every call re-points the object.
+// Idempotent: the first call builds the patched vtable, every call re-points the
+// object. call_once because WMI queries run on whatever thread asked for them.
 void hook_wbem_object(IWbemClassObject* obj) {
     if (!obj) return;
     void** vt = *reinterpret_cast<void***>(obj);
     if (!vt) return;
-    if (!g_patched_wbem_vtable) {
+    std::call_once(g_vtable_once, [vt] {
         auto* copy = new void*[kWbemVtableSlots];
         for (size_t i = 0; i < kWbemVtableSlots; ++i) copy[i] = vt[i];
         g_real_wbem_get = reinterpret_cast<WbemGetFn>(vt[kWbemGetSlot]);
         copy[kWbemGetSlot] = reinterpret_cast<void*>(&HookWbemGet);
         g_patched_wbem_vtable = copy;
-    }
+    });
     *reinterpret_cast<void***>(obj) = g_patched_wbem_vtable;
 }
 
@@ -287,7 +332,9 @@ bool patch_iat_co_create(HMODULE mod) {
     while (desc->Name) {
         const char* dllName = reinterpret_cast<const char*>(
             reinterpret_cast<const BYTE*>(mod) + desc->Name);
-        if (_stricmp(dllName, "ole32.dll") != 0) { ++desc; continue; }
+        if (_stricmp(dllName, "ole32.dll") != 0 && _stricmp(dllName, "combase.dll") != 0) {
+            ++desc; continue;
+        }
 
         // Same guard as the registry hook: no import-name table means the slots are
         // resolved addresses, so walking them as names faults.
@@ -336,13 +383,8 @@ bool install_wmi() {
         GetProcAddress(ole32, "CoCreateInstance"));
     if (!g_real_CoCreate) return false;
 
-    // Generate one stable fake set for this process run (shared semantics
-    // with hwid_hook's MachineGuid).
-    g_fake_uuid         = fake_uuid();
-    g_fake_serial       = fake_serial();
-    g_fake_machine_guid = L"{" + fake_uuid() + L"}";
-    g_fake_processor_id = random_hex(8);      // 16 hex, like "BFEBFBFF000XXXXX"
-    g_fake_volume_serial = random_hex(4);     // 8 hex upper
+    // Same set the registry hook serves, generated on first access.
+    values();
 
     HMODULE mods[512];
     DWORD cb = 0;

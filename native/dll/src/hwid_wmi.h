@@ -18,9 +18,9 @@
 //     thin proxy wrapping the real IWbemLocator.
 //   * The proxy chain (IWbemLocator -> IWbemServices -> IEnumWbemClassObject
 //     -> IWbemClassObject) forwards every vtable method to the real object,
-//     except IWbemClassObject::Get: when the property name matches a
-//     fingerprint field (UUID / SerialNumber / IdentifyingNumber /
-//     MachineGUID), we return the per-run random fake instead of the real one.
+//     except IWbemClassObject::Get: the object's own __CLASS decides which
+//     fake is returned, so Win32_BIOS / Win32_BaseBoard / Win32_DiskDrive each
+//     report a different serial instead of one shared value.
 //   * If the IAT patch finds no importer, we silently disable (default OFF).
 //
 // This complements hwid_hook.cpp (registry path). Between the two, classic

@@ -43,6 +43,7 @@ import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 import client.nilore.ClientBase;
 import client.nilore.NiloreClient;
+import client.nilore.event.impl.PostMotionEvent;
 import client.nilore.event.impl.RenderEvent;
 import client.nilore.event.impl.SprintEvent;
 import client.nilore.event.impl.StrafeEvent;
@@ -81,6 +82,11 @@ public class KillAura extends Module {
     public static Entity target;
     public static Entity aimingTarget;
     public static List<Entity> targetList = new ArrayList<>();
+
+    /** Hard ceiling on everything reach related: the aura must never validate beyond 3.0 blocks. */
+    private static final double MAX_REACH = 3.0;
+    /** Per-tick pull of the organic aim offsets back toward the aim point (AR(1) decay). */
+    private static final float ORGANIC_DECAY = 0.85f;
 
     private static final ResourceLocation NURIK_CAPTURE_TEXTURE = ResourceLocation.tryParse("nilore:nurik/capture");
     private static final String NURIK_CAPTURE_ASSET = "/assets/nilore/nurik/capture.png";
@@ -182,10 +188,20 @@ public class KillAura extends Module {
         }
         Rotation base = RotationUtil.rotationToPoint(mc.player.getEyePosition(), aimPoint);
 
-        this.organicYawOffset += (float) ((this.organicRandom.nextDouble() - 0.5)
+        // Both offsets used to be plain accumulations - a random walk with no restoring force - so
+        // over a long fight they drifted out to the hitbox edge and every shot after that sat on the
+        // exact boundary the server checks against. The decay pulls them back toward the aim point
+        // and the clamp keeps the worst case inside the 0.1 inflation the attack gate allows.
+        this.organicYawOffset = this.organicYawOffset * ORGANIC_DECAY
+                + (float) ((this.organicRandom.nextDouble() - 0.5)
                 * this.rotationDrift.getValue().doubleValue());
-        this.organicPitchOffset += (float) ((this.organicRandom.nextDouble() - 0.5) * 2.0
+        this.organicPitchOffset = this.organicPitchOffset * ORGANIC_DECAY
+                + (float) ((this.organicRandom.nextDouble() - 0.5) * 2.0
                 * this.rotationJitter.getValue().doubleValue());
+        float yawLimit = (float) (this.rotationDrift.getValue().doubleValue() * 2.0);
+        float pitchLimit = (float) this.rotationJitter.getValue().doubleValue();
+        this.organicYawOffset = Mth.clamp(this.organicYawOffset, -yawLimit, yawLimit);
+        this.organicPitchOffset = Mth.clamp(this.organicPitchOffset, -pitchLimit, pitchLimit);
 
         Rotation jittered = new Rotation(base.getYaw() + this.organicYawOffset,
                 Mth.clamp(base.getPitch() + this.organicPitchOffset, -90.0f, 90.0f));
@@ -365,6 +381,7 @@ public class KillAura extends Module {
         double reach = Mth.clamp(this.reach.getValue().doubleValue(),
                 this.reach.getMin().doubleValue(),
                 this.reach.getMax().doubleValue());
+        reach = Math.min(reach, MAX_REACH);
         RotationUtil.setReachLimit(reach);
         if (mc.screen instanceof AbstractContainerScreen
                 || ItemUtil.hasServerItem()
@@ -431,26 +448,33 @@ public class KillAura extends Module {
                 Rotation from = RotationHandler.prevRotation != null
                         ? RotationHandler.prevRotation
                         : new Rotation(mc.player.getYRot(), mc.player.getXRot());
-                this.rotation = this.computeRotation(this.aimingTarget, from, speed,
-                        Math.max(reach, 3.05));
+                this.rotation = this.computeRotation(this.aimingTarget, from, speed, MAX_REACH);
             }
         } else {
             this.rotation = null;
         }
 
-        this.attackTick();
-
-        if (!this.canAttackNow()) {
-            return;
-        }
-        // No antikb coupling here on purpose: the aura keeps its own APS while the
-        // antikb is countering. It used to be throttled here and blocked outright in
-        // attackTick/canAttackNow during the counter window, which made the aura go
-        // dead whenever the antikb engaged. Double hits are still impossible - both
-        // attack paths take attackAndLock's per-tick lock.
+        // The gate runs once per tick, inside attackTick at the tail of Minecraft.tick - after the
+        // move packet, which is what the server validates against. Checking it here as well only
+        // paid for a second block clip plus entity query per tick to get the same answer.
         float apsValue = this.maxAps.getValue().floatValue();
         float minApsValue = this.minAps.getValue().floatValue();
-        this.attacks += (float)(MathUtil.randomDouble(minApsValue, apsValue) / 20.0);
+        this.attacks = Math.min(this.attacks + (float)(MathUtil.randomDouble(minApsValue, apsValue) / 20.0), 2.0f);
+    }
+
+    /**
+     * The swing runs at the tail of Minecraft.tick, after LocalPlayer.tick has already queued the
+     * move packet. Firing it from TickEvent (the head of the same method) put the interact packet
+     * ahead of the rotation it was aimed with, so the server validated every edge hit against the
+     * previous tick's yaw - the animation played and no damage landed. Sending order move -> interact
+     * is also what a real client produces.
+     */
+    @EventTarget
+    public void onPostMotion(PostMotionEvent event) {
+        if (!NiloreClient.isReady()) {
+            return;
+        }
+        this.attackTick();
     }
 
     private void attackTick() {
@@ -460,11 +484,19 @@ public class KillAura extends Module {
             return;
         }
         if (!this.canAttackNow()) {
-            this.attacks = 0.0f;
+            // A gate that closes for one tick must not throw away the charge built up over the
+            // previous two: that turned every hitch into a full attack cycle of downtime. Cap it
+            // instead, so the swing fires the moment the gate reopens.
+            this.attacks = Math.min(this.attacks, 1.0f);
             return;
         }
         while (this.attacks >= 1.0f) {
-            this.doAttack();
+            // Only a swing that actually left the client pays for itself. The per-tick lock can be
+            // taken by the antikb counter or Critical first, and charging the cost anyway pushed
+            // the accumulator negative - the next hit then had to make up the debt.
+            if (!this.doAttack()) {
+                break;
+            }
             this.attacks -= 1.0f;
         }
     }
@@ -476,11 +508,15 @@ public class KillAura extends Module {
         if (target == null || !targetList.contains(target)) {
             return false;
         }
-        double reachNow = Math.max(this.reach.getValue().doubleValue(),
-                RotationUtil.getReachLimit());
+        double reachNow = Math.min(Math.max(this.reach.getValue().doubleValue(),
+                RotationUtil.getReachLimit()), MAX_REACH);
+        // Sight and distance now share one cap: the raycast used to allow the full reach while
+        // isWithinReach already subtracted the margin, so a target sitting in that last strip passed
+        // the visibility check and was then dropped by the distance gate every few ticks.
+        double sightRange = reachNow - RotationUtil.REACH_MARGIN;
         // Through Walls only skips the block-clipped raycast inside Through Walls Range; beyond
         // it the attack still has to see the target, otherwise the range slider is never read.
-        if (!this.ignoreBlocksAt(target) && !RotationUtil.isLookingAt(target, reachNow, 0.1f)) {
+        if (!this.ignoreBlocksAt(target) && !RotationUtil.isLookingAt(target, sightRange, 0.1f)) {
             return false;
         }
         if (this.delayMode.is("1.9") && mc.player.getAttackStrengthScale(0.0f) < 0.95f) {
@@ -715,7 +751,7 @@ public class KillAura extends Module {
         }
         // Gathering radius, not the hit radius: reach is enforced later (isLookingAt / isWithinReach),
         // this only decides who counts as "the opponent" for the sprint and crit machinery.
-        AABB box = mc.player.getBoundingBox().inflate(Math.max(this.reach.getValue().doubleValue(), 3.05));
+        AABB box = mc.player.getBoundingBox().inflate(MAX_REACH);
         // Plain loop, one pass, no stream: this runs every tick for the whole fight, and the old
         // version built a parallel-stream pipeline (ForkJoin tasks on the render thread), collected a
         // list, then made three more passes over it. Same filter set, same order (the sorts below are

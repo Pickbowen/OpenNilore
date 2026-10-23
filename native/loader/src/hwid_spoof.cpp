@@ -4,7 +4,9 @@
 #include <winreg.h>
 
 #include <algorithm>
+#include <cwchar>
 #include <cwctype>
+#include <map>
 #include <mutex>
 #include <random>
 #include <sstream>
@@ -173,17 +175,55 @@ bool spoof_reg_read(const wchar_t* key_path, const wchar_t* value_name,
     return false;
 }
 
-const wchar_t* kFingerprintKeys[] = {
-    L"HKLM\\SOFTWARE\\Microsoft\\Cryptography\\MachineGuid",
-    L"HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\ProductId",
-    L"HKLM\\SYSTEM\\CurrentControlSet\\Control\\SystemInformation\\BIOS\\BaseBoardSerial",
-    L"HKLM\\SYSTEM\\CurrentControlSet\\Control\\ComputerName\\ComputerName\\ComputerName",
-    nullptr,
+std::wstring generate_product_id() {
+    // 5-3-7-5 digits, OEM channel. Must not be empty: a blank ProductId is
+    // itself a fingerprint, no real machine reports one.
+    auto digits = [](size_t n) {
+        std::wstring s;
+        s.reserve(n);
+        for (auto b : random_bytes(n)) s.push_back(static_cast<wchar_t>(L'0' + b % 10));
+        return s;
+    };
+    return digits(5) + L"-OEM-" + digits(7) + L"-" + digits(5);
+}
+
+struct FingerprintKey {
+    const wchar_t* key_suffix;   // matched against the tail of the key path
+    const wchar_t* value_name;
 };
 
-// Per-process cache of the last generated spoof value so repeated reads within
-// a run are consistent (matches what a real machine would observe).
-std::wstring g_cur;
+// VolumeSerialNumber is deliberately absent: it is not a registry value on a
+// real machine (it comes from GetVolumeInformation / Win32_LogicalDisk).
+const FingerprintKey kFingerprints[] = {
+    { L"SOFTWARE\\MICROSOFT\\CRYPTOGRAPHY",   L"MachineGuid" },
+    { L"WINDOWS NT\\CURRENTVERSION",          L"ProductId" },
+    { L"CONTROL\\COMPUTERNAME\\COMPUTERNAME", L"ComputerName" },
+    { nullptr, nullptr },
+};
+
+bool ci_ends_with(const std::wstring& s, const wchar_t* suffix) {
+    size_t n = std::wcslen(suffix);
+    if (s.size() < n) return false;
+    for (size_t i = 0; i < n; ++i) {
+        if (std::towlower(s[s.size() - n + i]) != std::towlower(suffix[i])) return false;
+    }
+    return true;
+}
+
+// One value per name for the whole run: a scanner that reads the same key
+// twice must see the same string, otherwise the spoof is obvious.
+std::mutex g_cache_mutex;
+std::map<std::wstring, std::wstring> g_cache;
+
+std::wstring cached(const wchar_t* name, std::wstring (*gen)()) {
+    std::lock_guard<std::mutex> lk(g_cache_mutex);
+    auto it = g_cache.find(name);
+    if (it == g_cache.end()) {
+        it = g_cache.emplace(name, gen()).first;
+    }
+    return it->second;
+}
+
 } // namespace
 
 // The loader-visible entry point for the spoof: given a read request, decide
@@ -191,34 +231,19 @@ std::wstring g_cur;
 // Returns false if the request is not a fingerprint key (let original path
 // proceed).
 bool intercept(const wchar_t* key, const wchar_t* value, std::wstring& out_spoof) {
-    // NOTE: `ci_equal` moves to lowercase on BOTH sides, so an attacker
-    // fingerprinting the *loader's* own registry path (this module is compiled
-    // into the loader process) sees the same spoof value the injected process
-    // sees — keeps the loader's static reading consistent with the target.
-    for (const wchar_t* const* k = kFingerprintKeys; *k; ++k) {
-        if (ci_equal(key, *k)) {
-            if (ci_equal(value, L"MachineGuid")) {
-                g_cur = generate_machine_guid();
-                out_spoof = g_cur;
-                return true;
-            }
-            if (ci_equal(value, L"ProductId")) {
-                g_cur = L"";
-                out_spoof = g_cur;
-                return true;
-            }
-            if (ci_equal(value, L"VolumeSerialNumber")) {
-                g_cur = generate_volume_serial();
-                out_spoof = g_cur;
-                return true;
-            }
-            if (ci_equal(value, L"ComputerName")) {
-                g_cur = generate_computer_name();
-                out_spoof = g_cur;
-                return true;
-            }
-            return false;
+    if (!value) return false;
+    std::wstring keyStr = key ? key : L"";
+    for (const FingerprintKey* f = kFingerprints; f->value_name; ++f) {
+        if (!ci_equal(keyStr, f->key_suffix) && !ci_ends_with(keyStr, f->key_suffix)) continue;
+        if (!ci_equal(value, f->value_name)) continue;
+        if (ci_equal(value, L"MachineGuid")) {
+            out_spoof = cached(L"MachineGuid", generate_machine_guid);
+        } else if (ci_equal(value, L"ProductId")) {
+            out_spoof = cached(L"ProductId", generate_product_id);
+        } else {
+            out_spoof = cached(L"ComputerName", generate_computer_name);
         }
+        return true;
     }
     return false;
 }

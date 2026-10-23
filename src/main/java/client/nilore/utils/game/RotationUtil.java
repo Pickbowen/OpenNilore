@@ -531,7 +531,7 @@ extends ClientBase {
 
     /** Kept under the reach limit: while a knockback is withheld the server measures from a position
      *  our client has not reached yet, and Grim's own offset for that ran around 0.03. */
-    private static final double REACH_MARGIN = 0.05;
+    public static final double REACH_MARGIN = 0.05;
 
     public static boolean isWithinReach(Entity entity) {
         if (entity == null || mc.player == null) {

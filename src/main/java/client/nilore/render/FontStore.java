@@ -6,6 +6,10 @@ import org.jetbrains.annotations.NotNull;
 import client.nilore.utils.misc.Assets;
 
 public class FontStore {
+    /** Same ttf, parsed once: the store used to run Font.createFont per size, which re-encoded
+     *  the 10.7 MB CJK file twice and every other family two to three times on class init. */
+    private static final java.util.Map<String, Font> BASE_FONTS = new java.util.HashMap<>();
+
     public static CustomFont OPENSANS_16 = loadFont(16.0f, "opensans.ttf");
     public static CustomFont OPENSANS_18 = loadFont(18.0f, "opensans.ttf");
     public static CustomFont PINGFANG_16 = loadFont(16.0f, "pingfang_sc_regular.ttf");
@@ -26,13 +30,21 @@ public class FontStore {
 
     @NotNull
     public static CustomFont loadFont(float size, String name) {
+        Font base = BASE_FONTS.computeIfAbsent(name, FontStore::parseFont);
+        if (base == null) {
+            return new CustomFont(new Font("SansSerif", 0, (int)(size / 2)), size / 2.0f);
+        }
+        return new CustomFont(base.deriveFont(0, size / 2.0f), size / 2.0f);
+    }
+
+    private static Font parseFont(String name) {
         try (InputStream stream = Assets.open("/assets/nilore/fonts/" + name)) {
             if (stream == null) {
-                throw new java.io.IOException("Font not found: " + name);
+                return null;
             }
-            return new CustomFont(Font.createFont(Font.TRUETYPE_FONT, stream).deriveFont(0, size / 2.0f), size / 2.0f);
+            return Font.createFont(Font.TRUETYPE_FONT, stream);
         } catch (Exception e) {
-            return new CustomFont(new Font("SansSerif", 0, (int)(size / 2)), size / 2.0f);
+            return null;
         }
     }
 

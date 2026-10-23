@@ -71,6 +71,7 @@ public class ModuleManager extends ClientBase {
     private final Map<String, Module> modulesByName = new ConcurrentHashMap<>();
     private volatile List<Module> moduleSnapshot = List.of();
     private volatile Map<Category, List<Module>> modulesByCategory = Map.of();
+    private volatile boolean cachesDirty = true;
 
     public ModuleManager() {
         NiloreClient.getInstance().getEventBus().register(this);
@@ -162,7 +163,9 @@ public class ModuleManager extends ClientBase {
         this.modulesByClass.put(module.getClass(), module);
         this.modulesByName.put(normalizeName(module.getName()), module);
         module.registerSettings();
-        this.rebuildCaches();
+        // Rebuilding on every registration made the snapshot O(n^2): ~80 registrations each
+        // re-copied the list and re-sorted seven categories. Mark dirty and rebuild on read.
+        this.cachesDirty = true;
     }
 
     // 索引键是去掉空格的模块名；查询键沿用原先的行为，不对入参做去空格处理。
@@ -183,11 +186,20 @@ public class ModuleManager extends ClientBase {
     }
 
     public List<Module> getModules() {
+        this.ensureCaches();
         return this.moduleSnapshot;
     }
 
     public List<Module> getModulesByCategory(Category category) {
+        this.ensureCaches();
         return this.modulesByCategory.getOrDefault(category, List.of());
+    }
+
+    private synchronized void ensureCaches() {
+        if (this.cachesDirty) {
+            this.rebuildCaches();
+            this.cachesDirty = false;
+        }
     }
 
     private static String normalizeName(String name) {
@@ -214,7 +226,7 @@ public class ModuleManager extends ClientBase {
     @EventTarget
     public void onKey(KeyEvent event) {
         if (mc.screen == null && event.isPressed()) {
-            for (Module module : this.moduleSnapshot) {
+            for (Module module : this.getModules()) {
                 if (module.getKey() != 0 && module.getKey() == event.getKeyCode()) {
                     module.toggle();
                 }

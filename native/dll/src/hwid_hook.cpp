@@ -1,14 +1,17 @@
 #include "hwid_hook.h"
 
 #include <windows.h>
+#include <winternl.h>
 #include <psapi.h>
 
 #include <atomic>
 #include <cstring>
+#include <cwchar>
 #include <mutex>
-#include <random>
 #include <string>
 #include <vector>
+
+#include "spoof_values.h"
 
 #pragma comment(lib, "psapi.lib")
 
@@ -27,68 +30,67 @@ typedef LSTATUS (WINAPI* RegQueryValueExW_t)(
 HMODULE g_advapi = nullptr;
 RegQueryValueExW_t g_real = nullptr;
 
-// ---- per-run fake fingerprint set (stable within one process) -------------
-std::wstring g_fake_guid;
-std::wstring g_fake_product_id;
-std::wstring g_fake_volume_serial;
-std::wstring g_fake_computer_name;
+std::mutex g_mtx;
+bool       g_active = false;
 
-std::mutex   g_mtx;
-bool         g_active = false;
+// ---- registry key path -----------------------------------------------------
+// Matching on the value name alone rewrote any unrelated key that happened to
+// hold a "ProductId" or "ComputerName" value. NtQueryKey gives the opened key's
+// full path so the read can be tied to the one location Windows stores it in.
 
-// ---- helpers --------------------------------------------------------------
-std::wstring random_hex(size_t bytes) {
-    static const wchar_t* kHex = L"0123456789ABCDEF";
-    std::wstring s;
-    s.reserve(bytes * 2);
-    // RtlGenRandom (SystemFunction036) from advapi32 - no CSPRNG load.
-    using RtlGenRandom_t = BOOLEAN(WINAPI*)(PVOID, ULONG);
-    static RtlGenRandom_t pRtl = reinterpret_cast<RtlGenRandom_t>(
-        GetProcAddress(GetModuleHandleA("advapi32.dll"), "SystemFunction036"));
-    BYTE buf[64] = {0};
-    if (pRtl && bytes <= sizeof buf) pRtl(buf, (ULONG)bytes);
-    for (size_t i = 0; i < bytes; ++i) {
-        uint8_t b = pRtl ? buf[i] : (uint8_t)(rand() & 0xFF);
-        s.push_back(kHex[b >> 4]);
-        s.push_back(kHex[b & 0xF]);
+typedef NTSTATUS (NTAPI* NtQueryKey_t)(HANDLE, DWORD, PVOID, ULONG, PULONG);
+constexpr DWORD kKeyNameInformation = 3;   // KEY_INFORMATION_CLASS::KeyNameInformation
+
+struct KeyNameInfo {
+    ULONG NameLength;
+    WCHAR Name[1];
+};
+
+NtQueryKey_t nt_query_key() {
+    static NtQueryKey_t fn = reinterpret_cast<NtQueryKey_t>(
+        GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryKey"));
+    return fn;
+}
+
+bool key_path_matches(HKEY key, const wchar_t* suffix) {
+    NtQueryKey_t fn = nt_query_key();
+    if (!fn || !key) return true;   // cannot verify -> keep the historical behaviour
+    ULONG size = 0;
+    fn(key, kKeyNameInformation, nullptr, 0, &size);
+    if (size == 0 || size > 8 * 1024) return true;
+    std::vector<BYTE> buf(size + sizeof(WCHAR) * 2);
+    ULONG got = 0;
+    if (fn(key, kKeyNameInformation, buf.data(), static_cast<ULONG>(buf.size()), &got) < 0) {
+        return true;
     }
-    return s;
+    auto* info = reinterpret_cast<KeyNameInfo*>(buf.data());
+    if (info->NameLength == 0) return true;
+    std::wstring path(info->Name, info->NameLength / sizeof(WCHAR));
+    size_t n = wcslen(suffix);
+    if (path.size() < n) return false;
+    return _wcsicmp(path.c_str() + (path.size() - n), suffix) == 0;
 }
 
-std::wstring random_guid() {
-    // {XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}
-    auto h = random_hex(16);
-    std::wstring g = L"{";
-    g += h.substr(0, 8);  g += L"-";
-    g += h.substr(8, 4);  g += L"-";
-    g += h.substr(12,4);  g += L"-";
-    g += h.substr(16,4);  g += L"-";
-    g += h.substr(20,12);
-    g += L"}";
-    return g;
-}
-
-std::wstring random_product_id() {
-    // "12345-OEM-1234567-12345" style - 5-3-7-5 digits.
-    auto d = random_hex(5 + 1 + 3 + 1 + 7 + 1 + 5);
-    // we just generate digits; keep it simple and numeric
-    std::wstring s;
-    const wchar_t* digits = L"0123456789";
-    auto rnd = [&]() { return digits[(uint8_t)(rand() & 0xFF) % 10]; };
-    auto part = [&](int n) {
-        std::wstring p;
-        for (int i = 0; i < n; ++i) p.push_back(rnd());
-        return p;
-    };
-    return part(5) + L"-" + L"OEM" + L"-" + part(7) + L"-" + part(5);
-}
-
-std::wstring random_volume_serial() {
-    return random_hex(4);   // 8 hex upper
-}
-
-std::wstring random_computer_name() {
-    return L"PC" + random_hex(2);
+// ---- fingerprint dispatch -------------------------------------------------
+const std::wstring* pick_fake(HKEY key, LPCWSTR name) {
+    const SpoofValues& v = values();
+    if (_wcsicmp(name, L"MachineGuid") == 0) {
+        return key_path_matches(key, L"\\REGISTRY\\MACHINE\\SOFTWARE\\MICROSOFT\\CRYPTOGRAPHY")
+                ? &v.machine_guid : nullptr;
+    }
+    if (_wcsicmp(name, L"ProductId") == 0) {
+        return key_path_matches(key, L"\\WINDOWS NT\\CURRENTVERSION")
+                ? &v.product_id : nullptr;
+    }
+    if (_wcsicmp(name, L"ComputerName") == 0) {
+        return key_path_matches(key, L"\\CONTROL\\COMPUTERNAME\\COMPUTERNAME")
+                ? &v.computer_name : nullptr;
+    }
+    if (_wcsicmp(name, L"VolumeSerialNumber") == 0) {
+        return key_path_matches(key, L"\\REGISTRY\\MACHINE\\SYSTEM\\MOUNTEDDEVICES")
+                ? &v.volume_serial : nullptr;
+    }
+    return nullptr;
 }
 
 // ---- IAT patch ------------------------------------------------------------
@@ -150,47 +152,33 @@ bool patch_module_iat(HMODULE mod, RegQueryValueExW_t hook) {
 }
 
 // ---- the hook -------------------------------------------------------------
+// Answered entirely from the fake set, without calling the real function: the
+// old order (real call first, replace after) leaked the real length on the
+// size-probe pass, and a fake value longer than the real one could never be
+// returned to a caller that allocates exactly what the probe reported.
 LSTATUS WINAPI HookRegQueryValueExW(
     HKEY key, LPCWSTR name, LPDWORD reserved, LPDWORD type,
     LPBYTE data, LPDWORD cbData)
 {
-    // Call the real function first - if it fails, just pass through.
-    LSTATUS rc = g_real(key, name, reserved, type, data, cbData);
-    if (rc != ERROR_SUCCESS || !cbData) return rc;
-
-    // Match the value name against fingerprint keys.
-    const wchar_t* kNames[] = {
-        L"MachineGuid",
-        L"ProductId",
-        L"VolumeSerialNumber",
-        L"ComputerName",
-        nullptr,
-    };
-    std::wstring valueName = name ? name : L"";
-    for (int i = 0; kNames[i]; ++i) {
-        if (_wcsicmp(valueName.c_str(), kNames[i]) != 0) continue;
-
-        // Decide which fake to return.
-        const std::wstring* fake = nullptr;
-        if (_wcsicmp(kNames[i], L"MachineGuid") == 0) fake = &g_fake_guid;
-        else if (_wcsicmp(kNames[i], L"ProductId") == 0) fake = &g_fake_product_id;
-        else if (_wcsicmp(kNames[i], L"VolumeSerialNumber") == 0) fake = &g_fake_volume_serial;
-        else if (_wcsicmp(kNames[i], L"ComputerName") == 0) fake = &g_fake_computer_name;
-        if (!fake || fake->empty()) return rc;   // not generated -> pass through
-
-        // size in bytes for REG_SZ
-        DWORD need = (DWORD)((fake->size() + 1) * sizeof(wchar_t));
-        if (data && *cbData >= need) {
-            std::memcpy(data, fake->c_str(), need);
-            *cbData = need;
+    if (name) {
+        const std::wstring* fake = pick_fake(key, name);
+        if (fake && !fake->empty()) {
+            DWORD need = static_cast<DWORD>((fake->size() + 1) * sizeof(wchar_t));
             if (type) *type = REG_SZ;
-            return ERROR_SUCCESS;
+            if (!data) {
+                if (cbData) *cbData = need;
+                return ERROR_SUCCESS;
+            }
+            if (cbData && *cbData >= need) {
+                std::memcpy(data, fake->c_str(), need);
+                *cbData = need;
+                return ERROR_SUCCESS;
+            }
+            if (cbData) *cbData = need;
+            return ERROR_MORE_DATA;
         }
-        // caller buffer too small - report the needed size
-        if (cbData) *cbData = need;
-        return ERROR_MORE_DATA;
     }
-    return rc;
+    return g_real(key, name, reserved, type, data, cbData);
 }
 
 } // namespace
@@ -205,11 +193,9 @@ bool install() {
         GetProcAddress(g_advapi, "RegQueryValueExW"));
     if (!g_real) return false;
 
-    // Generate one stable fake set for this process run.
-    g_fake_guid         = random_guid();
-    g_fake_product_id   = random_product_id();
-    g_fake_volume_serial= random_volume_serial();
-    g_fake_computer_name= random_computer_name();
+    // Generate the per-process set before the hook can be reached, so a first
+    // read from another thread never pays for the initialisation.
+    values();
 
     // Patch every loaded module that imports RegQueryValueExW from advapi32.
     HMODULE mods[512];
@@ -223,8 +209,7 @@ bool install() {
         }
     }
 
-    // No importers found -> not active (silent). Also patch our own module if
-    // it imports it (it probably doesn't, but harmless).
+    // No importers found -> not active (silent).
     return g_active;
 }
 
