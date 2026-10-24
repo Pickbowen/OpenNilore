@@ -730,6 +730,39 @@ extends ClientBase {
         }
         AABB aabb = EntityUtil.getInterpolatedAABB(entity, partialTicks);
         Vec3 interpolatedPos = EntityUtil.getInterpolatedPos(entity, partialTicks);
+        Vec3 eye = mc.player.getEyePosition();
+
+        // Up to nine raycasts per call (1 + 4 fractions x 2 columns), and KillAura asks for the same
+        // answer twice per tick (aim + the attack gate). Memoise on everything the answer depends
+        // on; any movement of either party invalidates it because the key holds both boxes.
+        long tick = mc.level.getGameTime();
+        if (entity == aimCacheEntity && tick == aimCacheTick && allowOccluded == aimCacheAllowOccluded
+                && range == aimCacheRange
+                && eye.equals(aimCacheEye)
+                && interpolatedPos.equals(aimCacheInterpolatedPos)
+                && aabb.minX == aimCacheMinX && aabb.minY == aimCacheMinY && aabb.minZ == aimCacheMinZ
+                && aabb.maxX == aimCacheMaxX && aabb.maxY == aimCacheMaxY && aabb.maxZ == aimCacheMaxZ) {
+            return aimCacheResult;
+        }
+
+        Vec3 result = RotationUtil.searchAimPoint(entity, range, aabb, interpolatedPos, allowOccluded);
+        aimCacheEntity = entity;
+        aimCacheTick = tick;
+        aimCacheAllowOccluded = allowOccluded;
+        aimCacheRange = range;
+        aimCacheEye = eye;
+        aimCacheInterpolatedPos = interpolatedPos;
+        aimCacheMinX = aabb.minX;
+        aimCacheMinY = aabb.minY;
+        aimCacheMinZ = aabb.minZ;
+        aimCacheMaxX = aabb.maxX;
+        aimCacheMaxY = aabb.maxY;
+        aimCacheMaxZ = aabb.maxZ;
+        aimCacheResult = result;
+        return result;
+    }
+
+    private static Vec3 searchAimPoint(Entity entity, double range, AABB aabb, Vec3 interpolatedPos, boolean allowOccluded) {
         double eyeHeight = entity.getEyeHeight();
         Vec3 eyePoint = interpolatedPos.add(0.0, eyeHeight, 0.0);
         Vec3 fallback = mc.level.getBlockState(BlockPos.containing(eyePoint)).is(Blocks.COBWEB)
@@ -758,6 +791,20 @@ extends ClientBase {
         return allowOccluded ? fallback : null;
     }
 
+    private static Entity aimCacheEntity;
+    private static long aimCacheTick = Long.MIN_VALUE;
+    private static boolean aimCacheAllowOccluded;
+    private static double aimCacheRange;
+    private static Vec3 aimCacheEye;
+    private static Vec3 aimCacheInterpolatedPos;
+    private static double aimCacheMinX;
+    private static double aimCacheMinY;
+    private static double aimCacheMinZ;
+    private static double aimCacheMaxX;
+    private static double aimCacheMaxY;
+    private static double aimCacheMaxZ;
+    private static Vec3 aimCacheResult;
+
     public static Vec3 findAimPoint(Entity entity, double range) {
         return RotationUtil.findAimPoint(entity, range, 1.0f);
     }
@@ -778,7 +825,22 @@ extends ClientBase {
         if (entity == null || mc.player == null || mc.level == null) {
             return false;
         }
-        HitResult hit = RotationUtil.rayTraceForAim(currentAimRotation(), range, entity, entity.getBoundingBox().inflate(inflate));
+        return isLookingAt(entity, range, inflate, currentAimRotation());
+    }
+
+    /**
+     * 用**显式给定**的朝向做命中判定。
+     *
+     * <p>当动作包被安排在移动包之前发送时(vanilla 的攻击就是这个位置), 服务端此刻持有的
+     * 朝向还是上一 tick 发出去的那个, 它也会用那个角度去校验这次交互。所以本地判定必须
+     * 用同一个角度 —— 用本 tick 刚算出来的新朝向会让"本地认为打得到 / 服务端按旧角度算
+     * 却是空挥", 也就是 Grim 侧看到的 Reach/Hitboxes 抖动。
+     */
+    public static boolean isLookingAt(Entity entity, double range, float inflate, Rotation rotation) {
+        if (entity == null || mc.player == null || mc.level == null || rotation == null) {
+            return false;
+        }
+        HitResult hit = RotationUtil.rayTraceForAim(rotation, range, entity, entity.getBoundingBox().inflate(inflate));
         return hit instanceof EntityHitResult entityHit && entityHit.getEntity() == entity;
     }
 

@@ -9,6 +9,7 @@ import client.nilore.hud.ModuleListHud;
 import client.nilore.hud.NeverloseWatermark;
 import client.nilore.modules.Category;
 import client.nilore.modules.Module;
+import client.nilore.network.PingTracker;
 import client.nilore.render.DrawContext;
 import client.nilore.render.FontRenderer;
 import client.nilore.render.FontPresets;
@@ -20,7 +21,6 @@ import client.nilore.settings.impl.ModeSetting;
 import client.nilore.event.EventTarget;
 import client.nilore.utils.render.RenderUtil;
 import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.client.multiplayer.PlayerInfo;
 
 public class Watermark extends Module {
     final ModeSetting styleSetting = new ModeSetting("Style", "Neverlose", "DynamicIsland", "Simple", "Pharos", "Exhibition", "Logo").withDefault("Exhibition");
@@ -191,7 +191,10 @@ public class Watermark extends Module {
 
         String name = NiloreClient.CLIENT_NAME;
         String fpsText = mc.getFps() + "fps";
-        String pingText = getPing() + "ms";
+        // PingTracker 已经扣掉了本地压 keep-alive 造成的持有时长; 没有可信读数时返回 -1,
+        // 这时候宁可不显示毫秒字段, 也不能显示一个凭空的 0ms。
+        int ping = PingTracker.getPing();
+        String pingText = ping + "ms";
 
         int x = (int) MARGIN;
         int y = (int) MARGIN;
@@ -215,7 +218,7 @@ public class Watermark extends Module {
         gui.drawString(mc.font, " ", cursor, y, bracketColor);
         cursor += mc.font.width(" ");
         boolean showFps = this.showFpsSetting.getValue();
-        boolean showMs = this.showMsSetting.getValue();
+        boolean showMs = this.showMsSetting.getValue() && ping >= 0;
         if (showFps) {
             gui.drawString(mc.font, "[", cursor, y, bracketColor);
             cursor += mc.font.width("[");
@@ -248,8 +251,6 @@ public class Watermark extends Module {
     }
 
     private int getPing() {
-        if (mc.player == null || mc.player.connection == null) return 0;
-        PlayerInfo playerInfo = mc.player.connection.getPlayerInfo(mc.player.getUUID());
-        return playerInfo != null ? playerInfo.getLatency() : 0;
+        return PingTracker.getPing();
     }
 }

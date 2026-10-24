@@ -14,6 +14,7 @@ import net.minecraft.world.entity.ExperienceOrb;
 import net.minecraft.world.entity.projectile.AbstractArrow;
 import net.minecraft.world.entity.projectile.ThrownTrident;
 import client.nilore.NiloreClient;
+import client.nilore.modules.impl.render.EntityDuang;
 import client.nilore.modules.impl.render.EntityEditor;
 import client.nilore.modules.impl.render.FakeAntiAim;
 import client.nilore.utils.render.EntityUtil;
@@ -108,6 +109,9 @@ public class EntityRenderDispatcherPatch {
                             }
                         }
 
+                        // 视觉宽高 / duang: 以脚底为锚点缩放, 所以"变高"是向上长, 而不是向两侧撑开。
+                        applyVisualScale(poseStack, entity, partialTick, x, y, z);
+
                         float[] savedHead = NO_HEAD_SAVE;
                         if (entity == mc.player && FakeAntiAim.INSTANCE != null && FakeAntiAim.INSTANCE.isEnabled()) {
                             savedHead = new float[4];
@@ -134,6 +138,8 @@ public class EntityRenderDispatcherPatch {
             try {
                 poseStack.pushPose();
 
+                applyVisualScale(poseStack, entity, partialTick, x, y, z);
+
                 float[] savedHead = new float[4];
                 float time = entity.tickCount + partialTick;
                 float bodyYaw = applyFakeAntiAim(FakeAntiAim.INSTANCE, entity, poseStack, x, y, z, time, entity.tickCount, yaw, savedHead);
@@ -146,8 +152,51 @@ public class EntityRenderDispatcherPatch {
             } finally {
                 IS_RENDERING_FAKE.set(false);
             }
+            return;
+        }
+
+        // 只开 EntityDuang、不换模型的情况: 这里必须自己 cancel 再重渲染一次, 否则没有任何
+        // 位置能插入 push/scale/pop —— EntityRenderDispatcher.render 的 PoseStack 是调用方
+        // 传进来的, 我们既不能在 HEAD 直接改它(没有对应的 pop 点), 也不能等 TAIL(多个出口)。
+        // 重入由 IS_RENDERING_FAKE 挡掉, 和上面两个分支同一套路。
+        float[] visualOnly = visualScaleOf(entity, partialTick);
+        if (visualOnly[0] != 1.0f || visualOnly[1] != 1.0f) {
+            ci.cancel();
+
+            IS_RENDERING_FAKE.set(true);
+            try {
+                poseStack.pushPose();
+                applyVisualScale(poseStack, entity, partialTick, x, y, z);
+                dispatcher.render(entity, x, y, z, yaw, partialTick, poseStack, buffer, light);
+                poseStack.popPose();
+            } catch (Exception ignored) {
+            } finally {
+                IS_RENDERING_FAKE.set(false);
+            }
         }
     }
+
+    /** 取当前该用的视觉缩放; 模块没开或不需要缩放时返回单位值。 */
+    private static float[] visualScaleOf(Entity entity, float partialTick) {
+        if (EntityDuang.INSTANCE == null || !EntityDuang.INSTANCE.isEnabled()) {
+            return UNIT_SCALE;
+        }
+        return EntityDuang.INSTANCE.renderScale(entity, partialTick);
+    }
+
+    /** 以脚底为锚点套一层缩放: 变高时向上长, 压扁时贴地, 不会整体浮起来或陷进地里。 */
+    private static void applyVisualScale(com.mojang.blaze3d.vertex.PoseStack poseStack, Entity entity,
+                                         float partialTick, double x, double y, double z) {
+        float[] scale = visualScaleOf(entity, partialTick);
+        if (scale[0] == 1.0f && scale[1] == 1.0f) {
+            return;
+        }
+        poseStack.translate(x, y, z);
+        poseStack.scale(scale[0], scale[1], scale[0]);
+        poseStack.translate(-x, -y, -z);
+    }
+
+    private static final float[] UNIT_SCALE = new float[]{1.0f, 1.0f};
 
     private static final float[] NO_HEAD_SAVE = new float[0];
 

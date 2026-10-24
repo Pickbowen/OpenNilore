@@ -276,11 +276,11 @@ public class RotationHandler
 
     /**
      * Hard invariant on top of the naturalisation: two consecutive rotation packets must
-     * never carry the same yaw AND pitch. The naturalisation above only nudges when the
-     * delta looks quantised, so a held aim can still leave the event carrying the previous
-     * packet's value - which is exactly the signature the server's equalrotation part
-     * reports. This runs on the value the packet leaves with, so it holds whichever branch
-     * produced it.
+     * never carry the same yaw AND pitch. Grim's AimDuplicateLook flags exactly that
+     * ({@code oldYaw == newYaw && oldPitch == newPitch}). A held aim quantises to the same
+     * cell every tick, so without this the packet repeats itself for as long as the target
+     * stands still. This runs on the value the packet leaves with, so it holds whichever
+     * branch produced it.
      */
     private static void guardDuplicateRotation(MotionEvent e) {
         float yaw = e.getYaw();
@@ -293,9 +293,18 @@ public class RotationHandler
         lastWirePitch = pitch;
     }
 
-    /** Moves the value by an imperceptible amount that is guaranteed to change the float. */
+    /**
+     * Moves the yaw by exactly one sensitivity cell.
+     *
+     * <p>The old version added an arbitrary 0.0025~0.0075 deg, which broke the duplicate
+     * while stepping off the lattice Grim's AimProcessor reconstructs the sensitivity from:
+     * every such packet is a delta that cannot have come from a mouse. One whole cell keeps
+     * both invariants - the value differs from the previous packet (by 0.15 deg at default
+     * sensitivity, imperceptible) and the delta is still a multiple of the GCD.
+     */
     private static float nudgeApart(float value) {
-        float delta = 0.0025f + NATURAL_RANDOM.nextFloat() * 0.005f;
+        double step = RotationSmoother.sensitivityStep();
+        float delta = (float) (step > 0.0 ? step : 0.15);
         if (NATURAL_RANDOM.nextBoolean()) {
             delta = -delta;
         }

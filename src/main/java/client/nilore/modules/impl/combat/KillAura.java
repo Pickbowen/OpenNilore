@@ -43,7 +43,7 @@ import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 import client.nilore.ClientBase;
 import client.nilore.NiloreClient;
-import client.nilore.event.impl.PostMotionEvent;
+import client.nilore.event.impl.PreMotionEvent;
 import client.nilore.event.impl.RenderEvent;
 import client.nilore.event.impl.SprintEvent;
 import client.nilore.event.impl.StrafeEvent;
@@ -134,6 +134,8 @@ public class KillAura extends Module {
     private int targetIndex;
     public int sprintTickCounter;
     public Rotation rotation;
+    /** 本 tick 攻击使用的服务端朝向快照, 见 {@link #authoritativeAttackRotation()}。 */
+    private Rotation authoritativeRotation;
 
     private Random organicRandom;
     private final RotationSmoother rotSmoother = new RotationSmoother(new Random());
@@ -188,38 +190,69 @@ public class KillAura extends Module {
         }
         Rotation base = RotationUtil.rotationToPoint(mc.player.getEyePosition(), aimPoint);
 
-        // Both offsets used to be plain accumulations - a random walk with no restoring force - so
-        // over a long fight they drifted out to the hitbox edge and every shot after that sat on the
-        // exact boundary the server checks against. The decay pulls them back toward the aim point
-        // and the clamp keeps the worst case inside the 0.1 inflation the attack gate allows.
-        this.organicYawOffset = this.organicYawOffset * ORGANIC_DECAY
-                + (float) ((this.organicRandom.nextDouble() - 0.5)
-                * this.rotationDrift.getValue().doubleValue());
-        this.organicPitchOffset = this.organicPitchOffset * ORGANIC_DECAY
-                + (float) ((this.organicRandom.nextDouble() - 0.5) * 2.0
-                * this.rotationJitter.getValue().doubleValue());
-        float yawLimit = (float) (this.rotationDrift.getValue().doubleValue() * 2.0);
-        float pitchLimit = (float) this.rotationJitter.getValue().doubleValue();
-        this.organicYawOffset = Mth.clamp(this.organicYawOffset, -yawLimit, yawLimit);
-        this.organicPitchOffset = Mth.clamp(this.organicPitchOffset, -pitchLimit, pitchLimit);
-
-        Rotation jittered = new Rotation(base.getYaw() + this.organicYawOffset,
-                Mth.clamp(base.getPitch() + this.organicPitchOffset, -90.0f, 90.0f));
-        HitResult probe = RotationUtil.rayTraceForAim(jittered, range);
-        if (!(probe instanceof EntityHitResult hit) || hit.getEntity() != target) {
-            this.organicYawOffset = 0.0f;
-            this.organicPitchOffset = 0.0f;
-            jittered = base;
-        }
+        Rotation jittered = this.applyOrganicJitter(target, base, range);
 
         Rotation smoothed = this.rotSmoother.tick(from, jittered, speed);
         smoothed = RotationSmoother.patchConstantRotation(smoothed, from);
+        // Grim DuplicateRotPlace / AimDuplicateLook 的唯一判据是"相邻两 tick 的增量相同"。
+        // 平滑器收敛后每 tick 的输出会稳定在同一个量化值, 增量恒为 0 或同一个数; 这里
+        // 沿格点挪一格: 网格与幅度都不变, 只是不再重复。
+        smoothed = this.rotSmoother.breakDuplicateDelta(smoothed, from);
         if (smoothed == null
                 || Float.isNaN(smoothed.getYaw()) || Float.isNaN(smoothed.getPitch())
                 || Float.isInfinite(smoothed.getYaw()) || Float.isInfinite(smoothed.getPitch())) {
             return jittered;
         }
         return smoothed;
+    }
+
+    /**
+     * 有机抖动: 两条轴都是零均值 AR(1) 过程, 衰减 {@link #ORGANIC_DECAY} 负责把偏移拉回
+     * 瞄准点, 幅度由 Drift(yaw) / Jitter(pitch) 两个设置控制。
+     *
+     * <p>旧实现有两个毛病: pitch 的白噪声乘了 2 再被 clamp 到 1 倍幅度, 于是实际分布是
+     * "一半时间贴着钳位边界"的偏置噪声; yaw 的钳位又是幅度的两倍, 长期停在极限值上 ——
+     * 两条轴的统计特征完全不一致, 而且都不是正态的。现在两轴同一套形状, 只在幅度上不同。
+     *
+     * <p>抖动后必须仍然打得中: 打不中就先把偏移减半再试一次, 还不行才回落到无偏移的
+     * 瞄准点。直接清零会让"靠判定盒边缘时抖动突然消失"变成一个可统计的开关。
+     */
+    private Rotation applyOrganicJitter(Entity target, Rotation base, double range) {
+        double drift = this.rotationDrift.getValue().doubleValue();
+        double jitter = this.rotationJitter.getValue().doubleValue();
+        this.organicYawOffset = this.organicYawOffset * ORGANIC_DECAY
+                + (float) ((this.organicRandom.nextDouble() - 0.5) * drift);
+        this.organicPitchOffset = this.organicPitchOffset * ORGANIC_DECAY
+                + (float) ((this.organicRandom.nextDouble() - 0.5) * jitter);
+        float yawLimit = (float) drift;
+        float pitchLimit = (float) jitter;
+        this.organicYawOffset = Mth.clamp(this.organicYawOffset, -yawLimit, yawLimit);
+        this.organicPitchOffset = Mth.clamp(this.organicPitchOffset, -pitchLimit, pitchLimit);
+
+        Rotation full = this.offsetRotation(base, 1.0f);
+        if (this.jitterHits(target, full, range)) {
+            return full;
+        }
+        Rotation half = this.offsetRotation(base, 0.5f);
+        if (this.jitterHits(target, half, range)) {
+            // 偏移已被削减, 状态同步跟上, 免得下一 tick 又从满幅开始。
+            this.organicYawOffset *= 0.5f;
+            this.organicPitchOffset *= 0.5f;
+            return half;
+        }
+        this.organicYawOffset = 0.0f;
+        this.organicPitchOffset = 0.0f;
+        return base;
+    }
+
+    private Rotation offsetRotation(Rotation base, float scale) {
+        return new Rotation(base.getYaw() + this.organicYawOffset * scale,
+                Mth.clamp(base.getPitch() + this.organicPitchOffset * scale, -90.0f, 90.0f));
+    }
+
+    private boolean jitterHits(Entity target, Rotation rotation, double range) {
+        HitResult probe = RotationUtil.rayTraceForAim(rotation, range);
+        return probe instanceof EntityHitResult hit && hit.getEntity() == target;
     }
 
     @EventTarget
@@ -406,14 +439,19 @@ public class KillAura extends Module {
                 || this.multiAttack.getValue()
                 || !this.targetMode.is("Single");
         this.updateTargets();
-        aimingTarget = this.getTarget();
-        if (aimingTarget == null) {
-            this.rotation = null;
-        }
+        // getTarget() falls back to getTargets() whenever the remembered target is null, so the
+        // old `aimingTarget = getTarget()` right here re-ran the whole entity scan + four sorts
+        // a second time every tick. Decide on the list we already have instead.
         if (targetList.isEmpty()) {
             target = null;
+            aimingTarget = null;
+            this.rotation = null;
             return;
         }
+        // The switch decision below needs something to measure against before the index is
+        // settled; use the list head rather than asking getTarget() for another scan.
+        aimingTarget = targetList.get(Math.min(this.targetIndex, targetList.size() - 1));
+
         if (this.targetIndex > targetList.size() - 1) {
             this.targetIndex = 0;
         }
@@ -463,18 +501,38 @@ public class KillAura extends Module {
     }
 
     /**
-     * The swing runs at the tail of Minecraft.tick, after LocalPlayer.tick has already queued the
-     * move packet. Firing it from TickEvent (the head of the same method) put the interact packet
-     * ahead of the rotation it was aimed with, so the server validated every edge hit against the
-     * previous tick's yaw - the animation played and no damage landed. Sending order move -> interact
-     * is also what a real client produces.
+     * 挥击挂在 {@code handleKeybinds} 里触发, 也就是**移动包之前** —— 和 vanilla 攻击同一个
+     * 位置 ({@code Minecraft.handleKeybinds -> startAttack}, 之后才跑 {@code player.tick()}
+     * 发 flying 包)。
+     *
+     * <p>之前挂在 {@code PostMotionEvent}({@code Minecraft.tick} 末尾)时, interact 包恒定排在
+     * 移动包之后。Grim 的 {@code Post} 检查正是按这个顺序判定的: 收到移动包后把
+     * {@code sentFlying} 置位, 之后收到的每个动作包(ATTACK / INTERACT_ENTITY / ...)都进
+     * {@code post} 队列, 下一个 transaction 到达时若队列非空就记一条 —— 于是每打一次人记一次。
+     *
+     * <p>代价是判定用的朝向: 这个位置服务端还没收到本 tick 的朝向, 它持有的仍是上一 tick
+     * 发出去的那个。所以下面的闸门也必须用同一个角度(见 {@link #attackRotation()}), 否则
+     * 本地按新朝向算"打得到"、服务端按旧朝向算空挥, 就是 Reach/Hitboxes 抖动。
      */
     @EventTarget
-    public void onPostMotion(PostMotionEvent event) {
+    public void onPreMotion(PreMotionEvent event) {
         if (!NiloreClient.isReady()) {
             return;
         }
         this.attackTick();
+    }
+
+    /** 服务端此刻持有的朝向: 上一 tick 真正发出去的那个。 */
+    private Rotation attackRotation() {
+        if (RotationHandler.sentRotation != null) {
+            return RotationHandler.sentRotation;
+        }
+        return new Rotation(mc.player.getYRot(), mc.player.getXRot());
+    }
+
+    /** 本 tick 攻击用的朝向; 在 {@link #attackTick()} 里取一次, 供闸门与多目标分支共用。 */
+    private Rotation authoritativeAttackRotation() {
+        return this.authoritativeRotation != null ? this.authoritativeRotation : this.attackRotation();
     }
 
     private void attackTick() {
@@ -483,7 +541,8 @@ public class KillAura extends Module {
             this.attacks = 0.0f;
             return;
         }
-        if (!this.canAttackNow()) {
+        this.authoritativeRotation = this.attackRotation();
+        if (!this.canAttackNow(this.authoritativeRotation)) {
             // A gate that closes for one tick must not throw away the charge built up over the
             // previous two: that turned every hitch into a full attack cycle of downtime. Cap it
             // instead, so the swing fires the moment the gate reopens.
@@ -501,7 +560,11 @@ public class KillAura extends Module {
         }
     }
 
-    private boolean canAttackNow() {
+    /**
+     * @param authoritative 服务端当前持有的朝向。视野闸门必须用它, 不能用本 tick 刚算出的
+     *                      {@link #rotation} —— 后者还没发出去, 服务端不会用它校验这次交互。
+     */
+    private boolean canAttackNow(Rotation authoritative) {
         if (mc.player == null || mc.screen != null || mc.player.isUsingItem()) {
             return false;
         }
@@ -516,7 +579,7 @@ public class KillAura extends Module {
         double sightRange = reachNow - RotationUtil.REACH_MARGIN;
         // Through Walls only skips the block-clipped raycast inside Through Walls Range; beyond
         // it the attack still has to see the target, otherwise the range slider is never read.
-        if (!this.ignoreBlocksAt(target) && !RotationUtil.isLookingAt(target, sightRange, 0.1f)) {
+        if (!this.ignoreBlocksAt(target) && !RotationUtil.isLookingAt(target, sightRange, 0.1f, authoritative)) {
             return false;
         }
         if (this.delayMode.is("1.9") && mc.player.getAttackStrengthScale(0.0f) < 0.95f) {
@@ -651,14 +714,17 @@ public class KillAura extends Module {
         if (this.targetMode.is("Multiple") || this.multiAttack.getValue()) {
             int limit = this.targetMode.is("Multiple") ? Integer.MAX_VALUE : 2;
             int attacked = 0;
+            Rotation authoritative = this.authoritativeAttackRotation();
             for (Entity entity : targetList) {
                 if (mc.player == null) break;
                 if (!RotationUtil.isWithinReach(entity)) continue;
-                // The single-target path is gated by isLookingAt; this branch used to attack
-                // every in-reach entity with no visibility check at all, which is where the
-                // occasional through-wall hit came from. Require a visible point unless the
-                // entity is inside the Through Walls range.
-                if (!this.ignoreBlocksAt(entity) && !RotationUtil.canSeeAnyPoint(entity)) continue;
+                // 这条分支以前只判"任意角度可见"(canSeeAnyPoint 自己造射线, 与服务端无关),
+                // 于是会出现"本地可见但服务端按当前朝向判空挥"的 Hitboxes 抖动。现在要求
+                // 服务端此刻持有的朝向也真的打得到它; canSeeAnyPoint 只留作额外的可见性过滤。
+                if (!this.ignoreBlocksAt(entity)) {
+                    if (!RotationUtil.isLookingAt(entity, MAX_REACH, 0.2f, authoritative)) continue;
+                    if (!RotationUtil.canSeeAnyPoint(entity)) continue;
+                }
                 if (this.attackEntity(entity)) {
                     attacked++;
                 }
@@ -766,25 +832,33 @@ public class KillAura extends Module {
             if (!RotationUtil.isEntityInFov(entity, fov)) continue;
             possibleTargets.add(entity);
         }
-        if (this.priorityMode.is("Distance")) {
-            possibleTargets.sort(BY_DISTANCE);
-        } else if (this.priorityMode.is("FoV")) {
-            possibleTargets.sort(BY_ANGLE);
-        } else if (this.priorityMode.is("Health")) {
-            possibleTargets.sort(BY_HEALTH);
-        } else if (this.priorityMode.is("LivingTime")) {
-            possibleTargets.sort(BY_LIVING_TIME);
-        } else if (this.priorityMode.is("Armor")) {
-            possibleTargets.sort(BY_ARMOR);
+        // Sorting is the expensive half of this method (three to four stable sorts per tick), and
+        // with zero or one candidate every one of them is a no-op that still walks the comparator
+        // machinery. The overwhelming majority of ticks in a real fight have exactly one candidate.
+        if (possibleTargets.isEmpty()) {
+            return possibleTargets;
         }
-        if (this.preferBaby.getValue() && KillAura.hasBaby(possibleTargets)) {
-            possibleTargets.removeIf(KillAura::isNotBaby);
+        if (possibleTargets.size() > 1) {
+            if (this.priorityMode.is("Distance")) {
+                possibleTargets.sort(BY_DISTANCE);
+            } else if (this.priorityMode.is("FoV")) {
+                possibleTargets.sort(BY_ANGLE);
+            } else if (this.priorityMode.is("Health")) {
+                possibleTargets.sort(BY_HEALTH);
+            } else if (this.priorityMode.is("LivingTime")) {
+                possibleTargets.sort(BY_LIVING_TIME);
+            } else if (this.priorityMode.is("Armor")) {
+                possibleTargets.sort(BY_ARMOR);
+            }
+            if (this.preferBaby.getValue() && KillAura.hasBaby(possibleTargets)) {
+                possibleTargets.removeIf(KillAura::isNotBaby);
+            }
+            possibleTargets.sort(BY_CRYSTAL_PRIORITY);
+            // Final stable sort: an in-reach opponent becomes the target, out-of-reach ones only stay in
+            // the list (ranked on the same 9.0 = 3.0^2). Inside each group the priority and
+            // crystal order above survive - a stable sort keeps them as the secondary key.
+            possibleTargets.sort(BY_OUT_OF_REACH);
         }
-        possibleTargets.sort(BY_CRYSTAL_PRIORITY);
-        // Final stable sort: an in-reach opponent becomes the target, out-of-reach ones only stay in
-        // the list (ranked on the same 9.0 = 3.0^2). Inside each group the priority and
-        // crystal order above survive - a stable sort keeps them as the secondary key.
-        possibleTargets.sort(BY_OUT_OF_REACH);
         if (this.infSwitch.getValue() || this.targetMode.is("Multiple")) {
             return possibleTargets;
         }
