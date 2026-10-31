@@ -129,6 +129,9 @@ public final class Fonts {
         }
     }
 
+    /** 预热线程的句柄，供 {@link #awaitPreload(long)} 收尾时 join。 */
+    private static volatile Thread preloadThread;
+
     public static void preloadFontsAsync() {
         Thread thread = new Thread(() -> {
             for (String name : PRELOAD_FONTS) {
@@ -141,7 +144,31 @@ public final class Fonts {
         }, "Nilore-Font-Preload");
         thread.setDaemon(true);
         thread.setPriority(Math.max(Thread.MIN_PRIORITY, Thread.NORM_PRIORITY - 1));
+        preloadThread = thread;
         thread.start();
+    }
+
+    /**
+     * 等字体预热线程收尾 —— 注入流程结束前调用。
+     *
+     * <p>为什么必须等：{@link #awtFont(String)} 的解析是在 {@code synchronized (AWT_LOCK)} 里
+     * 做的，而解析苹方要读 11 MB。预热线程跑着的时候，渲染线程第一次遇到汉字会进来要同一个
+     * 兜底字体，于是**每帧都在等这把锁**：表现就是注入后头一段时间画面一阵一阵地卡，
+     * 等解析完、常用字也都铺进图集之后才彻底顺下来。
+     *
+     * <p>把等待放在这里（注入收尾、游戏还没开始渲染）而不是留在渲染线程上，卡顿就从
+     * "对局中持续几分钟"变成"加载界面多停一下"。
+     */
+    public static void awaitPreload(long millis) {
+        Thread thread = preloadThread;
+        if (thread == null || !thread.isAlive()) {
+            return;
+        }
+        try {
+            thread.join(millis);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static Font awtFont(String name) {

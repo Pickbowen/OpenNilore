@@ -739,8 +739,8 @@ public class Scaffold extends Module {
             return;
         }
 
-        // 6. pitch 无解(yaw 偏了) -> yaw+pitch 全搜
-        Rotation optimal = findOptimalRotation(yaw);
+        // 6. pitch 无解(yaw 偏了) -> 在目标面上找角度
+        Rotation optimal = findOptimalRotation();
         if (optimal != null) {
             applyRotationWithSpeed(optimal.getYaw(), optimal.getPitch());
             return;
@@ -753,14 +753,20 @@ public class Scaffold extends Module {
     /**
      * 每 tick 允许花在旋转搜索上的 raycast 次数。
      *
-     * <p>旧实现的两个搜索是死循环式的: {@link #findValidPitchNear} 从 0 到 30° 每 0.3°
-     * 探一次(101×2 = 202 次 raycast), {@link #findOptimalRotation} 是 180×25×2 = 9000 次。
-     * 每个 raycast 都是一次 {@code level.clip} 加一次实体查询, 一次 9000 次就是肉眼可见的
-     * 卡顿, 而且这条路径在"贴着墙/天花板搭路"时每 tick 都会走到。现在统一受预算约束,
-     * 搜索改成粗到细, 预算耗尽就返回"保持当前旋转"—— 少转一次远好过卡一帧。
+     * <p>旧实现的搜索是死循环式的：{@link #findValidPitchNear} 从 0 到 30° 每 0.3°
+     * 探一次(101×2 = 202 次 raycast)，而兜底那一层在角度网格上扫 yaw/pitch，最早的逐 1°
+     * 版本是 180×25×2 = 9000 次。每个 raycast 都是一次 {@code level.clip} 加一次实体
+     * 查询，9000 次就是肉眼可见的卡顿 —— 而且这条路径在"贴着墙/天花板搭路"时每 tick 都会
+     * 走到。
+     *
+     * <p>现在：pitch 扫掠改成 3° 粗扫 + 0.3° 回退并受本预算约束；兜底那一层不再是角度
+     * 网格扫描，而是直接对目标面撒 3×3 个点算精确朝向（{@link #findOptimalRotation()}），
+     * 固定 9 次、不吃这份预算。预算耗尽就返回"保持当前旋转"—— 少转一次远好过卡一帧。
      */
     private int raycastBudget;
     private static final int ROTATION_RAYCAST_BUDGET = 72;
+    /** 目标面兜底搜索的 3×3 采样比例（面内两轴）。 */
+    private static final double[] FACE_GRID = {0.5, 0.15, 0.85};
 
     private boolean isRotationValidForPlacement(Rotation rotation) {
         if (this.currentPlacement == null) return false;
@@ -811,30 +817,70 @@ public class Scaffold extends Module {
     }
 
     /**
-     * 最后兜底的 yaw+pitch 全搜。原来的 1°/1° 逐度扫描最多 9000 次 raycast; 这里的
-     * 6°/5° 粗网格已经能在剩余预算内覆盖同样的角度范围, 且 3.5 步(直接瞄放置面)在
-     * 绝大多数几何下早就返回了, 这一层只在极端夹角下才会真正执行。
+     * 最后兜底的搜索：在**目标面的采样点**上找角度，而不是在角度网格上找。
+     *
+     * <p>旧实现是 yaw 0..180 每 6° × pitch 0..25 每 5° × 双向，约 360 次 raycast（更早的
+     * 逐 1° 版本就是 180×25×2 = 9000 次）。而且循环是外层 yaw、内层 pitch：72 次的预算
+     * 只够走完三个 yaw 就断，于是这一层几乎必然返回 null，最后还是"保持当前旋转"——
+     * 兜底实际上等于不存在，白花预算。
+     *
+     * <p>反过来做才对：目标本来就是一个确定的方块 + 面，能打到它的角度集合就是这个面上
+     * 各点的视线方向。在面上撒 3×3 个点，每个点算一次精确朝向再验一次射线，最多 9 次就能
+     * 找到解（包括"面心被挡、边角是通的"这种角度网格根本摸不到的几何），并按"转得最少"
+     * 挑一个。代价比扫角度网格低一个数量级，找到的概率反而更高。
      */
-    private Rotation findOptimalRotation(float baseYaw) {
-        if (this.currentPlacement == null) return null;
-
-        float currentPitch = this.rots.getPitch();
-        for (float yawOffset = 0.0f; yawOffset < 180.0f; yawOffset += 6.0f) {
-            for (float pitchOffset = 0.0f; pitchOffset <= 25.0f; pitchOffset += 5.0f) {
-                for (int i = 0; i < 2; i++) {
-                    if (this.raycastBudget <= 0) return null;
-                    float testPitch = Mth.clamp(currentPitch + (i == 0 ? -pitchOffset : pitchOffset), -90.0f, 90.0f);
-
-                    Rotation test1 = new Rotation(baseYaw + yawOffset, testPitch);
-                    if (this.isRotationValidForPlacement(test1)) return test1;
-                    if (yawOffset == 0.0f) continue;
-
-                    Rotation test2 = new Rotation(baseYaw - yawOffset, testPitch);
-                    if (this.isRotationValidForPlacement(test2)) return test2;
+    private Rotation findOptimalRotation() {
+        if (this.currentPlacement == null || mc.player == null) return null;
+        Vec3 eye = mc.player.getEyePosition();
+        BlockPos pos = this.currentPlacement.position;
+        Direction face = this.currentPlacement.facing;
+        Rotation current = this.rots != null
+                ? this.rots
+                : new Rotation(mc.player.getYRot(), mc.player.getXRot());
+        Rotation best = null;
+        double bestScore = Double.MAX_VALUE;
+        for (double u : FACE_GRID) {
+            for (double v : FACE_GRID) {
+                Vec3 point = faceSamplePoint(pos, face, u, v);
+                // 超出交互距离的采样点直接跳过：服务端不会接受那一次放置。
+                if (point.distanceToSqr(eye) > 20.25) continue;
+                Rotation candidate = RotationUtil.exactRotation(eye, point);
+                // 这里刻意不走共享预算：本层探测次数固定为 9 次，被前面的 pitch 扫掠
+                // 饿死就等于这层兜底不存在。
+                if (!RayTraceUtil.canRayTrace(candidate, face, pos, true)) continue;
+                double score = Math.abs(Mth.wrapDegrees(candidate.getYaw() - current.getYaw()))
+                        + Math.abs(candidate.getPitch() - current.getPitch()) * 1.5;
+                if (score < bestScore) {
+                    bestScore = score;
+                    best = candidate;
                 }
             }
         }
-        return null;
+        return best;
+    }
+
+    /** 目标面 3×3 网格上的采样点：法线方向固定在面上，另两轴按 u/v 在 inset 内插值。 */
+    private static Vec3 faceSamplePoint(BlockPos pos, Direction face, double u, double v) {
+        double inset = 0.15;
+        double minX = pos.getX() + inset;
+        double maxX = pos.getX() + 1.0 - inset;
+        double minY = pos.getY() + inset;
+        double maxY = pos.getY() + 1.0 - inset;
+        double minZ = pos.getZ() + inset;
+        double maxZ = pos.getZ() + 1.0 - inset;
+        // 面上那一轴取方块边界（与 faceAimPoint 同一个平面）。
+        double planeX = pos.getX() + 0.5 + face.getStepX() * 0.5;
+        double planeY = pos.getY() + 0.5 + face.getStepY() * 0.5;
+        double planeZ = pos.getZ() + 0.5 + face.getStepZ() * 0.5;
+        return switch (face) {
+            case DOWN, UP -> new Vec3(lerp(minX, maxX, u), planeY, lerp(minZ, maxZ, v));
+            case NORTH, SOUTH -> new Vec3(lerp(minX, maxX, u), lerp(minY, maxY, v), planeZ);
+            case WEST, EAST -> new Vec3(planeX, lerp(minY, maxY, u), lerp(minZ, maxZ, v));
+        };
+    }
+
+    private static double lerp(double from, double to, double t) {
+        return from + (to - from) * t;
     }
 
     private void applyRotationWithSpeed(float yaw, float pitch) {

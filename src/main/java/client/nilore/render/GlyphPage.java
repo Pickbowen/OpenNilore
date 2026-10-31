@@ -63,6 +63,15 @@ class GlyphPage {
     /** Set when the atlas gained pixels; the mipmap chain is rebuilt once per draw instead of
      *  once per glyph, which is what used to cost milliseconds on the first Chinese glyphs. */
     private boolean mipmapDirty;
+    /**
+     * 本帧新增字形覆盖的脏矩形（闭区间）。光栅化只写 NativeImage 的堆外内存，GL 上传攒到
+     * {@link #flush()} 一次做完 —— 每页每帧一次 glTexSubImage2D，而不是每个字形一次。
+     */
+    private boolean uploadDirty;
+    private int dirtyMinX = Integer.MAX_VALUE;
+    private int dirtyMinY = Integer.MAX_VALUE;
+    private int dirtyMaxX = -1;
+    private int dirtyMaxY = -1;
     /** Resolved once — every glyph used to walk NativeImage's field table through reflection. */
     private static volatile Field pixelsField;
     private static volatile boolean pixelsFieldUnavailable;
@@ -127,6 +136,11 @@ class GlyphPage {
         this.imageHeight = -1;
         this.uploaded = false;
         this.mipmapDirty = false;
+        this.uploadDirty = false;
+        this.dirtyMinX = Integer.MAX_VALUE;
+        this.dirtyMinY = Integer.MAX_VALUE;
+        this.dirtyMaxX = -1;
+        this.dirtyMaxY = -1;
     }
 
     public boolean contains(char c) {
@@ -264,25 +278,54 @@ class GlyphPage {
             }
             int width = Math.max(1, glyph.width());
             int height = Math.max(1, glyph.height());
+            // 像素先同步进 NativeImage 的堆外内存，GL 上传推迟到 flush()。之前这里每个字形
+            // 都 texture.bind() + upload() 一次：一屏没缓存过的中文（聊天/计分板/模块列表）
+            // 就是每帧几十次 bind + 几十次 glTexSubImage2D —— 这才是"刚注入那几分钟一直掉帧、
+            // 字形缓存热了就好了"的直接来源。攒成一个脏矩形后每次绘制每页只要一次上传。
             this.writeRegion(glyph.u(), glyph.v(), width, height);
-            this.texture.bind();
-            this.nativeImage.upload(0, glyph.u(), glyph.v(), glyph.u(), glyph.v(), width, height, false, false);
-            if (!this.hinted) {
-                this.mipmapDirty = true;
-            }
+            this.markDirty(glyph.u(), glyph.v(), width, height);
             this.rasterized.set(glyph.value() - this.startChar);
         } catch (Throwable throwable) {
             throwable.printStackTrace();
         }
     }
 
+    /** 把一块刚光栅化的区域并进待上传的脏矩形。 */
+    private void markDirty(int x, int y, int width, int height) {
+        int x1 = x + width - 1;
+        int y1 = y + height - 1;
+        if (x < this.dirtyMinX) this.dirtyMinX = x;
+        if (y < this.dirtyMinY) this.dirtyMinY = y;
+        if (x1 > this.dirtyMaxX) this.dirtyMaxX = x1;
+        if (y1 > this.dirtyMaxY) this.dirtyMaxY = y1;
+        this.uploadDirty = true;
+        if (!this.hinted) {
+            this.mipmapDirty = true;
+        }
+    }
+
     /**
-     * Rebuilds the mipmap chain if this page gained pixels since the last rebuild.
+     * 把本帧攒下的字形一次性推上 GPU，顺带重建 mipmap。
      *
-     * <p>Cheaper than the old per-glyph {@code glGenerateMipmap}: a page that receives twenty
-     * new characters in one draw now pays for one chain rebuild instead of twenty.
+     * <p>调用点必须在"字形收集完、开始画 quad 之前"：脏矩形覆盖了这一次绘制里所有新字形，
+     * 上传一次就等于把它们全部可见，画出来的贴图不会读到旧像素。
      */
-    void flushMipmap() {
+    void flush() {
+        if (this.uploadDirty) {
+            this.uploadDirty = false;
+            int x0 = this.dirtyMinX;
+            int y0 = this.dirtyMinY;
+            int x1 = this.dirtyMaxX;
+            int y1 = this.dirtyMaxY;
+            this.dirtyMinX = Integer.MAX_VALUE;
+            this.dirtyMinY = Integer.MAX_VALUE;
+            this.dirtyMaxX = -1;
+            this.dirtyMaxY = -1;
+            if (this.texture != null && this.nativeImage != null && x1 >= x0 && y1 >= y0) {
+                this.texture.bind();
+                this.nativeImage.upload(0, x0, y0, x0, y0, x1 - x0 + 1, y1 - y0 + 1, false, false);
+            }
+        }
         if (!this.mipmapDirty || this.texture == null) {
             return;
         }

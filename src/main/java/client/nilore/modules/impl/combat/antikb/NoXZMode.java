@@ -19,6 +19,7 @@ import net.minecraft.network.protocol.game.ClientboundMoveEntityPacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerChatPacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerCombatKillPacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket;
+import net.minecraft.network.protocol.game.ClientboundPingPacket;
 import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket;
 import net.minecraft.network.protocol.game.ClientboundSetHealthPacket;
 import net.minecraft.network.protocol.game.ClientboundSetPlayerTeamPacket;
@@ -224,6 +225,14 @@ extends AntiKBMode {
             return;
         }
         if (!inDelayWindow) {
+            return;
+        }
+
+        if (AntiKB.INSTANCE.reduceMode.is("Velocity + Ping")) {
+            if (packet instanceof ClientboundPingPacket) {
+                receivePacketEvent.setCancelled(true);
+                this.packetQueue.add(packet);
+            }
             return;
         }
 

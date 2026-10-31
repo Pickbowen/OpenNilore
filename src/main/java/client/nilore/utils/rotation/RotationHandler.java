@@ -32,6 +32,7 @@ import client.nilore.modules.impl.player.AutoMLG;
 import client.nilore.modules.impl.player.AutoWebPlace;
 import client.nilore.modules.impl.player.Helper;
 import client.nilore.modules.impl.player.MidPearl;
+import client.nilore.modules.impl.world.PacketBreak;
 import client.nilore.utils.animation.TickTimer;
 import client.nilore.utils.game.MovementUtil;
 import client.nilore.event.EventTarget;
@@ -129,6 +130,11 @@ public class RotationHandler
                 RotationHandler.setTargetRotation(TargetStrafe.aimRotation());
             } else if (antiKB != null && antiKB.isEnabled() && AntiKB.rotation != null) {
                 RotationHandler.setTargetRotation(AntiKB.rotation);
+            } else if (PacketBreak.INSTANCE != null && PacketBreak.INSTANCE.isEnabled()
+                    && PacketBreak.INSTANCE.targetRotation != null) {
+                // 挖掘排在整条链的最后：它只负责把准星挪到"这个方块真的挖得到的那一点"，
+                // 任何人想接管视角（战斗、搭路、防击退）都比它有优先级。
+                RotationHandler.setTargetRotation(PacketBreak.INSTANCE.targetRotation);
             } else {
                 // NO module owns the rotation this tick -> hands off completely. The
                 // outgoing yaw/pitch stay exactly vanilla's; we only keep sentRotation in

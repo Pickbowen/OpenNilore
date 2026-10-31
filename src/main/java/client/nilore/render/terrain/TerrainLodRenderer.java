@@ -24,13 +24,13 @@ import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
 import org.joml.Matrix4f;
 
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongArrays;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import it.unimi.dsi.fastutil.objects.ObjectIterator;
+
+import java.util.Arrays;
 
 public final class TerrainLodRenderer {
     private static final int NEAR_CELL = 2;
@@ -40,9 +40,25 @@ public final class TerrainLodRenderer {
     private static final float[] FACE_SHADE = {0.55f, 1.0f, 0.68f, 0.82f, 0.72f, 0.9f};
     private static final Direction[] DIRECTIONS = Direction.values();
 
-    private static final Map<Long, LodSection> CACHE = new HashMap<>();
-    private static final List<Long> CANDIDATES = new ArrayList<>();
-    private static final Set<Long> LIVE = new HashSet<>();
+    /**
+     * section 键 -> LOD 网格。
+     *
+     * <p>用 fastutil 的原语表而不是 {@code HashMap<Long, …>}：{@code shouldReplace} 是
+     * {@code renderChunkLayer} 的循环体里调的，每帧每层每个可见 section 一次，
+     * 渲染距离 12 时是每帧上万次 {@code Long} 装箱 —— 纯 GC 压力，和"泛不泛型"无关。
+     */
+    private static final Long2ObjectOpenHashMap<LodSection> CACHE = new Long2ObjectOpenHashMap<>();
+    /**
+     * 还没建好的 section，按到相机的水平距离升序。
+     *
+     * <p>用 {@code long[] + count} 而不是 {@code List<Long>}：旧实现每帧从下标 0 开始整表扫一遍，
+     * 对每个元素算距离再 {@code computeIfAbsent} 装箱查表；已经建好的那些也得陪着走完。
+     * 现在建好的会被 {@link #removeCandidate(int)} 当场摘掉，帧成本随剩余量收敛到 0
+     * （候选表只在玩家跨 section 时重建）。
+     */
+    private static long[] candidates = new long[0];
+    private static int candidateCount;
+    private static final LongOpenHashSet LIVE = new LongOpenHashSet();
     private static final BlockPos.MutableBlockPos CURSOR = new BlockPos.MutableBlockPos();
     private static long candidateAnchor = Long.MIN_VALUE;
     private static ClientLevel candidateLevel;
@@ -67,7 +83,8 @@ public final class TerrainLodRenderer {
             section.buffer.close();
         }
         CACHE.clear();
-        CANDIDATES.clear();
+        candidates = new long[0];
+        candidateCount = 0;
         LIVE.clear();
         candidateAnchor = Long.MIN_VALUE;
         candidateLevel = null;
@@ -103,10 +120,11 @@ public final class TerrainLodRenderer {
     }
 
     private static void refreshCandidates(Minecraft mc, double camX, double camZ) {
-        CANDIDATES.clear();
         LIVE.clear();
         int radius = mc.options.renderDistance().get();
         ChunkPos center = new ChunkPos(mc.player.blockPosition());
+        long[] keys = candidates;
+        int count = 0;
         for (int dx = -radius; dx <= radius; dx++) {
             for (int dz = -radius; dz <= radius; dz++) {
                 LevelChunk chunk = mc.level.getChunkSource()
@@ -121,48 +139,78 @@ public final class TerrainLodRenderer {
                         continue;
                     }
                     long key = SectionPos.asLong(pos.x, chunk.getSectionYFromSectionIndex(i), pos.z);
-                    CANDIDATES.add(key);
+                    if (count == keys.length) {
+                        keys = grow(keys, count + 1);
+                    }
+                    keys[count++] = key;
                     LIVE.add(key);
                 }
             }
         }
-        CANDIDATES.sort(Comparator.comparingDouble(key -> {
-            double cx = SectionPos.x(key) * 16 + 8 - camX;
-            double cz = SectionPos.z(key) * 16 + 8 - camZ;
-            return cx * cx + cz * cz;
-        }));
-        CACHE.entrySet().removeIf(entry -> {
-            if (LIVE.contains(entry.getKey())) {
-                return false;
+        // 只排一次（玩家每跨一个 section 才走到这里），但排序键是原语：旧实现用
+        // Comparator.comparingDouble 包 Long，几千个元素排序时每次比较都拆一次箱。
+        LongArrays.quickSort(keys, 0, count, (a, b) -> Double.compare(distanceSq(a, camX, camZ), distanceSq(b, camX, camZ)));
+        candidates = keys;
+        candidateCount = count;
+        // 已经不在渲染距离内的 section 直接把 VBO 还掉。
+        ObjectIterator<Long2ObjectMap.Entry<LodSection>> iterator = CACHE.long2ObjectEntrySet().iterator();
+        while (iterator.hasNext()) {
+            Long2ObjectMap.Entry<LodSection> entry = iterator.next();
+            if (!LIVE.contains(entry.getLongKey())) {
+                entry.getValue().buffer.close();
+                iterator.remove();
             }
-            entry.getValue().buffer.close();
-            return true;
-        });
+        }
+    }
+
+    private static long[] grow(long[] array, int minimum) {
+        int next = Math.max(minimum, array.length == 0 ? 256 : array.length * 2);
+        return Arrays.copyOf(array, next);
+    }
+
+    private static double distanceSq(long key, double camX, double camZ) {
+        double dx = SectionPos.x(key) * 16 + 8 - camX;
+        double dz = SectionPos.z(key) * 16 + 8 - camZ;
+        return dx * dx + dz * dz;
+    }
+
+    /** 建好（或确认无需重建）的 section 从候选表里摘掉：swap-remove，O(1)。 */
+    private static void removeCandidate(int index) {
+        int last = --candidateCount;
+        candidates[index] = candidates[last];
     }
 
     private static void buildQueue(Minecraft mc, double camX, double camY, double camZ, double start) {
         int built = 0;
-        for (Long key : CANDIDATES) {
-            if (built >= BUILD_BUDGET) {
-                return;
-            }
+        double startSq = start * start;
+        for (int i = 0; i < candidateCount && built < BUILD_BUDGET; i++) {
+            long key = candidates[i];
             int sx = SectionPos.x(key);
             int sy = SectionPos.y(key);
             int sz = SectionPos.z(key);
             double dx = sx * 16 + 8 - camX;
             double dz = sz * 16 + 8 - camZ;
             double distanceSq = dx * dx + dz * dz;
-            if (distanceSq <= start * start) {
+            if (distanceSq <= startSq) {
+                // 还在 LOD 起点以内：原版自己会画，不用建，也不用摘 —— 走远一点就得要。
                 continue;
             }
-            int cell = distanceSq <= start * start * FAR_CELL_FACTOR * FAR_CELL_FACTOR ? NEAR_CELL : FAR_CELL;
-            LodSection section = CACHE.computeIfAbsent(key, ignored -> new LodSection(new BlockPos(sx * 16, sy * 16, sz * 16)));
-            if (section.built && section.cell == cell) {
+            int cell = distanceSq <= startSq * FAR_CELL_FACTOR * FAR_CELL_FACTOR ? NEAR_CELL : FAR_CELL;
+            LodSection section = CACHE.get(key);
+            if (section != null && section.built && section.cell == cell) {
+                removeCandidate(i);
+                i--;
                 continue;
+            }
+            if (section == null) {
+                section = new LodSection(new BlockPos(sx * 16, sy * 16, sz * 16));
+                CACHE.put(key, section);
             }
             if (build(mc, section, cell)) {
                 section.cell = cell;
                 section.built = true;
+                removeCandidate(i);
+                i--;
             }
             built++;
         }

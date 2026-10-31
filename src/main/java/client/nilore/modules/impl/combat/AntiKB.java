@@ -38,6 +38,8 @@ public class AntiKB
     public final BooleanSetting predict = new BooleanSetting("Predict", false, () -> mode.is("Jump Reset"));
     public final NumberSetting rotateTicks = new NumberSetting("Rotate Ticks", 12, 3, 20, 1, () -> mode.is("Jump Reset") && (this.rotate.getValue() != false || this.followDirection.getValue() != false));
     public final BooleanSetting delayEnable = new BooleanSetting("Delay", true, () -> mode.is("NoXZ"));
+    public final ModeSetting reduceMode = new ModeSetting("Reduce Mode", "Velocity + Ping", "All Packets")
+            .withVisibility(() -> mode.is("NoXZ"));
     public final NumberSetting maxDelayTicks = new NumberSetting("Max Delay Ticks", 11.9, 1.0, 120.0, 1.0, () -> mode.is("NoXZ") && this.delayEnable.getValue());
     public final BooleanSetting autoForwards = new BooleanSetting("Auto Forwards", false, () -> mode.is("NoXZ"));
     public final BooleanSetting requireKillAura = new BooleanSetting("Require KillAura", true, () -> mode.is("NoXZ"));

@@ -584,9 +584,22 @@ public class KillAura extends Module {
         }
         this.authoritativeRotation = this.attackRotation();
         if (!this.canAttackNow(this.authoritativeRotation)) {
-            // 闸门关一拍不再把蓄力削回 1.0: 那等于每次抖动都白攒一到两拍, 恢复后还要重新蓄,
-            // 于是"丢一拍"被放大成"丢三拍"。上限仍由 onTick 的 2.0 封顶, 而 attackAndLock
-            // 一 tick 只放行一次, 所以不会攒出同 tick 连击 —— 出站包数量不变, 只是恢复即出刀。
+            // 闸门关着的时候蓄力不能攒过一刀。
+            //
+            // onTick 给 attacks 的上限是 2.0，而 2.0 意味着"欠两刀"。攒到 2.0 再放开闸门：
+            // while 第一刀把 attacks 扣到 1.0，同 tick 的第二刀被 attackAndLock 拦下后 break，
+            // 剩下的 1.0 让下一拍立刻再砍一刀。也就是说闸门一开就是"连续两拍两刀" ——
+            // 名义 APS 10（两拍一刀）的配置在这一瞬间跑出 20 APS。
+            //
+            // 撞得最狠的场景正是 AntiKB 的 NoXZ：反击窗口默认 5 拍，期间本模块恒走
+            // noxz-counter 分支，attacks 稳定顶在 2.0；窗口一关的那一拍立刻双连击，而
+            // NoXZ 刚刚把 inDelayWindow / handlingVelocity 翻过去 —— Grim 的 velocity 与
+            // post 检查最敏感的位置正好吃到多出来的那个进攻包。
+            //
+            // 削到 1.0 依然满足"闸门一开就当拍出刀"（不需要重新蓄力），被丢掉的只有那刀
+            // 本来就不该存在的额外攻击；同时它也是下面 doAttack() 失败分支的兜底：出站包
+            // 数量恒等于"闸门放行的那一拍"，不会再出现同一 tick 内的二连。
+            this.attacks = Math.min(this.attacks, 1.0f);
             return;
         }
         while (this.attacks >= 1.0f) {
@@ -594,6 +607,9 @@ public class KillAura extends Module {
             // taken by the antikb counter or Critical first, and charging the cost anyway pushed
             // the accumulator negative - the next hit then had to make up the debt.
             if (!this.doAttack()) {
+                // 锁被别人拿走了（NoXZ 反击 / Critical）：蓄力留在 1.0，下一拍还在闸门内就直接出刀，
+                // 但绝不留下"欠两刀"。
+                this.attacks = Math.min(this.attacks, 1.0f);
                 break;
             }
             this.attacks -= 1.0f;
