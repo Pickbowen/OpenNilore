@@ -19,7 +19,6 @@ import net.minecraft.network.protocol.game.ClientboundMoveEntityPacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerChatPacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerCombatKillPacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket;
-import net.minecraft.network.protocol.game.ClientboundPingPacket;
 import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket;
 import net.minecraft.network.protocol.game.ClientboundSetHealthPacket;
 import net.minecraft.network.protocol.game.ClientboundSetPlayerTeamPacket;
@@ -48,7 +47,6 @@ import client.nilore.event.impl.RotationEvent;
 import client.nilore.event.impl.SprintEvent;
 import client.nilore.event.impl.StrafeEvent;
 import client.nilore.event.impl.TickEvent;
-import client.nilore.event.impl.WorldChangeEvent;
 import client.nilore.modules.impl.combat.AntiKB;
 import client.nilore.modules.impl.combat.KillAura;
 import client.nilore.modules.impl.movement.NoSlow;
@@ -229,14 +227,6 @@ extends AntiKBMode {
             return;
         }
 
-        if (AntiKB.INSTANCE.reduceMode.is("Velocity + Ping")) {
-            if (packet instanceof ClientboundPingPacket) {
-                receivePacketEvent.setCancelled(true);
-                this.packetQueue.add(packet);
-            }
-            return;
-        }
-
         if (packet instanceof ClientboundMoveEntityPacket move) {
             Entity entity = move.getEntity(mc.level);
             if (entity != null) {
@@ -279,8 +269,7 @@ extends AntiKBMode {
             this.compensateUntilMs = -1L;
         }
 
-        boolean noTarget = this.target == null || !this.target.isAlive();
-        if (this.shouldNotEngage() || this.noAimTicks >= 3 || noTarget && !inDelayWindow) {
+        if (this.shouldNotEngage() || this.noAimTicks >= 3) {
             this.resetAll();
             return;
         }
@@ -341,12 +330,6 @@ extends AntiKBMode {
 
     @Override
     public void onDisconnect(DisconnectEvent disconnectEvent) {
-        this.resetAll();
-    }
-
-    @Override
-    public void onWorldChange(WorldChangeEvent worldChangeEvent) {
-        this.packetQueue.clear();
         this.resetAll();
     }
 
@@ -461,6 +444,9 @@ extends AntiKBMode {
             return true;
         }
         if (mc.screen instanceof InventoryScreen) {
+            return true;
+        }
+        if (this.target == null || !this.target.isAlive()) {
             return true;
         }
         if (mc.player.isDeadOrDying() || mc.player.isSpectator()) {

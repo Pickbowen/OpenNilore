@@ -599,7 +599,7 @@ public class KillAura extends Module {
         // isWithinReach already subtracted the margin, so a target sitting in that last strip passed
         // the visibility check and was then dropped by the distance gate every few ticks. Both now
         // subtract the same (much smaller) margin, see RotationUtil#REACH_MARGIN.
-        double sightRange = reachNow;
+        double sightRange = reachNow - RotationUtil.REACH_MARGIN;
         // Through Walls only skips the block-clipped raycast inside Through Walls Range; beyond
         // it the attack still has to see the target, otherwise the range slider is never read.
         if (!this.ignoreBlocksAt(target)

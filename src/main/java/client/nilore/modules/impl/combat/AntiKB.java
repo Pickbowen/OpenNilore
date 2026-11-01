@@ -15,7 +15,6 @@ import client.nilore.event.impl.RotationEvent;
 import client.nilore.event.impl.SprintEvent;
 import client.nilore.event.impl.StrafeEvent;
 import client.nilore.event.impl.TickEvent;
-import client.nilore.event.impl.WorldChangeEvent;
 import client.nilore.modules.Category;
 import client.nilore.modules.Module;
 import client.nilore.modules.impl.combat.antikb.AntiKBMode;
@@ -39,9 +38,6 @@ public class AntiKB
     public final BooleanSetting predict = new BooleanSetting("Predict", false, () -> mode.is("Jump Reset"));
     public final NumberSetting rotateTicks = new NumberSetting("Rotate Ticks", 12, 3, 20, 1, () -> mode.is("Jump Reset") && (this.rotate.getValue() != false || this.followDirection.getValue() != false));
     public final BooleanSetting delayEnable = new BooleanSetting("Delay", true, () -> mode.is("NoXZ"));
-    public final ModeSetting reduceMode = new ModeSetting("Reduce Mode", "Normal", "Velocity + Ping")
-            .withDefault("Normal")
-            .withVisibility(() -> mode.is("NoXZ"));
     public final NumberSetting maxDelayTicks = new NumberSetting("Max Delay Ticks", 11.9, 1.0, 120.0, 1.0, () -> mode.is("NoXZ") && this.delayEnable.getValue());
     public final BooleanSetting autoForwards = new BooleanSetting("Auto Forwards", false, () -> mode.is("NoXZ"));
     public final BooleanSetting requireKillAura = new BooleanSetting("Require KillAura", true, () -> mode.is("NoXZ"));
@@ -161,15 +157,6 @@ public class AntiKB
             return;
         }
         optional.get().onDisconnect(disconnectEvent);
-    }
-
-    @EventTarget
-    public void onWorldChange(WorldChangeEvent worldChangeEvent) {
-        Optional<AntiKBMode> optional = AntiKBMode.findMode(mode.getValue());
-        if (optional.isEmpty()) {
-            return;
-        }
-        optional.get().onWorldChange(worldChangeEvent);
     }
 
     @EventTarget(value=3)
