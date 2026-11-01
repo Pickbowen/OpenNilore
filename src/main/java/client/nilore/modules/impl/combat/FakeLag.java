@@ -30,17 +30,6 @@ import client.nilore.settings.impl.ModeSetting;
 import client.nilore.settings.impl.NumberSetting;
 import client.nilore.utils.misc.PacketUtil;
 
-/**
- * FakeLag — 缓存出站位置数据包，模拟高延迟
- *
- * 核心机制: 拦截并延迟发送 ServerboundMovePlayerPacket，释放时瞬间发送所有缓存包
- *
- * Dynamic 模式: 仅在敌人进入范围时缓存
- * Constant 模式: 始终缓存
- *
- * 自动释放: 攻击、交互、受伤、击退、服务端传送
- * 渲染: 缓存期间显示位置轨迹线
- */
 public class FakeLag extends Module {
 
     public static FakeLag INSTANCE;
@@ -75,7 +64,6 @@ public class FakeLag extends Module {
         flushAll();
     }
 
-    // --- Tick: 检测敌人、超时释放 ---
     @EventTarget
     public void onTick(TickEvent event) {
         if (mc.player == null || mc.level == null) return;
@@ -94,7 +82,6 @@ public class FakeLag extends Module {
         }
     }
 
-    // --- 拦截入站包: 检测击退/传送/受伤 → 触发释放 ---
     @EventTarget
     public void onReceivePacket(ReceivePacketEvent event) {
         if (mc.player == null || packetQueue.isEmpty()) return;
@@ -123,7 +110,6 @@ public class FakeLag extends Module {
         }
     }
 
-    // --- 拦截出站包: 缓存移动包，攻击/交互时释放 ---
     @EventTarget
     public void onPacket(PacketEvent event) {
         if (mc.player == null || mc.level == null) return;
@@ -131,7 +117,6 @@ public class FakeLag extends Module {
 
         Packet<?> packet = event.getPacket();
 
-        // 非移动包: 检查是否需要因攻击/交互而释放
         if (!(packet instanceof ServerboundMovePlayerPacket)) {
             if (flushOnAttack.getValue() && isAttackPacket(packet)) {
                 flushAll();
@@ -144,23 +129,19 @@ public class FakeLag extends Module {
             return;
         }
 
-        // Dynamic 模式: 没敌人就不缓存
         if ("Dynamic".equals(mode.getValue()) && !isEnemyNearby) {
             if (!packetQueue.isEmpty()) flushAll();
             return;
         }
 
-        // 回冲冷却
         if (System.currentTimeMillis() - lastFlushTime < recoilTime.getValue().longValue()) {
             return;
         }
 
-        // 缓存移动包
         event.setCancelled(true);
         packetQueue.add(packet);
     }
 
-    // --- 渲染: 轨迹线 ---
     @EventTarget
     public void onRender(RenderEvent event) {
         if (!render.getValue()) return;
@@ -232,7 +213,6 @@ public class FakeLag extends Module {
         poseStack.popPose();
     }
 
-    // --- 释放所有缓存包 ---
     @SuppressWarnings({"rawtypes", "unchecked"})
     private void flushAll() {
         if (packetQueue.isEmpty()) return;
@@ -260,9 +240,6 @@ public class FakeLag extends Module {
                 || packet instanceof ServerboundPlayerActionPacket;
     }
 
-    /**
-     * 从缓存的移动包中提取位置
-     */
     private List<Vec3> getQueuedPositions() {
         List<Vec3> positions = new ArrayList<>();
         for (Packet<?> packet : packetQueue) {
@@ -272,7 +249,6 @@ public class FakeLag extends Module {
                 positions.add(new Vec3(p.getX(0), p.getY(0), p.getZ(0)));
             }
         }
-        // 追加玩家当前位置作为终点
         if (!positions.isEmpty() && mc.player != null) {
             positions.add(mc.player.position());
         }

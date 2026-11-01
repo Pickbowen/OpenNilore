@@ -49,8 +49,9 @@ extends Module {
                     PacketUtil.sendPredictive(seq -> new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, seq));
                     float prevYaw = mc.player.getYRot();
                     float prevPitch = mc.player.getXRot();
-                    mc.player.setYRot(RotationHandler.targetRotation.getYaw());
-                    mc.player.setXRot(RotationHandler.targetRotation.getPitch());
+                    Rotation aim = RotationHandler.targetRotation != null ? RotationHandler.targetRotation : rotation;
+                    mc.player.setYRot(aim.getYaw());
+                    mc.player.setXRot(aim.getPitch());
                     mc.getConnection().send(ServerboundInteractPacket.createAttackPacket(endCrystal, false));
                     mc.player.swing(InteractionHand.MAIN_HAND);
                     mc.player.setYRot(prevYaw);

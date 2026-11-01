@@ -182,15 +182,10 @@ dependencies {
     // Dev Auth
     runtimeOnly("me.djtheredstoner:DevAuth-forge-latest:1.2.2")
 
-    // 非 Minecraft 依赖（jlayer/mp3spi/zxing）在 ForgeGradle 6.x 的 runClient 开发环境默认**不加载**，
-    // 必须用 minecraftLibrary 声明才会进运行时的 classpath（compile + runtime 都生效）。
-    // 之前只放 bundle（extendsFrom implementation）导致 runClient 下 ClassNotFoundException。
     minecraftLibrary 'javazoom:jlayer:1.0.1'
     minecraftLibrary 'com.googlecode.soundlibs:mp3spi:1.9.5.4'
     minecraftLibrary 'com.google.zxing:core:3.5.3'
 
-    // 下面这三个同时进 bundle 配置，是为了 shadowJar 把它们合并进 mod JAR（DLL 注入路径）。
-    // minecraftLibrary 只保证 runClient 开发环境能加载，打进 jar 还得靠 bundle + shadowJar。
     bundle 'javazoom:jlayer:1.0.1'
     bundle 'com.googlecode.soundlibs:mp3spi:1.9.5.4'
     bundle 'com.google.zxing:core:3.5.3'
@@ -257,10 +252,6 @@ tasks.named('jar', Jar).configure {
 // The DLL loader only embeds a single JAR — dependencies must be baked in.
 tasks.named('shadowJar', com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar).configure {
     configurations = [project.configurations.bundle]
-    // jlayer / mp3spi 是靠 SPI 注册的（META-INF/services/javax.sound.sampled.spi.AudioFileReader
-    // 之类的文件），zxing 也有自己的 service 文件。shadow 默认遇到同名文件是覆盖而不是合并，
-    // 打包时这些注册声明会被丢掉一部分——解码器就注册不全，表现为能解开头、读到后面失败
-    // （runClient 走 minecraftLibrary 直挂 classpath，不经过这一步，所以那边一直正常）。
     mergeServiceFiles()
     archiveClassifier.set('')
     // Merge into the same file as jar so reobfJar and obfuscateClasses see it
@@ -754,4 +745,3 @@ tasks.named('clean').configure {
 
 // Release builds are cut by .github/workflows/build-loader.yml when the head commit
 // message contains [Release]. Every build emits fresh random class names — see
-// ext.obfuscateJar above and the "编译时类名混淆" section in the README.

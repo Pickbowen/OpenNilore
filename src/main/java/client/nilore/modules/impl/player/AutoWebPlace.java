@@ -63,25 +63,10 @@ public class AutoWebPlace extends Module {
     public final BooleanSetting debugSetting = new BooleanSetting("Debug", true);
 
     private final TickTimer placementTimer = new TickTimer();
-    /**
-     * 转头平滑器, 与 KillAura / Scaffold 共用同一实现。
-     *
-     * <p>AutoWebPlace 原本直接把 {@code exactRotation} 塞进 targetRotation: 那一刻的转角
-     * 可能是 90° 以上, 而 RotationHandler 会在同一个 tick 原样把目标角发出去 —— 单 tick
-     * 大角度瞬移是 Grim AimModulo360(配套的 >320 突变)与各类 aim 统计最先抓到的东西。
-     * 现在改成"逐 tick 转向 + 就位后再放"。
-     */
     private final RotationSmoother rotSmoother = new RotationSmoother(new Random());
-    /** 本 tick 想转到的精确角; targetRotation 每 tick 向它收敛。 */
     private Rotation desiredRotation;
     private static final double AIM_SPEED = 42.0;
-    /**
-     * 允许放置的最大偏差: 出站旋转与目标角的夹角超过它就先继续转, 下一 tick 再放。
-     * 6° 相当于 4 格处约 0.4 格的落点误差, 对"蛛网/岩浆落在脚下"没有任何影响, 但它把
-     * 单 tick 转角封在 AIM_SPEED 附近, 同时保证放置时的那一 tick 视线确实打在面上。
-     */
     private static final float AIM_READY_TOLERANCE = 6.0f;
-    /** 预测外推的速度上限(格/tick): 超过它的位移多半是击退/爆炸, 外推两格必然失准。 */
     private static final double MAX_PREDICT_SPEED = 0.5;
     private Phase placementPhase = Phase.IDLE;
     private PlacementInfo currentPlacement;
@@ -103,7 +88,6 @@ public class AutoWebPlace extends Module {
     private BlockPos lastDebugSupportPos;
     private Direction lastDebugFace;
     private Vec3 lastDebugAimPoint;
-    /** 本 tick 用即将发出的视线打出来的命中, 直接当作 useItemOn 的 BlockHitResult。 */
     private BlockHitResult pendingHit;
 
     public AutoWebPlace() {
@@ -159,7 +143,6 @@ public class AutoWebPlace extends Module {
             this.reset();
             return;
         }
-        // 每 tick 推进一步转向, 而不是在"决定放置"的那一 tick 一次性瞬移到位。
         this.steer();
         switch (this.placementPhase) {
             case LAVA_RETRIEVE -> this.doLavaRetrieve();
@@ -198,17 +181,11 @@ public class AutoWebPlace extends Module {
             this.reset();
             return;
         }
-        // 对准之后再放。差得太多就先继续转, 保持 PLACE 阶段下一 tick 重试 —— 这样单 tick
-        // 转角被 AIM_SPEED 封顶, 而且真正发包那一 tick 的视线一定落在放置面上。
         if (!this.isAimed()) {
             return;
         }
-        // 用"即将发出的那条视线"做射线, 命中结果直接作为 useItemOn 的 BlockHitResult。
-        // 不能再用搜索时存下的 aim 点: 那是另一条射线, 服务端的 RotationPlace /
-        // InvalidPlaceCursor 校验的正是"你报的命中点是不是你眼睛这条线打出来的"。
         this.pendingHit = this.aimRaycast();
         if (this.pendingHit == null) {
-            // 差一点点没打到面: 继续转, 下一 tick 再试。
             return;
         }
         if (!this.executePlacement()) {
@@ -248,7 +225,6 @@ public class AutoWebPlace extends Module {
         }
     }
 
-    /** 设定本阶段的精确目标角, 由 {@link #steer()} 逐 tick 收敛过去。 */
     private void steerTo(Vec3 aim) {
         if (aim == null || mc.player == null) {
             return;
@@ -261,13 +237,6 @@ public class AutoWebPlace extends Module {
         this.steer();
     }
 
-    /**
-     * 向 {@link #desiredRotation} 走一 tick, 输出仍然经过 GCD 量化与重复增量守卫。
-     *
-     * <p>量化是必须的: Grim AimProcessor 用连续增量反推鼠标灵敏度, 格点外的增量会让反推
-     * 拿不到稳定解, 这比"转头慢一点"显眼得多。重复增量守卫则是对 DuplicateRotPlace 的
-     * 直接回应 —— 连续两 tick 的 yaw 增量完全相同是它的唯一判据。
-     */
     private void steer() {
         if (this.desiredRotation == null || mc.player == null) {
             return;
@@ -282,7 +251,6 @@ public class AutoWebPlace extends Module {
         targetRotation = next;
     }
 
-    /** 出站旋转是否已经落在放置面的容差内。 */
     private boolean isAimed() {
         if (targetRotation == null || this.desiredRotation == null) {
             return false;
@@ -292,13 +260,6 @@ public class AutoWebPlace extends Module {
         return yawError <= AIM_READY_TOLERANCE && pitchError <= AIM_READY_TOLERANCE;
     }
 
-    /**
-     * 沿"即将发出的旋转"做一次射线, 只有命中支撑方块的指定面才算数。
-     *
-     * <p>这是服务端校验的同构实现: 服务端拿到的是 (方块, 面, 命中点) 三元组, 它自己的
-     * 校验是把视线从眼睛投出去, 看能不能打到那个方块那面。用同一条射线生成三元组,
-     * 就不再存在"报的命中点和视线不是一条线"的失配。
-     */
     private BlockHitResult aimRaycast() {
         if (this.currentPlacement == null || targetRotation == null || mc.level == null || mc.player == null) {
             return null;
@@ -468,13 +429,6 @@ public class AutoWebPlace extends Module {
         return Optional.empty();
     }
 
-    /**
-     * 目标沿 {@code movement} 直行时, 三 tick 内还能走几 tick 而不撞进方块。
-     *
-     * <p>线性外推不看碰撞, 于是目标贴着墙跑的时候预测点会落在墙里 —— 那个位置永远不会
-     * 有实体, 由它推出的放置面全部无效, 只是白花搜索, 而且一旦真的发出去就是"往空处
-     * 放方块"。用一次方块相交把可用 tick 数砍掉即可。
-     */
     private int reachableTicks(Entity entity, Vec3 movement) {
         if (mc.level == null) {
             return 3;
@@ -709,20 +663,6 @@ public class AutoWebPlace extends Module {
         return movement.x * movement.x + movement.z * movement.z >= 0.01;
     }
 
-    /**
-     * 目标的水平位移(格/tick)。
-     *
-     * <p>原实现只用 {@code x - xo}: 那是"上一 tick 到这一 tick"的单帧差, 带半 tick 的插值
-     * 滞后, 而且在目标刚被击退/刚踩进网时噪声很大 —— 预测落点会偏一格, 于是蛛网放在目标
-     * 已经离开的位置上, 既浪费也让"预测"看起来像瞎猜。
-     *
-     * <p>这里把位置差与 {@code getDeltaMovement()}(服务端同步的每 tick 动量)取均值:
-     * 位置差包含真实发生的位移, 动量没有插值滞后, 两者平均后既保留方向也压掉抖动。目标
-     * 在蛛网里时动量已经被削过, 而位置差还带着进网前的惯性, 那种情况直接用动量。
-     *
-     * <p>最后把水平速度夹到 0.5 格/tick: 超过这个值的位移(击退/爆炸/传送)外推两格之后
-     * 必然完全失准, 夹住只会让预测"保守", 不会让它跑到墙里去。
-     */
     private Vec3 getEntityMovement(Entity entity) {
         Vec3 fromPosition = new Vec3(entity.getX() - entity.xo, 0.0, entity.getZ() - entity.zo);
         Vec3 momentum = entity.getDeltaMovement();
@@ -1191,8 +1131,6 @@ public class AutoWebPlace extends Module {
         if (this.activePlacementType == PlacementType.LAVA) {
             Rotation rotation = RotationUtil.exactRotation(mc.player.getEyePosition(), this.currentPlacement.aim);
             targetRotation = rotation;
-            // 同一 tick 内 useBucket 会自己发一条 Rot 并用同一个角度使用桶, 所以这里保持
-            // 精确角(而不是平滑后的角): 发出去的角度和实际使用角度必须是同一个。
             this.desiredRotation = rotation;
             this.debugLog("Lava place use bucket slot=" + slot
                     + " place=" + this.formatBlockPos(this.currentPlacement.place)
@@ -1247,8 +1185,6 @@ public class AutoWebPlace extends Module {
         mc.player.getInventory().selected = swordSlot;
         PlayerUtil.sendCarriedItem();
         this.steerTo(Vec3.atCenterOf(this.groundWebFootPos));
-        // 挖方块同样要"先看再挖": 服务端的挖掘校验用的是玩家当前视线, 视线还没对上就发
-        // startDestroyBlock, 结果是 InvalidBreak / 破坏被忽略, 而客户端已经播了动画。
         if (!this.isAimed()) {
             return;
         }

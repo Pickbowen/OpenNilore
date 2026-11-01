@@ -15,6 +15,7 @@ import client.nilore.event.impl.RotationEvent;
 import client.nilore.event.impl.SprintEvent;
 import client.nilore.event.impl.StrafeEvent;
 import client.nilore.event.impl.TickEvent;
+import client.nilore.event.impl.WorldChangeEvent;
 import client.nilore.modules.impl.combat.antikb.JumpResetMode;
 import client.nilore.modules.impl.combat.antikb.NoXZMode;
 
@@ -57,6 +58,9 @@ extends ClientBase {
     public abstract void onReceivePacket(ReceivePacketEvent var1);
 
     public abstract void onDisconnect(DisconnectEvent var1);
+
+    public void onWorldChange(WorldChangeEvent var1) {
+    }
 
     public abstract void onPreMotion(PreMotionEvent var1);
 

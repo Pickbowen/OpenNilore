@@ -28,7 +28,6 @@ public class ConnectionPatch extends ClientBase {
         if (mc == null || mc.level == null || mc.player == null || packet == null || !NiloreClient.isReady()) {
             return false;
         }
-        // ping 读数的两个输入都在这一层: 入站 keep-alive 的到达时刻, 以及换服/换维度时的重置。
         if (packet instanceof ClientboundLoginPacket) {
             PingTracker.reset();
         }
@@ -59,8 +58,6 @@ public class ConnectionPatch extends ClientBase {
         PacketEvent event = new PacketEvent(packet, true);
         NiloreClient.getInstance().getEventBus().call(event);
         if (!event.isCancelled()) {
-            // 只统计真正离开客户端的回包: 被取消的包会被别的模块稍后重发, 那时才计入持有时长,
-            // 否则会把"排队中"的时间当成"已经发出去的延迟", 反而低估真实 RTT。
             PingTracker.onOutgoingPacket(packet);
         }
         return event.isCancelled();

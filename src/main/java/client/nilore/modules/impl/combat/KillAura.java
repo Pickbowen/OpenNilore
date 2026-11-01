@@ -222,20 +222,7 @@ public class KillAura extends Module {
         if (smoothed == null
                 || Float.isNaN(smoothed.getYaw()) || Float.isNaN(smoothed.getPitch())
                 || Float.isInfinite(smoothed.getYaw()) || Float.isInfinite(smoothed.getPitch())) {
-            // 回落路径同样要过 GCD 量化: 未量化的角度发出去会让 Grim 的 AimProcessor
-            // 从相邻增量反推出的灵敏度不等于真实灵敏度, 那是"非人手旋转"的直接指纹。
-            return RotationSmoother.patchConstantRotation(jittered, from);
-        }
-        // 平滑器的输出从来没被复验过: applyOrganicJitter 验证的是 jittered, 真正发出去的却是
-        // 平滑后的角度 —— 平滑器每 tick 有 ±WOBBLE 的速度随机和软收尾, 收敛前会偏出判定盒,
-        // 于是"同一几何条件下这一拍打不打"变成掷骰子, 也就是 3.0 内概率不打人的随机来源。
-        // 这里对最终角度补一次命中复验; 打不到就退到已验证过、且同样落在 GCD 网格上的 jittered。
-        // 两条路径都还会过 canAttackNow 的 sight/reach 闸门, 出站包不会因此变得不合法。
-        if (!this.jitterHits(target, smoothed, range)) {
-            // 回落值要重新走一遍重复增量守卫: breakDuplicateDelta 刚刚是按 smoothed 的增量
-            // 记的账, 而实际发出去的是下面这个角度, 不重走就会让守卫的基准和线上不一致。
-            Rotation fallback = RotationSmoother.patchConstantRotation(jittered, from);
-            return this.rotSmoother.breakDuplicateDelta(fallback, from);
+            return jittered;
         }
         return smoothed;
     }
@@ -507,14 +494,7 @@ public class KillAura extends Module {
         if (this.targetIndex > targetList.size() - 1 || !isSwitch) {
             this.targetIndex = 0;
         }
-        Entity previousTarget = target;
         target = targetList.get(this.targetIndex);
-        if (target != previousTarget) {
-            // 换目标必须清掉平滑器攒下的角速度惯性: 不清就是带着上一个目标的惯性往新目标上
-            // 起步, 收敛前的每一拍 sight 闸门都判打不到 —— 表现为"换人先空两三拍"。
-            // 只动本地状态, 发出去的还是同一套 GCD 量化角度。
-            this.rotSmoother.reset();
-        }
         aimingTarget = this.getTarget();
 
         if (this.aimingTarget != null) {
@@ -584,21 +564,9 @@ public class KillAura extends Module {
         }
         this.authoritativeRotation = this.attackRotation();
         if (!this.canAttackNow(this.authoritativeRotation)) {
-            // 闸门关着的时候蓄力不能攒过一刀。
-            //
-            // onTick 给 attacks 的上限是 2.0，而 2.0 意味着"欠两刀"。攒到 2.0 再放开闸门：
-            // while 第一刀把 attacks 扣到 1.0，同 tick 的第二刀被 attackAndLock 拦下后 break，
-            // 剩下的 1.0 让下一拍立刻再砍一刀。也就是说闸门一开就是"连续两拍两刀" ——
-            // 名义 APS 10（两拍一刀）的配置在这一瞬间跑出 20 APS。
-            //
-            // 撞得最狠的场景正是 AntiKB 的 NoXZ：反击窗口默认 5 拍，期间本模块恒走
-            // noxz-counter 分支，attacks 稳定顶在 2.0；窗口一关的那一拍立刻双连击，而
-            // NoXZ 刚刚把 inDelayWindow / handlingVelocity 翻过去 —— Grim 的 velocity 与
-            // post 检查最敏感的位置正好吃到多出来的那个进攻包。
-            //
-            // 削到 1.0 依然满足"闸门一开就当拍出刀"（不需要重新蓄力），被丢掉的只有那刀
-            // 本来就不该存在的额外攻击；同时它也是下面 doAttack() 失败分支的兜底：出站包
-            // 数量恒等于"闸门放行的那一拍"，不会再出现同一 tick 内的二连。
+            // A gate that closes for one tick must not throw away the charge built up over the
+            // previous two: that turned every hitch into a full attack cycle of downtime. Cap it
+            // instead, so the swing fires the moment the gate reopens.
             this.attacks = Math.min(this.attacks, 1.0f);
             return;
         }
@@ -607,9 +575,6 @@ public class KillAura extends Module {
             // taken by the antikb counter or Critical first, and charging the cost anyway pushed
             // the accumulator negative - the next hit then had to make up the debt.
             if (!this.doAttack()) {
-                // 锁被别人拿走了（NoXZ 反击 / Critical）：蓄力留在 1.0，下一拍还在闸门内就直接出刀，
-                // 但绝不留下"欠两刀"。
-                this.attacks = Math.min(this.attacks, 1.0f);
                 break;
             }
             this.attacks -= 1.0f;
@@ -634,7 +599,7 @@ public class KillAura extends Module {
         // isWithinReach already subtracted the margin, so a target sitting in that last strip passed
         // the visibility check and was then dropped by the distance gate every few ticks. Both now
         // subtract the same (much smaller) margin, see RotationUtil#REACH_MARGIN.
-        double sightRange = reachNow - RotationUtil.REACH_MARGIN;
+        double sightRange = reachNow;
         // Through Walls only skips the block-clipped raycast inside Through Walls Range; beyond
         // it the attack still has to see the target, otherwise the range slider is never read.
         if (!this.ignoreBlocksAt(target)
@@ -670,14 +635,6 @@ public class KillAura extends Module {
             // the old gate still closed and the aura stood there doing nothing, which is the
             // "inside 3.0 and it just will not swing" report.
             return this.deny("sprint");
-        }
-        // 无敌帧让刀。这个设置此前只被 Target ESP 读过实体自身的 hurtTime, 判定里从未生效:
-        // 目标处于受击无敌帧时照样出刀, 服务端的 LivingEntity.hurt 把这一刀直接吞掉, 观感就是
-        // "一直在挥、血条不连续"。默认 10 正是 1.20.1 的 hurtTime 上限, 所以默认行为完全不变。
-        // 放在这里而不是 isValidAttack, 是为了不动目标筛选 / ESP / 朝向, 只决定这一拍打不打。
-        if (target instanceof LivingEntity livingTarget
-                && (float) livingTarget.hurtTime > this.hurtTime.getValue().floatValue()) {
-            return this.deny("hurt-time");
         }
         if (!RotationUtil.isWithinReach(target)) {
             return this.deny("reach");

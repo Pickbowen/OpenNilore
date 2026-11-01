@@ -115,20 +115,9 @@ extends ClientBase {
         float forward = strafeEvent.getForward();
         float strafe = strafeEvent.getStrafe();
         if (TargetStrafe.isOrbiting()) {
-            // 绕圈期间不再要求玩家按着方向键：按住跳键就是要贴住对面转，输入由模块接管。
-            // 以前这里在 forward==0 && strafe==0 时直接返回，手一松就没人改输入，
-            // 看起来就是"不粘着对面、时不时脱手"。
-            // 半径步进是本 tick 才算出来的，没开 CollisionSpeed 时没有别的调用方，这里先触发。
             TargetStrafe.ensureOrbitComputed();
-            // 只写 8 方向里的整数组合。
             //
-            // 绕圈不是靠"把输入掰成任意角度"实现的：静默旋转已经把发包 yaw 指向目标，
-            // 输入取横移 (0, ±1) 时世界移动方向就是这条 yaw 的 ±90°，也就是绕目标的切向。
-            // 需要收/放半径时再带一个 forward（45°）。
             //
-            // 之前这里写的是连续角 (cos, sin)：向量长度虽然还是 1，但方向不是 8 方向之一，
-            // Grim 的 Simulation 反推输入时会得出不存在的按键组合，于是每 tick 报偏移 ——
-            // 这就是"没开 CollisionSpeed 也爆模拟"的原因。
             strafeEvent.setForward(TargetStrafe.radialStep());
             strafeEvent.setStrafe(TargetStrafe.strafeSign());
             return;

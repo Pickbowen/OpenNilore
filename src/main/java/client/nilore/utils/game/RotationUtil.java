@@ -91,7 +91,6 @@ extends ClientBase {
         double dx = to.x - from.x;
         double dy = to.y - from.y;
         double dz = to.z - from.z;
-        // hypot 内部带溢出/下溢保护（两次缩放 + 一次 sqrt），这里的坐标量级永远到不了那一步。
         double horizontalDist = Math.sqrt(dx * dx + dz * dz);
         float yaw = RotationUtil.toDegrees(Math.atan2(dz, dx)) - 90.0f;
         float pitch = RotationUtil.toDegrees(-Math.atan2(dy, horizontalDist));
@@ -267,7 +266,6 @@ extends ClientBase {
         }
         return null;
     }
-
 
     private static final double HIT_SAMPLE_SPACING = 0.25;
     private static final int HIT_SAMPLE_MAX_SEGMENTS = 8;
@@ -520,7 +518,6 @@ extends ClientBase {
         return false;
     }
 
-
     private static double reachLimit = 3.0;
 
     public static void setReachLimit(double reach) {
@@ -582,8 +579,6 @@ extends ClientBase {
     }
 
     public static Vec3 getDirection(float yaw, float pitch) {
-        // FastMath 关闭时逐字回落到 Mth 的查表实现，行为与原版一致；开启时走 4096 项插值表。
-        // 两者都在 {@link client.nilore.utils.math.FastMath} 里按同一套弧度约定换算。
         float yawRad = -yaw * ((float) Math.PI / 180) - (float) Math.PI;
         float pitchRad = -pitch * ((float) Math.PI / 180);
         float cosYaw = FastMath.cos(yawRad);
@@ -684,7 +679,6 @@ extends ClientBase {
         float sinPitch = (float)Math.sin(-rotation.getPitch() * ((float)Math.PI / 180));
         return new Vec3(sinYaw * cosPitch, sinPitch, cosYaw * cosPitch);
     }
-
 
     private static final double[] AIM_HEIGHT_FRACTIONS = {0.75, 0.5, 0.3, 0.1};
 
@@ -841,14 +835,6 @@ extends ClientBase {
         return isLookingAt(entity, range, inflate, currentAimRotation());
     }
 
-    /**
-     * 用**显式给定**的朝向做命中判定。
-     *
-     * <p>当动作包被安排在移动包之前发送时(vanilla 的攻击就是这个位置), 服务端此刻持有的
-     * 朝向还是上一 tick 发出去的那个, 它也会用那个角度去校验这次交互。所以本地判定必须
-     * 用同一个角度 —— 用本 tick 刚算出来的新朝向会让"本地认为打得到 / 服务端按旧角度算
-     * 却是空挥", 也就是 Grim 侧看到的 Reach/Hitboxes 抖动。
-     */
     public static boolean isLookingAt(Entity entity, double range, float inflate, Rotation rotation) {
         if (entity == null || mc.player == null || mc.level == null || rotation == null) {
             return false;

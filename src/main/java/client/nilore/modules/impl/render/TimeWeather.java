@@ -28,7 +28,6 @@ public class TimeWeather extends Module {
     public void onGameTick(GameTickEvent event) {
         if (mc.level == null) return;
 
-        // 设置时间
         String time = timeMode.getValue();
         if (!"Vanilla".equals(time)) {
             long dayTime = switch (time) {
@@ -41,7 +40,6 @@ public class TimeWeather extends Module {
             mc.level.setDayTime(dayTime);
         }
 
-        // 设置天气
         String weather = weatherMode.getValue();
         if (!"Vanilla".equals(weather)) {
             switch (weather) {
@@ -71,14 +69,12 @@ public class TimeWeather extends Module {
     public void onReceivePacket(ReceivePacketEvent event) {
         if (mc.level == null) return;
 
-        // 拦截服务端时间同步包，防止覆盖我们的时间设置
         if (event.getPacket() instanceof ClientboundSetTimePacket
                 && !"Vanilla".equals(timeMode.getValue())) {
             event.setCancelled(true);
             return;
         }
 
-        // 只拦截天气相关的事件包，不影响其他游戏事件（模式切换、重生等）
         if (event.getPacket() instanceof ClientboundGameEventPacket gameEvent
                 && !"Vanilla".equals(weatherMode.getValue())) {
             ClientboundGameEventPacket.Type type = gameEvent.getEvent();

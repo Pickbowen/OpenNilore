@@ -4,9 +4,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 
 /**
- * 布吉岛(HeyPixel) Id1 签名的还原实现（Id1SignatureProvider 接口）。
  *
- * 算法套件：MD5 / SHA-1 / SHA-256 / SHA-512 / CRC32。映射：
  *   signString     = SHA-256
  *   digestPathLike = MD5
  */

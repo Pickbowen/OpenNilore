@@ -48,6 +48,7 @@ import client.nilore.event.impl.RotationEvent;
 import client.nilore.event.impl.SprintEvent;
 import client.nilore.event.impl.StrafeEvent;
 import client.nilore.event.impl.TickEvent;
+import client.nilore.event.impl.WorldChangeEvent;
 import client.nilore.modules.impl.combat.AntiKB;
 import client.nilore.modules.impl.combat.KillAura;
 import client.nilore.modules.impl.movement.NoSlow;
@@ -278,7 +279,8 @@ extends AntiKBMode {
             this.compensateUntilMs = -1L;
         }
 
-        if (this.shouldNotEngage() || this.noAimTicks >= 3) {
+        boolean noTarget = this.target == null || !this.target.isAlive();
+        if (this.shouldNotEngage() || this.noAimTicks >= 3 || noTarget && !inDelayWindow) {
             this.resetAll();
             return;
         }
@@ -339,6 +341,12 @@ extends AntiKBMode {
 
     @Override
     public void onDisconnect(DisconnectEvent disconnectEvent) {
+        this.resetAll();
+    }
+
+    @Override
+    public void onWorldChange(WorldChangeEvent worldChangeEvent) {
+        this.packetQueue.clear();
         this.resetAll();
     }
 
@@ -453,9 +461,6 @@ extends AntiKBMode {
             return true;
         }
         if (mc.screen instanceof InventoryScreen) {
-            return true;
-        }
-        if (this.target == null || !this.target.isAlive()) {
             return true;
         }
         if (mc.player.isDeadOrDying() || mc.player.isSpectator()) {

@@ -138,7 +138,6 @@ public class Projectiles extends Module {
         Vec3 camera = mc.gameRenderer.getMainCamera().getPosition();
         poseStack.pushPose();
         poseStack.translate(-camera.x, -camera.y, -camera.z);
-        // 这些状态在整个循环里取值不变, 提到循环外; 只有 shaderColor 是按实体取的, 留在里面。
         RenderSystem.enableBlend();
         RenderSystem.defaultBlendFunc();
         RenderSystem.disableDepthTest();

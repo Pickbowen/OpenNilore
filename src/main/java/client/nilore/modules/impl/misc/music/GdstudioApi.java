@@ -17,19 +17,10 @@ import java.util.concurrent.CompletableFuture;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * gdstudio 第三方聚合 API（{@code music-api.gdstudio.xyz}）的真实实现。
- *
- * <p>原来这堆逻辑直接写在 {@code NeteaseApi} 里；引入 provider 层后 {@code NeteaseApi}
- * 退化成门面，如果 {@code GdstudioSource} 还调门面就会形成
- * {@code NeteaseApi → MusicSources → GdstudioSource → NeteaseApi} 的环，
- * 一进来就 StackOverflow。所以把真实 HTTP 逻辑挪到这里，让 source 直接调这里、不再回头。
- */
 public final class GdstudioApi {
 
     private static final String BASE = "https://music-api.gdstudio.xyz/api.php";
     private static final Pattern LRC_PATTERN = Pattern.compile("\\[(\\d{2}):(\\d{2})\\.(\\d{2,3})]");
-    /** LRC 全局偏移标签：[offset:+500]，正数表示歌词提前 */
     private static final Pattern OFFSET_TAG = Pattern.compile("\\[offset:([+-]?\\d+)]", Pattern.CASE_INSENSITIVE);
 
     private GdstudioApi() {
@@ -110,13 +101,6 @@ public final class GdstudioApi {
                 });
     }
 
-    /**
-     * 行级 LRC 解析。
-     *
-     * <p>坑和 {@code NeteaseOfficialApi.parseLrc} 一样：多时间戳行 {@code [00:12.00][00:15.00]词}
-     * 要用 {@code lookingAt} 逐个吞，用 {@code matches} 一次匹配会把第二个时间戳吃进歌词文本；
-     * 还要处理 {@code [offset:...]} 全局偏移和开头的署名元数据行。
-     */
     private static List<LyricLine> parseLrc(String raw) {
         List<LyricLine> lines = new ArrayList<>();
         long offsetMs = 0;
@@ -154,7 +138,6 @@ public final class GdstudioApi {
                 continue;
             }
             for (long t : times) {
-                // 正 offset 表示歌词提前出现，时间戳要减
                 lines.add(new LyricLine(Math.max(0, t - offsetMs), text));
             }
         }
@@ -162,7 +145,6 @@ public final class GdstudioApi {
         return lines;
     }
 
-    /** 署名元数据行（作词/作曲/编曲），不是歌词。 */
     private static boolean isMetadataLine(String text) {
         String lower = text.toLowerCase();
         return (text.contains(":") || text.contains("："))

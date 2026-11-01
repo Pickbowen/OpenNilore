@@ -82,18 +82,8 @@ public final class Fonts {
         return getCustomFont(name, size, false, 0f, true);
     }
 
-    /**
-     * 西文字体画不出来的字（主要是中文）统一落到它上面。
-     *
-     * <p>这样就能让英语/数字用 Apple 味的西文字体、中文仍然走苹方——
-     * 字形光栅化时逐字符挑字体，不需要调用方自己分组。
-     */
     private static final String CJK_FALLBACK = "pingfang_sc_regular.ttf";
 
-    /**
-     * @param bold 是否合成粗体。中文字体基本都没有 Bold 变体，只能靠字形重复绘制撑粗。
-     *             粗体和常规是两份独立缓存，不会互相污染。
-     */
     public static synchronized CustomFont getCustomFont(String name, float size, boolean bold) {
         return getCustomFont(name, size, bold, 0f, true);
     }
@@ -111,7 +101,6 @@ public final class Fonts {
         try {
             Font font = awtFont(name);
             if (font == null) return null;
-            // 主字体自己就是中文字体时不用兜底，省一份字形图集
             Font[] fallbacks = new Font[0];
             if (!CJK_FALLBACK.equals(name)) {
                 Font cjk = awtFont(CJK_FALLBACK);
@@ -129,7 +118,6 @@ public final class Fonts {
         }
     }
 
-    /** 预热线程的句柄，供 {@link #awaitPreload(long)} 收尾时 join。 */
     private static volatile Thread preloadThread;
 
     public static void preloadFontsAsync() {
@@ -148,17 +136,6 @@ public final class Fonts {
         thread.start();
     }
 
-    /**
-     * 等字体预热线程收尾 —— 注入流程结束前调用。
-     *
-     * <p>为什么必须等：{@link #awtFont(String)} 的解析是在 {@code synchronized (AWT_LOCK)} 里
-     * 做的，而解析苹方要读 11 MB。预热线程跑着的时候，渲染线程第一次遇到汉字会进来要同一个
-     * 兜底字体，于是**每帧都在等这把锁**：表现就是注入后头一段时间画面一阵一阵地卡，
-     * 等解析完、常用字也都铺进图集之后才彻底顺下来。
-     *
-     * <p>把等待放在这里（注入收尾、游戏还没开始渲染）而不是留在渲染线程上，卡顿就从
-     * "对局中持续几分钟"变成"加载界面多停一下"。
-     */
     public static void awaitPreload(long millis) {
         Thread thread = preloadThread;
         if (thread == null || !thread.isAlive()) {

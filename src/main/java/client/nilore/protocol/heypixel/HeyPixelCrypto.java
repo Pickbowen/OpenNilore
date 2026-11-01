@@ -6,13 +6,6 @@ import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
-/**
- * 布吉岛(HeyPixel) Id1 挑战应答加密 —— Id1CryptoTransform 完整实现。
- *
- * 算法 AES/GCM/NoPadding；密钥 AES-128 = MD5(keyString) hex 子串 [8:24] 的
- * 16 个 ASCII 字节；IV = keyString 的字节。keyString 已验证为挑战的
- * challengeValue 字段。
- */
 public final class HeyPixelCrypto implements Id1PacketBuilder.Id1CryptoTransform {
 
     private volatile String keyString;

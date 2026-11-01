@@ -35,19 +35,7 @@ class GlyphPage {
     final Font font;
     final ResourceLocation textureLocation;
     final int padding;
-    /**
-     * 伪粗体的水平偏移量，单位是纹理像素；0 表示按普通字重渲染。
-     *
-     * <p>光栅化是在放大 {@code scale} 倍之后做的，所以这个值由调用方按 scale 折算，
-     * 保证缩回屏幕上的加粗量是一致的。
-     */
     final int boldPx;
-    /**
-     * 主字体画不出来的字符交给它们兜底，按顺序试。
-     *
-     * <p>典型用法是主字体选 Apple 风格的西文字体、中文字符落到苹方——
-     * 之前这里两个分支返回的是同一个字体，等于 fallback 从来没生效过。
-     */
     private final Font[] fallbacks;
     private final boolean hinted;
     private final Char2ObjectArrayMap<Glyph> glyphMap = new Char2ObjectArrayMap();
@@ -63,10 +51,6 @@ class GlyphPage {
     /** Set when the atlas gained pixels; the mipmap chain is rebuilt once per draw instead of
      *  once per glyph, which is what used to cost milliseconds on the first Chinese glyphs. */
     private boolean mipmapDirty;
-    /**
-     * 本帧新增字形覆盖的脏矩形（闭区间）。光栅化只写 NativeImage 的堆外内存，GL 上传攒到
-     * {@link #flush()} 一次做完 —— 每页每帧一次 glTexSubImage2D，而不是每个字形一次。
-     */
     private boolean uploadDirty;
     private int dirtyMinX = Integer.MAX_VALUE;
     private int dirtyMinY = Integer.MAX_VALUE;
@@ -180,7 +164,6 @@ class GlyphPage {
             char c = (char)(this.startChar + index);
             Font font = this.getFontForChar(c);
             Rectangle2D bounds = font.getStringBounds(String.valueOf(c), fontRenderContext);
-            // 伪粗体要往右多占一点，不然加粗出来的那半边会被字形格子裁掉
             int width = (int)Math.ceil(bounds.getWidth()) + this.boldPx;
             int height = (int)Math.ceil(bounds.getHeight());
             ++index;
@@ -278,10 +261,6 @@ class GlyphPage {
             }
             int width = Math.max(1, glyph.width());
             int height = Math.max(1, glyph.height());
-            // 像素先同步进 NativeImage 的堆外内存，GL 上传推迟到 flush()。之前这里每个字形
-            // 都 texture.bind() + upload() 一次：一屏没缓存过的中文（聊天/计分板/模块列表）
-            // 就是每帧几十次 bind + 几十次 glTexSubImage2D —— 这才是"刚注入那几分钟一直掉帧、
-            // 字形缓存热了就好了"的直接来源。攒成一个脏矩形后每次绘制每页只要一次上传。
             this.writeRegion(glyph.u(), glyph.v(), width, height);
             this.markDirty(glyph.u(), glyph.v(), width, height);
             this.rasterized.set(glyph.value() - this.startChar);
@@ -290,7 +269,6 @@ class GlyphPage {
         }
     }
 
-    /** 把一块刚光栅化的区域并进待上传的脏矩形。 */
     private void markDirty(int x, int y, int width, int height) {
         int x1 = x + width - 1;
         int y1 = y + height - 1;
@@ -304,12 +282,6 @@ class GlyphPage {
         }
     }
 
-    /**
-     * 把本帧攒下的字形一次性推上 GPU，顺带重建 mipmap。
-     *
-     * <p>调用点必须在"字形收集完、开始画 quad 之前"：脏矩形覆盖了这一次绘制里所有新字形，
-     * 上传一次就等于把它们全部可见，画出来的贴图不会读到旧像素。
-     */
     void flush() {
         if (this.uploadDirty) {
             this.uploadDirty = false;

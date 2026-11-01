@@ -120,11 +120,6 @@ public class NiloreClient extends ClientBase {
             } else {
                 logger.warn("ClassAgent not attached. Launch with `./gradlew runClient0` so the agent jvmArg is set.");
             }
-            // 字体预热在本方法最开头就起线程了，和 mapping 加载 / retransform 并行；这里收尾。
-            // 必须等它做完再放行 isReady：否则渲染线程第一次要中文字形时会和预热线程抢
-            // AWT_LOCK（解析苹方 11 MB），表现为注入后一段时间内每帧一阵一阵地卡，直到字体
-            // 解析完、常用字也铺满图集才恢复。等待放在注入收尾＝加载界面多停一下，
-            // 而不是对局中持续几分钟的掉帧。
             Fonts.awaitPreload(8000L);
             isReady = true;
             logger.info("{} v{} initialized.", CLIENT_NAME, VERSION);

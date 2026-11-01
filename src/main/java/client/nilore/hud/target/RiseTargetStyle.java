@@ -167,7 +167,6 @@ public class RiseTargetStyle
 
         float healthTextY = barY + (barH - 18.0f) / 2.0f + 1.0f + 7.0f;  // vertically center in bar + 7f down
 
-        // Get ModuleList theme colors (第二色用更大偏移，渐变更明显)
         int gradientColor1 = this.getThemeColor(0);
         int gradientColor2 = this.getThemeColor(4);
 
@@ -191,7 +190,6 @@ public class RiseTargetStyle
             int whiteArgb = new Color(255, 255, 255, (int)(255f * fade)).getRGB();
             GlHelper.drawTextShadowLegacy("Name: ", contentX, nameY + 1.0f, this.prefixFont, whiteArgb);
 
-            // Player name — per-character ModuleList gradient (每个字不同颜色)
             float namePartX = contentX + prefixW;
             int charIdx = 0;
             for (char c : rawName.toCharArray()) {
@@ -225,7 +223,6 @@ public class RiseTargetStyle
         });
     }
 
-    /** 横向渐变圆角矩形（从左到右） */
     private static void drawHorizontalGradientRoundedRect(float x, float y, float w, float h, float r, Color c1, Color c2) {
         int col1 = c1.getAlpha() << 24 | c1.getRed() << 16 | c1.getGreen() << 8 | c1.getBlue();
         int col2 = c2.getAlpha() << 24 | c2.getRed() << 16 | c2.getGreen() << 8 | c2.getBlue();

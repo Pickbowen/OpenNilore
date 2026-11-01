@@ -116,7 +116,6 @@ public final class NiloreTheme {
         p.navHover = 0x1A787880;
         p.segmentActive = 0xFFFFFFFF;
         p.switchOff = 0x22787880;
-        // 开关的开启色：深色配色里的那把绿，亮色下沿用同一个值，两种主题的布尔按钮看起来一致。
         p.switchOn = 0xFF30D158;
         p.switchKnob = 0xFFFFFFFF;
         p.selectEditing = 0x2E767680;

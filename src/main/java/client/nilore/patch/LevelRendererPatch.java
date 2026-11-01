@@ -17,7 +17,6 @@ import client.nilore.NiloreClient;
 import client.nilore.asm.Invocation;
 import client.nilore.event.impl.RenderEvent;
 import client.nilore.modules.impl.render.BetterFPS;
-import client.nilore.modules.impl.render.TerrainLOD;
 
 @Patch(LevelRenderer.class)
 public class LevelRendererPatch {
@@ -60,14 +59,11 @@ public class LevelRendererPatch {
             throws Exception {
         BetterFPS betterFPS = BetterFPS.INSTANCE;
         ChunkRenderDispatcher.RenderChunk chunk = original.instance();
-        if (chunk != null) {
+        if (chunk != null && betterFPS != null) {
             BlockPos origin = chunk.getOrigin();
             double dx = origin.getX() + 8.0 - camX;
             double dz = origin.getZ() + 8.0 - camZ;
-            if (TerrainLOD.covers(origin, dx * dx + dz * dz)) {
-                return ChunkRenderDispatcher.CompiledChunk.UNCOMPILED;
-            }
-            if (betterFPS != null && betterFPS.shouldSkipLayer(renderType, dx, dz)) {
+            if (betterFPS.covers(origin, dx * dx + dz * dz)) {
                 return ChunkRenderDispatcher.CompiledChunk.UNCOMPILED;
             }
         }

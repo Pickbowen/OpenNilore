@@ -36,7 +36,6 @@ public class LyricsModule extends Module {
     private static final int WARMUP_BATCH_SIZE = 1;
 
     private final NumberSetting yOffset = new NumberSetting("Y Offset", 131, -200, 200, 1);
-    /** 文字相对行的微调：不同字体的视觉重心不完全一样，用它把基线对齐到舒服的位置。 */
     private final NumberSetting fontOffset = new NumberSetting("Font Offset", 2, -2, 2, 1);
 
     private static final float PANEL_H = 130;

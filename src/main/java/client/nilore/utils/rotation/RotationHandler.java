@@ -124,16 +124,11 @@ public class RotationHandler
             } else if (killAura != null && killAura.isEnabled() && KillAura.target != null && killAura.rotation != null) {
                 RotationHandler.setTargetRotation(new Rotation(killAura.rotation.getYaw(), killAura.rotation.getPitch()));
             } else if (TargetStrafe.INSTANCE != null && TargetStrafe.isOrbiting()) {
-                // 没有 KillAura 接管朝向时，由 TargetStrafe 把发包 yaw 指向目标。
-                // 横移输入 (0, ±1) 的世界方向就是这条 yaw 的 ±90° —— 绕目标的切向，
-                // 而且整条链路不读玩家当前视角，转镜头不会改变绕圈方向。
                 RotationHandler.setTargetRotation(TargetStrafe.aimRotation());
             } else if (antiKB != null && antiKB.isEnabled() && AntiKB.rotation != null) {
                 RotationHandler.setTargetRotation(AntiKB.rotation);
             } else if (PacketBreak.INSTANCE != null && PacketBreak.INSTANCE.isEnabled()
                     && PacketBreak.INSTANCE.targetRotation != null) {
-                // 挖掘排在整条链的最后：它只负责把准星挪到"这个方块真的挖得到的那一点"，
-                // 任何人想接管视角（战斗、搭路、防击退）都比它有优先级。
                 RotationHandler.setTargetRotation(PacketBreak.INSTANCE.targetRotation);
             } else {
                 // NO module owns the rotation this tick -> hands off completely. The

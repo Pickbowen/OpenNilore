@@ -1,18 +1,9 @@
 package client.nilore.modules.impl.misc.music.dsp;
 
-/**
- * 调性检测（Krumhansl-Schmuckler 模板匹配）。
- *
- * <p>automix 拿它判断两首歌调性差多远——差太多硬接会很刺耳。
- * 流程是标准的：STFT 累计出 chroma（12 个音级），再和大小调各 12 个旋转模板做相关，
- * 最高分对应的就是主调，最高分与次高分之差当作置信度。
- */
 public final class KeyDetector {
 
-    /** Krumhansl-Kessler 大调模板。 */
     private static final double[] KS_MAJOR = {
             6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88};
-    /** Krumhansl-Kessler 小调模板。 */
     private static final double[] KS_MINOR = {
             6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17};
     private static final String[] NAMES = {
@@ -29,7 +20,6 @@ public final class KeyDetector {
         }
     }
 
-    /** 音频不足 0.25 秒、或没有任何能量时返回 null。 */
     public static Key detect(float[] mono, int sampleRate) {
         if (mono == null || sampleRate <= 0 || mono.length < sampleRate / 4) {
             return null;
@@ -60,7 +50,6 @@ public final class KeyDetector {
                     continue;
                 }
                 double freq = (double) bin * sampleRate / n;
-                // A4 = 440Hz 映射到索引 9（"A"），所以整体 +9
                 double pitchClass = 12.0 * (Math.log(freq / 440.0) / Math.log(2.0)) + 9.0;
                 int idx = (int) Math.round(pitchClass) % 12;
                 if (idx < 0) {
@@ -116,7 +105,6 @@ public final class KeyDetector {
         return new Key(bestRoot, bestMinor, Math.min(1.0, confidence));
     }
 
-    /** 五度圈上的距离；大小调不同额外 +2。任一为 null 时返回 -1。 */
     public static int harmonicDistance(Key a, Key b) {
         if (a == null || b == null) {
             return -1;
@@ -130,13 +118,11 @@ public final class KeyDetector {
         return d + (a.minor() == b.minor() ? 0 : 2);
     }
 
-    /** 0（完全不搭）到 1（同调）。 */
     public static double compatibility(Key a, Key b) {
         int d = harmonicDistance(a, b);
         return d < 0 ? -1.0 : Math.max(0.0, 1.0 - d / 8.0);
     }
 
-    /** 就地 radix-2 Cooley-Tukey。 */
     private static void fft(double[] re, double[] im) {
         int n = re.length;
         for (int i = 1, j = 0; i < n; i++) {

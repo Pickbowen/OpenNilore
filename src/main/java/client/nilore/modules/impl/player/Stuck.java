@@ -50,8 +50,9 @@ extends Module {
     public void onEnable() {
         this.stuckState = 0;
         this.capturedPacket = null;
-        this.savedYaw = RotationHandler.targetRotation.getYaw();
-        this.savedPitch = RotationHandler.targetRotation.getPitch();
+        Rotation target = RotationHandler.targetRotation;
+        this.savedYaw = target != null ? target.getYaw() : mc.player.getYRot();
+        this.savedPitch = target != null ? target.getPitch() : mc.player.getXRot();
         this.pendingDisable = false;
     }
 

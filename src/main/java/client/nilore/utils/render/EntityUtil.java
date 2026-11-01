@@ -7,7 +7,6 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.WalkAnimationState;
 import net.minecraft.world.level.Level;
 
-
 import client.nilore.utils.misc.ReflectionUtil;
 import client.nilore.utils.rotation.RotationHandler;
 import java.lang.reflect.Field;
@@ -18,7 +17,6 @@ public class EntityUtil {
 
     private static final Map<Integer, Entity> FAKE_ENTITY_CACHE = new ConcurrentHashMap<>();
     private static Level lastLevel = null;
-
 
     public static Entity getOrCreateSyncedEntity(Entity original, String targetStr) {
         Level currentLevel = original.level();
@@ -44,7 +42,6 @@ public class EntityUtil {
             FAKE_ENTITY_CACHE.put(original.getId(), fake);
         }
 
-        // === 基础数据同步 ===
         fake.copyPosition(original);
         fake.setBoundingBox(original.getBoundingBox());
         fake.tickCount = original.tickCount;
@@ -87,7 +84,6 @@ public class EntityUtil {
                 fakeLiving.setYHeadRot(yaw);
             }
 
-            // 直接同步动画状态，避免累积问题
             WalkAnimationState origAnim = origLiving.walkAnimation;
             WalkAnimationState fakeAnim = fakeLiving.walkAnimation;
             copyWalkAnimation(origAnim, fakeAnim);

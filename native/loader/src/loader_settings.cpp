@@ -91,8 +91,6 @@ bool is_hwid_spoof_enabled() {
 }
 
 bool is_native_bypass_enabled() {
-    // 老配置里这个开关叫 earlyMode：先读新键，没写过就沿用旧值，免得升级后
-    // 用户的勾选状态凭空消失（旧键不再写回，下次保存时自然被新键取代）。
     QHash<QString, QVariant> all = load_all();
     QVariant v = all.value(kKeyNativeBypass());
     if (v.isValid()) {

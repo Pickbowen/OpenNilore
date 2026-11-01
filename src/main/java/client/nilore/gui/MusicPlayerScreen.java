@@ -57,9 +57,6 @@ public class MusicPlayerScreen extends Screen {
     private static final float PAD = 22.88f;
     private static final float RADIUS = 19.36f;
 
-    // 配色不再是写死的常量：每首歌按封面动态提取（Material You / Monet），换歌时平滑过渡。
-    // 这里从 static final 改成可变静态字段，是为了让下面上百处引用一行都不用动。
-    // 字面值只是占位，静态块里会用兜底配色覆盖一遍（见本类末尾的 static 块）。
     private static int SCRIM = 0xC30B0807;
     private static int SHELL = 0xFF1B1215;
     private static int SIDEBAR = 0xFF24171C;
@@ -70,9 +67,6 @@ public class MusicPlayerScreen extends Screen {
     private static int ACCENT = 0xFFFFA6C3;
     private static int ACCENT_STRONG = 0xFFFF8FB5;
     private static int ACCENT_HOVER = 0xFFFFB9CE;
-    // 文字色不参与主题派生：恒为白色系，免得跟着专辑封面来回变色。
-    // 三个值只差明度，对应「标题 / 次要 / 最弱」三层信息，不是三种颜色。
-    // 进度条滑块也用 CREAM，所以它一起变成白的。
     private static final int CREAM = 0xFFFFFFFF;
     private static final int MUTED = 0xFFD5D5D5;
     private static final int DIM = 0xFF9A9A9A;
@@ -80,27 +74,14 @@ public class MusicPlayerScreen extends Screen {
     private static int ROW_ACTIVE = 0xFF52313D;
     private static int DIVIDER = 0xFF3B2B31;
 
-    // --- 动态配色状态 ---
-    // 配色是全局共享的（上面那些字段是 static），所以状态也放 static。
-    // 同一时刻只会开一个播放器界面，不会互相干扰。
     private static MonetPalette.Scheme themeCurrent = MonetPalette.fallback();
     private static MonetPalette.Scheme themeFrom = themeCurrent;
     private static MonetPalette.Scheme themeTarget = themeCurrent;
     private static float themeProgress = 1.0f;
-    /** 换歌时配色过渡时长（秒）。 */
     private static final float THEME_FADE_SECONDS = 0.85f;
 
     private static long frameLastNanos = 0L;
 
-    /**
-     * 把一套 Monet 配色套到上面那组字段上。
-     *
-     * <p>tone 按 Material 3 深色方案取：表面层级 surfaceLowest(5) → surfaceHighest(21)，
-     * 主色块 primaryContainer(30)，强调色 primary(80)。
-     *
-     * <p>注意这里**不碰文字色**（CREAM / MUTED / DIM）——那三个是固定的白色系常量，
-     * 只有背景、卡片、强调色/图标才跟随封面变化。
-     */
     private static void applyScheme(MonetPalette.Scheme scheme) {
         SCRIM = MonetPalette.withAlphaOf(scheme.surfaceLowest(), 0xC3);
         SHELL = scheme.surfaceLowest();
@@ -117,7 +98,6 @@ public class MusicPlayerScreen extends Screen {
         DIVIDER = scheme.outlineVariant();
     }
 
-    /** 本帧与上一帧的间隔（秒），夹在 [0, 0.1] 内，避免卡顿后动画整段跳过去。 */
     private static float frameDelta() {
         long now = System.nanoTime();
         float delta = frameLastNanos == 0L ? 0.0f : (now - frameLastNanos) / 1.0e9f;
@@ -125,7 +105,6 @@ public class MusicPlayerScreen extends Screen {
         return Math.min(Math.max(delta, 0.0f), 0.1f);
     }
 
-    /** 推进配色过渡。过渡结束后直接返回，不做事。 */
     private static void tickTheme(float delta) {
         if (themeProgress >= 1.0f) {
             return;
@@ -135,11 +114,6 @@ public class MusicPlayerScreen extends Screen {
         applyScheme(themeCurrent);
     }
 
-    /**
-     * 切到新配色。
-     *
-     * <p>起点用「当前显示的颜色」而不是上一个目标色，这样连续换歌时不会跳变。
-     */
     private static void setTheme(MonetPalette.Scheme next) {
         if (next == null) {
             return;
@@ -150,8 +124,6 @@ public class MusicPlayerScreen extends Screen {
     }
 
     static {
-        // 上面那些字面色值只是占位。开局统一走一遍取色管线，
-        // 保证「打开界面时」和「换歌后」走的是同一套逻辑，避免第一首歌加载完时颜色突跳。
         applyScheme(themeCurrent);
     }
 
@@ -165,28 +137,20 @@ public class MusicPlayerScreen extends Screen {
     private static final FontRenderer ICON_LARGE = FontPresets.materialIcons(38.0f);
     private static final FontRenderer USERNAME_FONT = FontPresets.pingfang(33.0f);
 
-    // 歌词泛光：光晕半径（逻辑像素）和送进离屏纹理的强度。
-    // 半径偏大才是「氛围」，太小就成了一圈描边。
     private static final float GLOW_RADIUS = 6.0f;
     private static final float GLOW_ALPHA = 0.55f;
 
-    /** 从第几行开始压低亮度。更远的不再继续降，免得一行比一行暗。 */
     private static final int LYRIC_FADE_DISTANCE = 2;
 
-    // --- 沉浸式播放页：Apple 风格固定配色 ---
-    // 这一页刻意不参与 Monet 主题派生，配色写死。背景仍然是封面流体（那是内容不是配色），
-    // 但文字、进度条、控件都是中性白，换歌时不会跟着封面一起变。
-    private static final int AP_TEXT = 0xFFFFFFFF;      // 主文字 / 图标
-    private static final int AP_TEXT_DIM = 0xB3FFFFFF;  // 次要文字
-    private static final int AP_TEXT_FAINT = 0x73FFFFFF;// 时间戳 / 未激活
-    private static final int AP_HOVER = 0x1FFFFFFF;     // 悬停垫底
-    private static final int AP_TRACK = 0x33FFFFFF;     // 进度条轨道
-    private static final int AP_BAR = 0xFFE6E6E6;       // 进度条已播放（比纯白灰一档）
-    private static final int AP_BAR_GLOW = 0x4DFFFFFF;  // 进度条泛光，比歌词那层弱得多
-    private static final int AP_PLACEHOLDER = 0x14FFFFFF;// 封面占位
+    private static final int AP_TEXT = 0xFFFFFFFF;
+    private static final int AP_TEXT_DIM = 0xB3FFFFFF;
+    private static final int AP_TEXT_FAINT = 0x73FFFFFF;
+    private static final int AP_HOVER = 0x1FFFFFFF;
+    private static final int AP_TRACK = 0x33FFFFFF;
+    private static final int AP_BAR = 0xFFE6E6E6;
+    private static final int AP_BAR_GLOW = 0x4DFFFFFF;
+    private static final int AP_PLACEHOLDER = 0x14FFFFFF;
 
-    // 沉浸式页专用字体：Product Sans（Google Sans 的近亲）+ 中文自动落到苹方。
-    // 单独一组，不动上面那些被其它页面共用的字体。
     private static final FontRenderer AP_TITLE_FONT = FontPresets.googleSansBold(30.0f);
     private static final FontRenderer AP_ARTIST_FONT = FontPresets.googleSansBold(22.0f);
     private static final FontRenderer AP_TIME_FONT = FontPresets.googleSans(16.0f);
@@ -236,16 +200,10 @@ public class MusicPlayerScreen extends Screen {
     private float maxPlaylistScroll;
     private long lyricSongId = -1;
 
-    // --- 歌词动画 ---
-    // 每行一个独立弹簧，而不是整块一起 lerp：换行时是「新行滑上来、旧行走完自己那一段」，
-    // 而不是整个列表硬邦邦地一起位移。区域位置、尺寸全部沿用原来那套，只换动画。
     private SpringSolver[] lyricLineY = new SpringSolver[0];
     private SpringSolver[] lyricLineScale = new SpringSolver[0];
-    /** 每行静止时的屏幕 y（行顶部），由当前行位置推出来。 */
     private float[] lyricRestY = new float[0];
-    /** 级联延迟：离锚点越远的行越晚起步，形成波浪。 */
     private float[] lyricCascade = new float[0];
-    /** 上次的锚点行 / 整块偏移，变了才重设弹簧目标。 */
     private int lyricAnchor = -1;
     private float lyricLastBlockTop = Float.NaN;
     private boolean lyricSpringsReady;
@@ -261,29 +219,19 @@ public class MusicPlayerScreen extends Screen {
     private float pendingVolume = -1.0f;
     private float pendingProgress = -1.0f;
 
-    // --- 沉浸式页的交互反馈 ---
-    // 悬停要平滑淡入、按下要弹簧回弹、图标还要跟着微缩放。这三样是「手感」的来源，
-    // 缺一样控件看起来就是死的——点下去毫无回应，再好的静态外观也救不回来。
-    /** 顺序：音量 / 上一首 / 播放 / 下一首 / 关闭。 */
     private static final int PLAYER_BTN_COUNT = 5;
     private final float[] playerBtnHover = new float[PLAYER_BTN_COUNT];
     private final SpringSolver[] playerBtnPress = new SpringSolver[PLAYER_BTN_COUNT];
-    /** 每个按钮上一帧的矩形，用来在 mouseClicked/Released 里判断按到了哪个。 */
     private final Rectangle[] playerBtnRects = new Rectangle[PLAYER_BTN_COUNT];
     private int playerPressedButton = -1;
     private long playerMotionNs;
-    /** 进度条的悬停展开程度：0 是常态，1 是拉粗。 */
     private float playerBarEngage;
-    /** 音量滑块是否展开（点音量按钮切换）。 */
     private boolean volumeBarOpen;
-    /** 滑块的展开进度 0..1，用它做「从中间长出来」的动画。 */
     private float volumeBarReveal;
-    /** 封面呼吸：播放中满尺寸，暂停时略收。 */
     private final SmoothAnimationTimer coverBreath = new SmoothAnimationTimer();
 
     {
         for (int i = 0; i < PLAYER_BTN_COUNT; i++) {
-            // 和 deobfmusic 的按压弹簧同一组参数，阻尼比约 0.62，按下去有轻微回弹
             playerBtnPress[i] = new SpringSolver(1.0, 21.5, 300.0);
         }
     }
@@ -292,7 +240,6 @@ public class MusicPlayerScreen extends Screen {
     private float layoutOriginY;
     private float layoutScale = 1.0f;
 
-    /** 流体色雾是否已就绪。true 时 renderRoot 会把流体画进圆角背景板。 */
     private boolean fluidActive;
 
     private final SmoothAnimationTimer openAnim = new SmoothAnimationTimer();
@@ -301,45 +248,30 @@ public class MusicPlayerScreen extends Screen {
     private volatile boolean albumLoading;
     private volatile byte[] albumBytes;
     private int albumRetryCount;
-    // 背景用的是封面压出来的 32×32 色雾（见 CoverBackdrop.prepareFluidPalette），不是封面本身。
-    // 单独记一份：albumTexture 在换歌加载期间会被清空，背景不能跟着闪回原版背景。
     private volatile Texture fluidTexture;
     private volatile Texture fluidPrev;
-    /** 背景在新旧色雾之间的插值，0 = 旧，1 = 新。 */
     private float backdropFade = 1.0f;
     private static final float BACKDROP_FADE_SECONDS = 0.7f;
-    /** 有流体背景时的遮罩透明度。默认的 0xC3 是给世界画面兜底用的，压在自发光背景上会把光压没。 */
     private static final int SCRIM_ALPHA_FLUID = 0x66;
 
-    // 持久化：网易官方登录态（Cookie 串）、当前播放渠道。
-    // 路径放在 .minecraft/nilore/ 下，和其它 mod 配置区分开。
     private final Path sessionFile = Minecraft.getInstance().gameDirectory.toPath()
             .resolve("nilore").resolve("netease_session.txt");
     private final Path sourceFile = Minecraft.getInstance().gameDirectory.toPath()
             .resolve("nilore").resolve("music_source.txt");
 
-    // 二维码登录弹层状态。点 About 页里的登录卡片打开；用户扫码成功后自动关闭。
     private boolean loginDialogOpen = false;
     private QrCode.RenderableQr loginQr;
-    // loginQrKey / loginQrStatus 在 CompletableFuture 回调线程里赋值、渲染线程读，
-    // 不加 volatile 渲染线程可能一直读到旧值（表现为扫码成功后界面毫无反应）。
     private volatile String loginQrKey;
     private volatile NeteaseOfficialApi.QrStatus loginQrStatus = NeteaseOfficialApi.QrStatus.WAITING;
     private long loginQrNextPollMs;
-    /** CONFIRMED 那一刻的时间戳，用于延迟 1.2 秒再自动关弹层。0 表示不在确认流程里。 */
     private long lastLoginConfirmMs;
 
-    // 弹层自己的点击区。必须和主界面的 clickAreas 分开：
-    // 主界面走设计坐标（有 translate/scale 变换），弹层在变换之外、用屏幕像素定位，
-    // 混在同一个列表里会因为坐标系不同而永远匹配不上（表现为关闭按钮点不掉）。
     private final List<ClickArea> dialogClickAreas = new ArrayList<>();
 
     public MusicPlayerScreen() {
         super(Component.literal("Music Player"));
         MusicPlayer.AUDIO_PLAYER.setNearEndListener(this::requestPreloadForNext);
         MusicPlayer.AUDIO_PLAYER.setOnCrossfadeTrackListener(this::onCrossfadeTrack);
-        // 启动恢复：上次选的播放渠道 + 网易官方登录态（如果登录过）。
-        // 两边都在 catch 里吞异常，缺文件/坏数据都不影响正常使用。
         MusicSources.load(sourceFile);
         NeteaseOfficialApi.loadSession(sessionFile);
     }
@@ -349,7 +281,6 @@ public class MusicPlayerScreen extends Screen {
         if (Minecraft.getInstance().level == null) {
             MusicPlayer.AUDIO_PLAYER.stop();
         }
-        // 二维码登录轮询：每 1.5 秒问一次。状态变 CONFIRMED/EXPIRED/FAILED 后不再轮询。
         if (loginDialogOpen && loginQrKey != null
                 && loginQrStatus != NeteaseOfficialApi.QrStatus.CONFIRMED
                 && loginQrStatus != NeteaseOfficialApi.QrStatus.EXPIRED
@@ -362,18 +293,14 @@ public class MusicPlayerScreen extends Screen {
 
     @Override
     public void onClose() {
-        // 退出时落盘当前播放渠道。Cookie 文件由 NeteaseOfficialApi 自己在登录成功时存。
         MusicSources.save(sourceFile);
         releaseLoginQr();
-        // 泛光那三张离屏纹理占的是显存，页面关掉就还回去
         LyricGlowFbo.release();
         super.onClose();
     }
 
     private void releaseLoginQr() {
         if (loginQr != null) {
-            // 必须从 TextureManager 注销，否则 GL 纹理 ID 泄漏。
-            // TextureManager.release 只清掉引用，DynamicTexture 的 NativeImage 靠 GC finalize 释放。
             Minecraft.getInstance().getTextureManager().release(loginQr.location());
             loginQr = null;
         }
@@ -394,9 +321,6 @@ public class MusicPlayerScreen extends Screen {
         if (backdropFade < 1.0f) {
             backdropFade = Math.min(1.0f, backdropFade + delta / BACKDROP_FADE_SECONDS);
         }
-        // 流体是否就绪。真正的绘制在 renderRoot 里做 —— 要裁剪到圆角背景板内。
-        // 色雾还没算出来时只有主菜单退回原版背景；游戏内退回原版背景会把世界画面糊掉，
-        // 所以那种情况直接不画，让世界照常透出来（和原来的行为一致）。
         Texture fluid = fluidTexture;
         fluidActive = fluid != null && fluid.getGlId() > 0;
         if (!fluidActive && Minecraft.getInstance().level == null) {
@@ -412,7 +336,6 @@ public class MusicPlayerScreen extends Screen {
         float designMouseX = toDesignX(mouseX);
         float designMouseY = toDesignY(mouseY);
 
-        // 有流体背景时用更轻的遮罩，否则自发光背景会被自己的遮罩压成一坨死黑。
         final int scrimColor = fluidActive
                 ? MonetPalette.withAlphaOf(SCRIM, SCRIM_ALPHA_FLUID)
                 : SCRIM;
@@ -425,7 +348,6 @@ public class MusicPlayerScreen extends Screen {
             ctx.scale(layoutScale, layoutScale);
             renderRoot(ctx, designMouseX, designMouseY, alpha);
             ctx.restore();
-            // 登录弹层在 ctx.restore() 之后画 —— 栈已经退回到屏幕坐标，弹层用屏幕像素定位。
             if (loginDialogOpen) {
                 renderLoginDialog(ctx, mouseX, mouseY);
             }
@@ -440,14 +362,9 @@ public class MusicPlayerScreen extends Screen {
     }
 
     private void renderRoot(DrawContext ctx, float mouseX, float mouseY, float alpha) {
-        // 背景板（不透明底色）。流体要画在它上面、被它裁出圆角。
         ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(0, 0, DESIGN_W, DESIGN_H, RADIUS),
                 new Paint().setColor(withAlpha(SHELL, alpha)));
 
-        // 发光流体：只填在背景板这一块圆角矩形里，不是铺满整屏。
-        // CoverBackdrop 是直接在裁剪空间画全屏四边形的、不走 DrawContext，
-        // 所以 GUI 层的 clipRect 对它无效 —— 把面板的屏幕坐标矩形传进去，
-        // 由着色器自己做圆角 SDF 裁剪。
         if (fluidActive) {
             Texture fluid = fluidTexture;
             Texture previous = fluidPrev;
@@ -466,8 +383,6 @@ public class MusicPlayerScreen extends Screen {
         }
 
         float contentH = DESIGN_H - BOTTOM_H;
-        // 侧栏不铺底色了：那层半透明面会把封面流体挡住，去掉之后流体能一直透到这一栏来。
-        // 导航项的 hover / 选中底还留着，所以可读性不靠底下这层。
         renderSidebar(ctx, 0, 0, SIDEBAR_W, contentH, mouseX, mouseY);
         renderCurrentPage(ctx, SIDEBAR_W, 0, DESIGN_W - SIDEBAR_W, contentH, mouseX, mouseY);
         renderPlaybackBar(ctx, 0, contentH, DESIGN_W, BOTTOM_H, mouseX, mouseY);
@@ -564,7 +479,6 @@ public class MusicPlayerScreen extends Screen {
     private void renderDailyMix(DrawContext ctx, float x, float y, float w, float h, float mouseX, float mouseY) {
         List<SongInfo> songs = recommendations();
         SongInfo hero = songs.isEmpty() ? null : songs.get(0);
-        // 背景和下面 "Made for you" 推荐卡片同款：SURFACE 半透明，hover 时 RAISED。
         boolean cardHover = contains(mouseX, mouseY, x, y, w, h);
         ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(x, y, w, h, 25),
                 new Paint().setColor(cardHover ? RAISED : withAlpha(SURFACE, 0.682f)));
@@ -808,7 +722,6 @@ public class MusicPlayerScreen extends Screen {
 
         float cardY = y + 82.72f;
 
-        // 第一张：可点击的播放渠道切换器。点击循环切到下一个 source。
         MusicSource current = MusicSources.current();
         MusicSource next = nextSource(current);
         boolean sourceHover = contains(mouseX, mouseY, innerX, cardY, w - PAD * 2, 63.36f);
@@ -818,8 +731,6 @@ public class MusicPlayerScreen extends Screen {
                 sourceHover ? RAISED : SURFACE);
         clickAreas.add(new ClickArea(innerX, cardY, w - PAD * 2, 63.36f, this::cycleMusicSource));
 
-        // 第二张：网易官方登录卡片。
-        // 只有当前 source 是官方时才显示 —— gdstudio 不需要登录、登录也没用。
         float secondCardY = cardY + 68;
         if ("NetEase Official".equals(current.displayName())) {
             String loginText = NeteaseOfficialApi.isLoggedIn()
@@ -851,12 +762,10 @@ public class MusicPlayerScreen extends Screen {
         GlHelper.drawText(ellipsize(text, BODY_FONT, w - 36), x + 18, y + 45, BODY_FONT, MUTED);
     }
 
-    // 老的双参重载：内部默认 SURFACE 颜色
     private void aboutCard(DrawContext ctx, float x, float y, float w, float h, String title, String text) {
         aboutCard(ctx, x, y, w, h, title, text, SURFACE);
     }
 
-    /** 当前 source 列表里下一个 source，用于 "click to switch to ..." 提示。 */
     private static MusicSource nextSource(MusicSource current) {
         List<MusicSource> all = MusicSources.all();
         for (int i = 0; i < all.size(); i++) {
@@ -875,16 +784,13 @@ public class MusicPlayerScreen extends Screen {
     private void openLoginDialog() {
         loginDialogOpen = true;
         loginQrStatus = NeteaseOfficialApi.QrStatus.WAITING;
-        loginQrNextPollMs = 0L; // 立刻拉一次
+        loginQrNextPollMs = 0L;
         NeteaseOfficialApi.requestQrKey().thenAccept(key -> {
             if (key == null) {
                 loginQrStatus = NeteaseOfficialApi.QrStatus.FAILED;
                 return;
             }
             loginQrKey = key;
-            // 生成二维码 + 上传纹理都是 GL 操作，必须在渲染线程跑。
-            // 直接在 CompletableFuture 的回调里做会在 GL 线程外调 upload() 而失败，
-            // 且异常被回调吞掉 —— 表现就是二维码永远停在 "Generating QR..."。
             RenderSystem.recordRenderCall(() -> {
                 try {
                     releaseLoginQr();
@@ -894,15 +800,11 @@ public class MusicPlayerScreen extends Screen {
                             .register(renderable.location(), renderable.texture());
                     loginQr = renderable;
                 } catch (Throwable t) {
-                    // 用 Throwable 而不是 Exception：zxing 缺依赖时抛的是
-                    // NoClassDefFoundError（Error 不是 Exception），不接住会直接崩游戏。
-                    // 接住后只显示 Failed，不再整个客户端崩掉。
                     ClientBase.logger.error("二维码生成失败（多半是 zxing 依赖没进 classpath）", t);
                     loginQrStatus = NeteaseOfficialApi.QrStatus.FAILED;
                 }
             });
         }).exceptionally(e -> {
-            // 网络层已经把异常吞成 null 了，这里兜住「请求本身抛异常」的情况
             ClientBase.logger.error("申请二维码 key 失败", e);
             loginQrStatus = NeteaseOfficialApi.QrStatus.FAILED;
             return null;
@@ -914,14 +816,7 @@ public class MusicPlayerScreen extends Screen {
         releaseLoginQr();
     }
 
-    /**
-     * 渲染网易云扫码登录弹层。
-     *
-     * <p>布局：屏幕居中面板（深底 + 圆角），上方标题与关闭按钮，中间二维码（240×240），
-     * 下方状态文字跟随 {@code loginQrStatus} 切换。
-     */
     private void renderLoginDialog(DrawContext ctx, int mouseX, int mouseY) {
-        // 背景遮罩（让背后内容变暗但不完全黑）
         ctx.drawRectXYWH(0, 0, width, height, new Paint().setColor(withAlpha(0xFF000000, 0.55f)));
 
         float panelW = 304.0f;
@@ -931,11 +826,9 @@ public class MusicPlayerScreen extends Screen {
         ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(px, py, panelW, panelH, 18),
                 new Paint().setColor(SHELL));
 
-        // ---- 顶部：标题 + 关闭按钮，两者垂直居中对齐 ----
         float headerY = py + 20;
         float closeSize = 28;
         float closeX = px + panelW - closeSize - 20;
-        // 标题 y 由按钮中心反推，保证文字垂直居中和按钮同一条中线
         float titleH = HEADING_FONT.getHeight();
         float titleY = headerY + (closeSize - titleH) * 0.5f;
         GlHelper.drawText("Sign in with NetEase Music", px + 24, titleY, HEADING_FONT, CREAM);
@@ -943,23 +836,18 @@ public class MusicPlayerScreen extends Screen {
         boolean closeHover = contains(mouseX, mouseY, closeX, headerY, closeSize, closeSize);
         ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(closeX, headerY, closeSize, closeSize, closeSize * 0.5f),
                 new Paint().setColor(closeHover ? RAISED : SIDEBAR));
-        // 关闭图标用 Material Icons 的 close（ICON_CLOSE，和顶部 headerAction 同一个），
-        // 之前用 "×" 字符 + HEADING_FONT，苹方里没有这个字形，画出来是空白。
         float crossW = ICON_FONT.getWidth(ICON_CLOSE);
         float crossH = ICON_FONT.getHeight();
         GlHelper.drawText(ICON_CLOSE,
                 closeX + (closeSize - crossW) * 0.5f,
                 headerY + (closeSize - crossH) * 0.5f,
                 ICON_FONT, closeHover ? ACCENT : MUTED);
-        // 弹层走独立列表（屏幕坐标），加到主 clickAreas 会因为坐标系不同点不中
         dialogClickAreas.add(new ClickArea(closeX, headerY, closeSize, closeSize, this::closeLoginDialog));
 
-        // ---- 中间：二维码 ----
         int qrSize = 240;
         float qrX = px + (panelW - qrSize) * 0.5f;
         float qrY = py + 72;
         if (loginQr != null) {
-            // 二维码是黑白的，不要被主题色染色 —— Paint 用纯白
             Texture tex = new Texture(loginQr.location(), qrSize, qrSize);
             ctx.drawTexture(tex,
                     Rectangle.ofXYWH(0, 0, qrSize, qrSize),
@@ -971,7 +859,6 @@ public class MusicPlayerScreen extends Screen {
             drawCentered("Generating QR...", qrX, qrY + qrSize * 0.5f - 8, qrSize, BODY_FONT, MUTED);
         }
 
-        // ---- 底部：状态文字 ----
         String statusText;
         int statusColor = MUTED;
         switch (loginQrStatus) {
@@ -998,9 +885,8 @@ public class MusicPlayerScreen extends Screen {
         }
         drawCentered(statusText, px, qrY + qrSize + 18, panelW, BODY_FONT, statusColor);
 
-        // 登录成功后 1.2 秒自动关弹层，给用户看到 ✓ 的时间
         if (loginQrStatus == NeteaseOfficialApi.QrStatus.CONFIRMED) {
-            loginQrNextPollMs = Long.MAX_VALUE; // 停掉轮询
+            loginQrNextPollMs = Long.MAX_VALUE;
             long since = System.currentTimeMillis() - lastLoginConfirmMs;
             if (lastLoginConfirmMs == 0L) {
                 lastLoginConfirmMs = System.currentTimeMillis();
@@ -1066,23 +952,16 @@ public class MusicPlayerScreen extends Screen {
 
         float dt = playerMotionDelta();
 
-        // 背景压暗：封面流体本身挺亮，不压一层的话白字会发飘，歌词也「浮」不起来。
-        // deobfmusic 的沉浸式页也是整屏盖一层约 60% 的黑。
         ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(0, 0, DESIGN_W, DESIGN_H, RADIUS),
                 new Paint().setColor(0x96000000));
 
-        // 布局照 deobfmusic 的沉浸式页来：左边 40% 一整列竖排，右边 60% 全给歌词。
-        // 左右各往内收 30：分栏位置不动，两列的内容区各自窄 30。
         float sideInset = 30.0f;
         float dividerX = DESIGN_W * 0.4f;
         float leftContentW = dividerX - sideInset;
         float cx = sideInset + leftContentW * 0.5f;
 
         float artD = 182.0f;
-        // 封面在左列里水平居中，所以它到面板左边框的距离 = sideInset + 两侧余量的一半。
-        // 让「到上边框的距离」等于这个值，四个方向的留白才均衡。
         float top = sideInset + (leftContentW - artD) * 0.5f;
-        // 封面横向往左挪
         float coverNudge = 8.0f;
         top -= coverNudge;
         float volW = 30.0f;
@@ -1097,22 +976,17 @@ public class MusicPlayerScreen extends Screen {
         float gapBarTime = 9.0f;
         float gapTimeCtrl = 12.0f;
 
-        // 封面呼吸：播放时满尺寸，暂停时收一点。静止状态也有层次，不会像贴上去的。
         coverBreath.animate(player.getState() == AudioPlayer.State.PLAYING ? 1.0 : 0.0, 0.4, Easings.EASE_OUT_QUAD);
         coverBreath.tick();
         float coverD = artD * (0.94f + 0.06f * coverBreath.getValueF());
         float artX = cx - artD * 0.5f - coverNudge;
         float coverX = artX + (artD - coverD) * 0.5f;
         float coverY = top + (artD - coverD) * 0.5f;
-        // 封面外面一圈白色柔光。压暗的背景上，白光的「托举感」比黑色投影更轻，
-        // 也不会在深色底上糊成一团黑边。
         ctx.drawBlurredRoundedRect(RoundedRectangle.ofXYWHR(coverX, coverY, coverD, coverD, 16.0f),
                 0.0f, 0.0f, 22.0f, 0.0f, 0x40FFFFFF);
         drawAlbum(ctx, song, coverX, coverY, coverD, 16.0f, AP_PLACEHOLDER, AP_TEXT_FAINT);
 
-        // 歌名和歌手左对齐到进度条左端
         float nameY = top + artD + gapArtName;
-        // 右侧要给音量按钮让位
         float textMaxW = artD - volW - 10.0f;
         String title = song == null ? "Nothing playing" : song.name;
         GlHelper.drawText(ellipsize(title, AP_TITLE_FONT, textMaxW), artX, nameY, AP_TITLE_FONT, AP_TEXT);
@@ -1121,15 +995,11 @@ public class MusicPlayerScreen extends Screen {
         String artist = song == null ? "Pick a song to start" : song.artist;
         GlHelper.drawText(ellipsize(artist, AP_ARTIST_FONT, textMaxW), artX, artistY, AP_ARTIST_FONT, AP_TEXT_DIM);
 
-        // 音量按钮：和歌曲信息同一行、再上移 21，右端对齐进度条右端。
-        // 图标在按钮自身的基础上再上移 1px，悬停矩形保持原位不动。
         playerBtnRects[0] = Rectangle.ofXYWH(artX + artD - volW, artistY - 24.0f, volW, volW);
         boolean muted = player.getVolume() <= 0.001f;
         drawPlayerButton(ctx, 0, playerBtnRects[0], ICON_VOLUME, ICON_FONT,
                 mouseX, mouseY, this::toggleVolumeBar, -1.0f, muted ? AP_TEXT_FAINT : AP_TEXT_DIM, dt);
 
-        // 进度条：命中范围比条本身大一圈，悬停（或拖拽）时拉粗 3px。
-        // 相对歌手再上移 12（歌手自己已经上移 16，合起来是用户要的 28）。
         float barHitY = artistY + artistH + gapArtistBar - 12.0f;
         boolean barActive = dragTarget == DragTarget.PROGRESS
                 || contains(mouseX, mouseY, artX - 6.0f, barHitY - 10.0f, artD + 12.0f, barH + 20.0f);
@@ -1144,16 +1014,13 @@ public class MusicPlayerScreen extends Screen {
         float timeY = barHitY + barH + gapBarTime;
         boolean loading = player.getState() == AudioPlayer.State.LOADING;
         long duration = song == null ? 0L : song.duration;
-        // 拖进度条时先按拖到的位置显示，松手才真正 seek
         long shownPos = dragTarget == DragTarget.PROGRESS && pendingProgress >= 0
                 ? (long) (pendingProgress * duration) : player.getCurrentPositionMs();
-        // 右边显示的是「距离结束还有多久」，带个负号，和左边已播时长一眼区分开
         String elapsed = loading ? "Loading" : timestamp(shownPos);
         String remaining = "-" + timestamp(Math.max(0L, duration - shownPos));
         GlHelper.drawText(elapsed, artX, timeY, AP_TIME_FONT, AP_TEXT_FAINT);
         GlHelper.drawText(remaining, artX + artD - measure(remaining, AP_TIME_FONT), timeY, AP_TIME_FONT, AP_TEXT_FAINT);
 
-        // 三个控制按钮：居中于进度条。timeY 已经跟着进度条上移 28，这里再下压 2，净上移 26。
         float ctrlY = timeY + timeH + gapTimeCtrl - 2.0f;
         float sideW = 34.0f;
         float playW = 42.0f;
@@ -1171,8 +1038,6 @@ public class MusicPlayerScreen extends Screen {
         drawPlayerButton(ctx, 3, playerBtnRects[3], ICON_NEXT, ICON_FONT,
                 mouseX, mouseY, this::nextSong, -1.0f, AP_TEXT, dt);
 
-        // 音量滑块：点音量按钮展开，宽度高度都从中间「长出来」。
-        // 用的是和主进度条同一套画法（白、左圆右直、带泛光），所以高宽比一致。
         volumeBarReveal += ((volumeBarOpen ? 1.0f : 0.0f) - volumeBarReveal) * Math.min(1.0f, dt / 0.12f);
         if (volumeBarReveal > 0.01f) {
             float volBarW = artD * volumeBarReveal;
@@ -1189,23 +1054,19 @@ public class MusicPlayerScreen extends Screen {
 
         float padL = DESIGN_W * 0.055f;
 
-        // 右列整块给歌词
         float lyricX = dividerX + padL;
         renderLyrics(ctx, song, lyricX, 8.0f, DESIGN_W - sideInset - 16.0f - lyricX, DESIGN_H - 16.0f);
 
-        // 关闭放右上角。图标单独上移 1px，悬停矩形保持原样。
         float closeSize = 32.0f;
         playerBtnRects[4] = Rectangle.ofXYWH(DESIGN_W - closeSize - 18.0f, 18.0f, closeSize, closeSize);
         drawPlayerButton(ctx, 4, playerBtnRects[4], ICON_CLOSE, ICON_FONT,
                 mouseX, mouseY, this::returnFromPlayer, -1.0f, AP_TEXT, dt);
     }
 
-    /** 点音量按钮展开／收起音量滑块。 */
     private void toggleVolumeBar() {
         volumeBarOpen = !volumeBarOpen;
     }
 
-    /** 沉浸式页自己的帧间隔。不走 renderRoot 那套全局计时，免得互相吃掉 delta。 */
     private float playerMotionDelta() {
         long now = System.nanoTime();
         float dt = playerMotionNs == 0L ? 0.0f : (now - playerMotionNs) / 1.0e9f;
@@ -1213,7 +1074,6 @@ public class MusicPlayerScreen extends Screen {
         return clamp(dt, 0.0f, 0.05f);
     }
 
-    /** 命中哪个按钮就按哪个（按下状态要撑到松手，所以得记下来）。 */
     private void pressPlayerButton(double mouseX, double mouseY) {
         double designX = toDesignX(mouseX);
         double designY = toDesignY(mouseY);
@@ -1228,12 +1088,6 @@ public class MusicPlayerScreen extends Screen {
         }
     }
 
-    /**
-     * 沉浸式页的进度条：白色、轻微泛光、左端圆角右端直角。
-     *
-     * <p>泛光走的是和歌词同一套离屏模糊，但半径小得多——进度条是细长条，
-     * 光晕一大就糊了，只要贴着边缘微微透出来就够。
-     */
     private void drawPlayerProgress(DrawContext ctx, float x, float y, float w, float h, float value) {
         float progress = clamp(value, 0, 1);
         float radius = h * 0.5f;
@@ -1246,33 +1100,16 @@ public class MusicPlayerScreen extends Screen {
         }
         float filled = w * progress;
 
-        // 右端半径：进入轨道的右圆角区之后才开始长出来，用线性过渡。
         //
-        // 这个式子不是凑出来的：设右端半径 r，白色右上角的最右点是 filled - r，
-        // 而轨道在顶边处的最右点是 w - radius。要让两者相切就得 filled - r = w - radius，
-        // 即 r = filled - (w - radius)——正好就是把 (filled - (w - radius)) / radius 归一化后
-        // 再乘 radius。所以白色右上角会严丝合缝地贴着轨道的圆角走，
-        // 既不会在快播完时顶掉圆角，也不需要任何裁剪。
         float rightR = radius * clamp((filled - (w - radius)) / radius, 0.0f, 1.0f);
         float[] fillRadii = {radius, rightR, rightR, radius};
 
-        // 泛光按已播宽度画，不裁，让它自然溢出轨道一圈
         ctx.drawBlurredRoundedRect(RoundedRectangle.ofXYWHRadii(x, y - 1.0f, filled, h + 2.0f, fillRadii),
                 0.0f, 0.0f, 8.0f, 0.0f, AP_BAR_GLOW);
         ctx.drawRoundedRect(RoundedRectangle.ofXYWHRadii(x, y, filled, h, fillRadii),
                 new Paint().setColor(AP_BAR));
     }
 
-    /**
-     * 沉浸式页的按钮：无边框、无底色，只有图标。
-     *
-     * <p>三样东西凑出「手感」：悬停垫底平滑淡入、按下走弹簧回弹、图标随交互微缩放
-     * （悬停放大 4%、按下缩小 6%，取值和 deobfmusic 一致）。缺一样，控件看着就是死的。
-     *
-     * @param index       第几个按钮，用来索引动画状态
-     * @param iconOffsetY 只挪图标的额外垂直偏移，悬停矩形保持原位
-     * @param activeColor 可点击时的图标颜色
-     */
     private void drawPlayerButton(DrawContext ctx, int index, Rectangle box, String icon, FontRenderer iconFont,
                                   float mouseX, float mouseY, Runnable action,
                                   float iconOffsetY, int activeColor, float dt) {
@@ -1283,7 +1120,6 @@ public class MusicPlayerScreen extends Screen {
         boolean enabled = action != null;
         boolean hovered = enabled && contains(mouseX, mouseY, x, y, w, h);
 
-        // 悬停：指数逼近，时间常数 55ms
         playerBtnHover[index] += ((hovered ? 1.0f : 0.0f) - playerBtnHover[index]) * Math.min(1.0f, dt / 0.055f);
         playerBtnPress[index].update(dt);
         float hoverK = playerBtnHover[index];
@@ -1333,7 +1169,6 @@ public class MusicPlayerScreen extends Screen {
         long position = MusicPlayer.AUDIO_PLAYER.getCurrentPositionMs();
         int current = findCurrentLyricLine(lines, position);
 
-        // 换歌或行数变了：重建弹簧并直接落位，不让上一首的位置飘过来
         if (lyricSongId != song.id || lyricLineY.length != count) {
             lyricSongId = song.id;
             lyricLineY = new SpringSolver[count];
@@ -1351,21 +1186,16 @@ public class MusicPlayerScreen extends Screen {
             lyricFrameNs = 0L;
         }
 
-        // 整块的位置：不足一屏居中，否则让当前行停在区域内 26.4% 处（沿用原来的锚点比例）
         float blockTop;
         if (count * lineH < h) {
             blockTop = (h - count * lineH) * 0.5f;
         } else {
-            // 上界必须是「第一行作为当前行时的位置」，不能写成 0。
-            // 写 0 的话第一句会被硬按在区域顶边上——0:00 时还没轮到下一句，
-            // 当前行一直是第一行，于是它就一直贴在框沿上，看着像跑到框外去了。
             blockTop = clamp(h * 0.264f - current * lineH, h - count * lineH, h * 0.264f);
         }
         for (int i = 0; i < count; i++) {
             lyricRestY[i] = y + blockTop + i * lineH;
         }
 
-        // 帧间隔自己维护，不动 renderRoot 那套全局计时
         long now = System.nanoTime();
         float dt = lyricFrameNs == 0L ? 0.0f : (now - lyricFrameNs) / 1.0e9f;
         lyricFrameNs = now;
@@ -1399,7 +1229,6 @@ public class MusicPlayerScreen extends Screen {
                 lyricLineScale[i].setParams(physics.mass(), physics.damping(), physics.stiffness());
             }
 
-            // 级联锚点取可见的第一行，让波形从屏幕边缘往中间推
             int cascadeAnchor = current;
             while (cascadeAnchor > 0 && lyricRestY[cascadeAnchor - 1] + lineH > y) {
                 cascadeAnchor--;
@@ -1426,7 +1255,6 @@ public class MusicPlayerScreen extends Screen {
         }
         lyricSpringsReady = true;
 
-        // 左边多给 3px 余量：字形的抗锯齿边缘和泛光需要一点空间，贴着边会被切掉
         Rectangle viewport = Rectangle.ofXYWH(x - 3.0f, y, w + 3.0f, h);
         ctx.save();
         ctx.clipRect(viewport, true);
@@ -1439,8 +1267,6 @@ public class MusicPlayerScreen extends Screen {
             int distance = Math.abs(i - current);
             boolean active = i == current;
             FontRenderer font = active ? AP_LYRIC_ACTIVE_FONT : AP_LYRIC_FONT;
-            // 层次全靠 alpha，颜色一律用白。以前远处行同时叠了「更深的灰」和「更低的 alpha」，
-            // 两个衰减相乘，越远越接近全黑。
             float alpha = (0.30f + 0.70f * lyricActiveK(lines, i, position))
                     * (distance >= LYRIC_FADE_DISTANCE ? 0.85f : 1.0f);
             String raw = lines.get(i).text();
@@ -1466,20 +1292,12 @@ public class MusicPlayerScreen extends Screen {
             }
         }
 
-        // 泛光必须在裁剪框内叠回。放在 restore 之后的话，当前行的光晕会整圈溢到歌词区外面，
-        // 看着就是「歌词跑出屏幕还留了一点点」。
         if (current >= 0 && current < count) {
             emitLyricGlow(lines.get(current), x, (float) lyricLineY[current].getValue(), w);
         }
         ctx.restore();
     }
 
-    /**
-     * 当前行的泛光层。
-     *
-     * <p>只画当前行，并且用固定的高亮色——发光是被高斯核扩散开的低频信息，逐字细节在里面留不住，
-     * 画整行反而更省。扫光的层次感留给主画面那一遍。
-     */
     private void emitLyricGlow(LyricLine line, float x, float rowY, float w) {
         String raw = line.text();
         if (raw == null || raw.isBlank()) {
@@ -1493,12 +1311,6 @@ public class MusicPlayerScreen extends Screen {
         }
     }
 
-    /**
-     * 一行的结束时间。
-     *
-     * <p>有逐字时间就用最后一个字的时间窗算准；没有就退回到「下一行的起点」——
-     * 这也是 LRC 格式能给出的最好估计。
-     */
     private static long lineEndMs(List<LyricLine> lines, int index) {
         LyricLine line = lines.get(index);
         List<LyricLine.Word> words = line.words();
@@ -1512,12 +1324,6 @@ public class MusicPlayerScreen extends Screen {
         return line.timeMs() + 6000L;
     }
 
-    /**
-     * 某一行此刻的「亮起程度」0..1。
-     *
-     * <p>提前 450ms 开始淡入（歌词比人声早一点点浮起来），行尾后 100ms 开始淡出。
-     * 这样旧行不是被当前行替换时瞬间压暗，而是自己缓缓沉下去。
-     */
     private static float lyricActiveK(List<LyricLine> lines, int index, long positionMs) {
         long start = lines.get(index).timeMs();
         long end = Math.max(lineEndMs(lines, index), start + 1L);
@@ -1545,12 +1351,6 @@ public class MusicPlayerScreen extends Screen {
         return t * t * (3.0f - 2.0f * t);
     }
 
-    /**
-     * 「唱到这个字之后过了 τ 秒」对应的上浮系数 0..1。
-     *
-     * <p>是一条阻尼比约 0.94 的二阶弹簧阶跃响应（就是 deobfmusic 用的那条曲线）：
-     * 字刚唱到时弹起来，2.5 秒内回落到原位。上浮快、回来慢，所以看着是「跳一下」。
-     */
     private static float lyricLiftK(double tau) {
         if (tau <= 0.0) {
             return 0.0f;
@@ -1565,18 +1365,11 @@ public class MusicPlayerScreen extends Screen {
         return (float) Math.max(0.0, y);
     }
 
-    /**
-     * 当前行唱到哪儿了，返回 0..1。
-     *
-     * <p>优先按 {@link LyricLine#words()} 的逐字时间精确算（直连网易能拿到 yrc）；
-     * 没拿到逐字时间就退回「本行起点 → 下一行起点」线性分摊。
-     */
     private static float lineProgress(List<LyricLine> lines, int index, long positionMs) {
         if (index < 0 || index >= lines.size()) {
             return 0.0f;
         }
         LyricLine line = lines.get(index);
-        // 1) 有逐字数据：当前字的时间窗（wordStart, wordStart+wordDur）内插值
         List<LyricLine.Word> words = line.words();
         if (words != null && !words.isEmpty()) {
             for (int w = 0; w < words.size(); w++) {
@@ -1584,14 +1377,12 @@ public class MusicPlayerScreen extends Screen {
                 long wStart = word.startMs();
                 long wEnd = wStart + Math.max(word.durationMs(), 1L);
                 if (positionMs < wEnd) {
-                    // 字内进度 + 字之前所有字的累计宽度占比
                     float within = clamp((positionMs - wStart) / (float) (wEnd - wStart), 0.0f, 1.0f);
                     return (w + within) / words.size();
                 }
             }
             return 1.0f;
         }
-        // 2) 没逐字：按行时长分摊
         long start = line.timeMs();
         long end = index + 1 < lines.size() ? lines.get(index + 1).timeMs() : start + 6000L;
         if (end <= start) {
@@ -1600,21 +1391,6 @@ public class MusicPlayerScreen extends Screen {
         return clamp((positionMs - start) / (float) (end - start), 0.0f, 1.0f);
     }
 
-    /**
-     * 画当前歌词行：未唱部分压暗，已唱部分提亮，分界随播放连续推进。
-     *
-     * <p>亮色不是在字与字之间跳着走，而是按「已唱宽度」裁一块区域出来再叠一层亮色，
-     * 所以唱到半个字也看得出来，分界是连续的。
-     *
-     * <p>注意这里刻意不套缩放变换：裁剪区域是按当前 pose 变换后的坐标算的，
-     * 而当前行本来就不缩放，套上去只会把裁剪算歪。
-     */
-    /**
-     * 画当前歌词行的扫光：逐个字画，唱到的字向上浮一点再落回原位。
-     *
-     * <p>改成逐字之后就不再用裁剪做扫光了——每个字自己决定亮还是暗，界线按字走，
-     * 同时还能给每个字单独加上浮位移（整行一次画是做不出来的）。
-     */
     private void drawKaraokeLine(String text, float x, float rowY, FontRenderer font, float progress,
                                  float alpha, LyricLine line, long lineEndMs, long positionMs) {
         int count = text.length();
@@ -1628,7 +1404,6 @@ public class MusicPlayerScreen extends Screen {
         float cursor = x;
         for (int i = 0; i < count; i++) {
             String glyph = String.valueOf(text.charAt(i));
-            // 这个字唱完的时刻。有逐字数据时 lineProgress 已经把整体进度算准了，这里按行内位置均摊足够。
             long charEnd = lineStart + span * (i + 1) / count;
             float lift = -2.0f * lyricLiftK((positionMs - charEnd) / 1000.0);
             boolean lit = (i + 1) / (float) count <= progress;
@@ -1692,10 +1467,6 @@ public class MusicPlayerScreen extends Screen {
         drawAlbum(ctx, song, x, y, size, radius, BERRY, ACCENT);
     }
 
-    /**
-     * @param placeholder 封面没加载出来时的占位底色
-     * @param iconColor   占位图标颜色
-     */
     private void drawAlbum(DrawContext ctx, SongInfo song, float x, float y, float size, float radius,
                            int placeholder, int iconColor) {
         if (song != null && song.id == albumSongId && albumTexture != null) {
@@ -1704,7 +1475,6 @@ public class MusicPlayerScreen extends Screen {
                     radius, radius, radius, radius, 0xFFFFFFFF, albumTexture.getGlId(), 0, 0, 1, 1);
             return;
         }
-        // 封面还没加载出来时的占位。
         ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(x, y, size, size, radius), new Paint().setColor(placeholder));
         float iconY = y + (size - ICON_LARGE.getMetrics().capHeight()) * 0.5f + 8.0f;
         drawCentered(ICON_MUSIC, x, iconY, size, ICON_LARGE, iconColor);
@@ -1761,8 +1531,6 @@ public class MusicPlayerScreen extends Screen {
         if (button != 0) {
             return false;
         }
-        // 登录弹层在最上层：用原始屏幕坐标优先匹配，命中就吞掉点击（不穿透到下层 UI）。
-        // 弹层是在 translate/scale 变换之外画的，所以这里不能走 toDesignX/Y。
         if (loginDialogOpen) {
             for (int i = dialogClickAreas.size() - 1; i >= 0; i--) {
                 ClickArea area = dialogClickAreas.get(i);
@@ -1775,7 +1543,6 @@ public class MusicPlayerScreen extends Screen {
         }
         double designX = toDesignX(mouseX);
         double designY = toDesignY(mouseY);
-        // 先记下按到了哪个沉浸式页按钮（按下状态要撑到松手），再走通用的点击区
         pressPlayerButton(mouseX, mouseY);
         for (int i = clickAreas.size() - 1; i >= 0; i--) {
             ClickArea area = clickAreas.get(i);
@@ -1811,7 +1578,6 @@ public class MusicPlayerScreen extends Screen {
 
     @Override
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
-        // 松手就把按下的弹簧放回去，图标会弹一下
         if (playerPressedButton >= 0) {
             playerBtnPress[playerPressedButton].setTarget(0.0);
             playerPressedButton = -1;
@@ -1965,9 +1731,6 @@ public class MusicPlayerScreen extends Screen {
                 System.err.println("[MusicPlayer] No playable URL for " + song.name);
                 return;
             }
-            // 这个值只用来兜底，不能覆盖已有的时长。
-            // 解码过整首 PCM 的歌已经有准确值了，而网易在这个接口偶尔会返回试听片段的长度——
-            // 采纳它的话，界面会以为歌已经播完，播到那儿就自动跳下一首。
             if (song.duration <= 0 && result.durationMs() > 0) {
                 song.duration = result.durationMs();
             } else if (song.duration <= 0 && result.size() > 0) {
@@ -2038,7 +1801,6 @@ public class MusicPlayerScreen extends Screen {
                     || MusicPlayer.AUDIO_PLAYER.isPreloadedFor(nextSong)) {
                 return;
             }
-            // 预加载时顺手把时长补上，轮到这首歌时进度条不至于从 0 开始
             if (result.durationMs() > 0 && nextSong.duration <= 0) {
                 nextSong.duration = result.durationMs();
             }
@@ -2100,12 +1862,10 @@ public class MusicPlayerScreen extends Screen {
         if (albumBytes != null) {
             try {
                 NativeImage image = NativeImage.read(new ByteArrayInputStream(albumBytes));
-                // 取色和压色雾都必须排在 DynamicTexture 前面：它上传后会接管并关闭这张图
                 setTheme(MonetPalette.fromImage(image));
                 NativeImage palette = CoverBackdrop.prepareFluidPalette(image);
                 DynamicTexture texture = new DynamicTexture(image);
                 albumTexture = new Texture(texture.getId(), image.getWidth(), image.getHeight());
-                // 背景交叉淡化：旧色雾 → 新色雾
                 Texture fluid = CoverBackdrop.uploadPalette(palette);
                 if (fluid != null) {
                     fluidPrev = fluidTexture;

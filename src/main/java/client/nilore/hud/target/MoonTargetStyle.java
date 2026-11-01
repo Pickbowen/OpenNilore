@@ -154,16 +154,13 @@ public class MoonTargetStyle
             if (target instanceof AbstractClientPlayer abstractClientPlayer) {
                 GlHelper.drawPlayerHeadRounded(abstractClientPlayer, headX, headY, headSize, headSize, fade, 5.0f * combinedScale);
             }
-            // 目标名字 - 头像右侧
             float slideOff = this.slideAnim.getValueF();
             String displayName = target == mc.player ? NameProtect.getProtectedName() : target.getName().getString();
             GlHelper.drawTextShadowLegacy(displayName, contentX, nameY + 1.0f + slideOff, this.nameFont, new Color(1.0f, 1.0f, 1.0f, fade).getRGB());
-            // 目标血量 - 同行的最右侧
             int healthInt = (int)Math.ceil(target.getHealth());
             String healthStr = String.valueOf(healthInt);
             float healthTextX = contentX + contentWidth - GlHelper.getStringWidth(healthStr, this.nameFont)-2.0f;
             GlHelper.drawTextShadowLegacy(healthStr, healthTextX, nameY + 1.0f + slideOff, this.nameFont, new Color(0, 230, 255, (int)(255.0f * fade)).getRGB());
-            // 血条 - 头像下方（横跨整个面板）
             float headBarX = x + 4.0f;
             float headBarW = 120.0f - 8.0f;
             float headBarH = 4.0f;

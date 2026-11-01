@@ -1,28 +1,12 @@
 package client.nilore.modules.impl.movement;
 
-/**
- * 碰撞速度增量: 只补到"这条轴还能吃下多少", 而不是无条件地塞一个固定 boost。
- *
- * <p>服务端的预测在实体碰撞这一块是保守的 —— 它把玩家当成独立个体来积分, 所以贴着别的
- * 实体走时, 客户端实际收到的位移会低于服务端算出来的上限。这里做的就是把差值解析地算
- * 出来: 先把当前水平速度投影到移动方向上({@code along}), 再解出"投影之后正好落在
- * {@code limit} 圆的边界上"所需的额外步长。结果永远非负且不超过 {@code remaining},
- * 因此叠加之后的总水平速度在几何上不可能超出 {@code limit}, 服务端的预测也就不会看到
- * 一个需要解释的多余位移。
- *
- * <p>{@code 4} 的接触数量上限来自服务端自己: 同一 tick 内参与推挤判定的实体数量在
- * 碰撞盒重叠时最多是 4 个(四个象限), 再多也不会改变位移。
- */
 final class SpeedGrimCollide {
     private static final double MAX_BOOST = 0.16;
-    /** 速度上限的校验上界; 与模块滑块一致。 */
     private static final double MAX_LIMIT = 1.0;
-    /** 服务端碰撞推挤判定同一 tick 内会考虑的实体上限。 */
     private static final int MAX_CONTACTS = 4;
 
     private SpeedGrimCollide() { }
 
-    /** 滑块量化/配置回读会在 0.16 上抖出 1ulp, 校验必须留容差, 否则整个模块静默归零。 */
     private static final double EPSILON = 1.0E-9;
 
     static double increment(SpeedAccess.Collision collision, float radians, double boost, double limit) {

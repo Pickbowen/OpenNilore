@@ -135,7 +135,6 @@ extends ClientBase {
         int dropdownWidth = (int)(90.0f * scale);
         int dropdownX = (int)((float)(popupX + popupWidth - dropdownWidth) - 15.0f * scale);
         int dropdownHeaderHeight = (int)(20.0f * scale);
-        // --- 核心修复：标签左侧文字基于 CapHeight 垂直居中 ---
         float labelY = rowY + (dropdownHeaderHeight - labelFont.getMetrics().capHeight()) / 2.0f;
         GlHelper.drawText(label, (float)popupX + 15.0f * scale, labelY, labelFont, labelColor);
         int itemHeight = (int)(18.0f * scale);
@@ -144,13 +143,11 @@ extends ClientBase {
         int expandedHeight = (int)((float)(filteredItems.length * itemHeight) * openFactor);
         RenderUtil.drawRoundedRect(guiGraphics.pose(), dropdownX, rowY, dropdownWidth, dropdownHeaderHeight + expandedHeight, 4.0f * scale, this.applyAlpha(POPUP_BG_COLOR.getRGB(), openAlpha));
         float valueX = (float)dropdownX + 8.0f * scale;
-        // --- 核心修复：选择框内部文字基于 CapHeight 垂直居中 ---
         float valueY = rowY + (dropdownHeaderHeight - valueFont.getMetrics().capHeight()) / 2.0f;
         GlHelper.drawText(selectedValue, valueX, valueY, valueFont, valueColor);
         FontRenderer arrowFont = FontPresets.materialIcons(18.0f * scale);
         String arrowIcon = "";
         float arrowX = (float)(dropdownX + dropdownWidth) - 18.0f * scale;
-        // --- 核心修复：展开的小箭头基于 CapHeight 垂直居中 ---
         float arrowY = rowY + (dropdownHeaderHeight - arrowFont.getMetrics().capHeight()) / 2.0f;
         GlHelper.drawText(arrowIcon, arrowX, arrowY, arrowFont, valueColor);
         if (openFactor > 0.01f) {
@@ -163,7 +160,6 @@ extends ClientBase {
                 this.updateItemHover(itemHovers, item, hovered);
                 float hoverAmount = itemHovers.getOrDefault(item, 0.0f);
                 float itemTextX = (float)dropdownX + 8.0f * scale;
-                // --- 核心修复：展开列表里的每一项文字也基于 CapHeight 完美居中 ---
                 float itemTextY = itemY + (itemHeight - valueFont.getMetrics().capHeight()) / 2.0f;
                 int itemColor = this.applyAlpha(valueColor, openFactor);
                 float glowAmount = hoverAmount * openFactor;

@@ -236,19 +236,6 @@ public class AudioPlayer {
         thread.start();
     }
 
-    /**
-     * 打开音频流。
-     *
-     * <p>先走标准路径：{@code AudioSystem} 通过 SPI（{@code META-INF/services}）找解码器。
-     *
-     * <p><b>为什么必须留兜底</b>：DLL 注入时 mod 挂在自定义 ClassLoader 上，
-     * 那些 service 文件未必会被 ServiceLoader 扫到，{@code AudioSystem} 于是直接抛
-     * {@code UnsupportedAudioFileException}。兜底换成 jlayer 的 reader 直接建流，
-     * 完全绕开 ServiceLoader。
-     *
-     * <p><b>失败原因用 LOGGER 而不是 println</b>：注入版没有控制台，
-     * {@code System.out} 会被丢掉，只有走 logger 才能落进 {@code logs/latest.log}。
-     */
     private static AudioInputStream openAudioStream(String url) throws Exception {
         try {
             return AudioSystem.getAudioInputStream(
@@ -311,14 +298,8 @@ public class AudioPlayer {
                         ChorusDetector.Result r = ChorusDetector.detect(mono, sampleRate);
                         chorusStart = r.chorusStartSec;
                         chorusDur = r.chorusDurationSec;
-                        // 顺手把节拍网格也算出来（同一份 mono 数据，不额外解码）。
-                        // automix 靠它把切歌点落在小节线上；分析不出来也不影响播放。
                         song.beat = BeatDetector.detect(mono, sampleRate);
-                        // automix：跳过前奏的入口。比「跳副歌」更接近真实混音的做法。
                         song.introEndSec = AutomixPlanner.introEntryMs(mono, sampleRate) / 1000.0f;
-                        // 解码出来的 PCM 长度才是最准的时长。
-                        // 搜索接口和播放地址接口给的值都可能是试听片段的长度（未登录/无 VIP 时），
-                        // 那个值一旦偏小，界面会以为歌已经播完，立刻跳下一首。
                         long exactMs = mono.length * 1000L / sampleRate;
                         if (exactMs > 0L) {
                             song.duration = exactMs;
@@ -383,7 +364,6 @@ public class AudioPlayer {
             this.preloaded = track;   // playInternal resumes from the same array after the fade
             long startMs = startOffset * 1000L
                     / ((long) track.format.getSampleRate() * track.format.getFrameSize());
-            // 时钟直接从切入点开始算，进度条和歌词立刻对齐
             this.playStartMs = System.currentTimeMillis() - startMs;
             System.out.println("[MusicPlayer] Automix切入下一首 @" + startMs
                     + "ms (offset=" + startOffset + "B)");
@@ -408,15 +388,11 @@ public class AudioPlayer {
         int sampleRate = (int) track.format.getSampleRate();
         int frameSize = track.format.getFrameSize();
         if (sampleRate <= 0 || frameSize <= 0) return 0L;
-        // automix 算出来的「跳过前奏」入口优先；没有就退回副歌检测的位置。
-        // 前者是人声/主歌起点（从那儿进最自然），后者只是「高潮在哪」。
         float startSec = track.song != null && track.song.introEndSec > 0f
                 ? track.song.introEndSec
                 : track.chorusStartSec;
         if (startSec <= 0f) return 0L;
         startSec = Math.max(0f, Math.min(startSec, MAX_CHORUS_JUMP_SEC));
-        // 吸附到小节线：automix 的入口本来就是按 B 的小节线算的，
-        // 副歌位置则靠这一下对齐，免得切在一句中间。
         BeatDetector.BeatGrid grid = track.song == null ? null : track.song.beat;
         if (grid != null && grid.bpm > 0f) {
             startSec = Math.max(0f, grid.snapToBar(startSec * 1000f) / 1000f);
@@ -428,12 +404,6 @@ public class AudioPlayer {
         return offset;
     }
 
-    /**
-     * 把淡出时长凑成整小节，让淡出起点落在小节线上。
-     *
-     * <p>歌曲一般收在小节线上，所以「结束时刻 − 整数个小节」自然还是小节线。
-     * 这样 A 是被完整走完一个乐句才交出去，而不是半句硬切。
-     */
     private static long alignFadeToBar(SongInfo song, long fadeMs) {
         BeatDetector.BeatGrid grid = song == null ? null : song.beat;
         if (grid == null || grid.bpm <= 0f) {
@@ -857,7 +827,6 @@ public class AudioPlayer {
             long initialSeek = seekTargetMs;
             if (initialSeek >= 0) {
                 seekTargetMs = -1;
-                // 先取整数帧数再乘帧大小，保证跳过量是帧对齐的，否则 16-bit 采样错位会产生噪音
                 long bytesToSkip = (long) (initialSeek / 1000.0 * sampleRate) * bytesPerFrame;
                 byte[] skipBuffer = new byte[8192];
                 while (bytesConsumedFromStream < bytesToSkip) {

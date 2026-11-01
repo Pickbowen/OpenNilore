@@ -36,7 +36,6 @@ extends HudElement {
         public final client.nilore.utils.animation.SmoothAnimationTimer widthAnim = new client.nilore.utils.animation.SmoothAnimationTimer();
         public boolean removing = false;
         public boolean visible = true;
-        // widthAnim 存的是该行的高度；记录当前目标高度，样式切换时据此重新动画。
         public float rowHeight = -1.0f;
 
         public EffectEntry(PotionEffectsHud outer, MobEffectInstance instance) {
@@ -84,7 +83,6 @@ extends HudElement {
             this.widthAnim.animate(targetHeight, 0.3, client.nilore.utils.math.Easings.EASE_OUT_POW3);
         }
 
-        // show() 只在首次渲染时触发，所以样式切换后必须在这里把行高重新动画到新样式的值。
         public void updateRowHeight(float targetHeight) {
             if (this.removing || this.rowHeight == targetHeight) return;
             this.rowHeight = targetHeight;
@@ -275,7 +273,6 @@ extends HudElement {
         float currentY = y;
         float maxWidth = 0.0f;
 
-        // 单栏高度：图标(18) 与 两行文字(18f + 2gap + 16f ≈ 36) 取较高者 + padding
         float entryHeight = Math.max(iconSize + padding * 2.0f, 36.0f + padding * 2.0f) - 16.0f;
 
         for (EffectEntry entry : this.effectEntryList) {
@@ -298,7 +295,6 @@ extends HudElement {
 
             int effectColor = this.getEffectColor(entry.effectInstance.getEffect());
 
-            // 计算文字宽度
             float nameWidth = GlHelper.getStringWidth(entry.effectName, this.rhythmNameFont);
             float durationWidth = GlHelper.getStringWidth(entry.durationText, this.rhythmTimerFont);
             float maxTextWidth = Math.max(nameWidth, durationWidth);
@@ -306,10 +302,8 @@ extends HudElement {
 
             if (totalWidth > maxWidth) maxWidth = totalWidth;
 
-            // 进度比例
             float durationPct = entry.effectInstance.isInfiniteDuration() ? 1.0f : (float)entry.effectInstance.getDuration() / (float)entry.originalDuration;
 
-            // 背景轨道（深色空底）
             int bgR = effectColor >> 16 & 0xFF;
             int bgG = effectColor >> 8 & 0xFF;
             int bgB = effectColor & 0xFF;
@@ -322,7 +316,6 @@ extends HudElement {
             this.backgroundPaint.setColor(trackColor);
             drawContext.drawRoundedRect(RoundedRectangle.ofXYWHR(x, entryY, totalWidth, entryHeight, cornerRadius), this.backgroundPaint);
 
-            // 进度条填充（取药水颜色，按剩余时长比例）
             int fillColor = ColorUtil.fromARGB(
                     (int)((float)bgR * 0.55f + 25.5f),
                     (int)((float)bgG * 0.55f + 25.5f),
@@ -335,7 +328,6 @@ extends HudElement {
                 drawContext.drawRoundedRect(RoundedRectangle.ofXYWHR(x, entryY, fillWidth, entryHeight, cornerRadius), this.effectIconPaint);
             }
 
-            // 药水图标精灵
             float iconX = x + padding;
             float iconY = entryY + (entryHeight - iconSize) / 2.0f - 1.0f;
             TextureAtlasSprite sprite = mc.getMobEffectTextures().get(entry.getEffect());
@@ -343,13 +335,11 @@ extends HudElement {
                 drawContext.getGuiGraphics().blit((int)iconX, (int)iconY, 0, (int)iconSize, (int)iconSize, sprite);
             }
 
-            // 药水名称（白色，18f，上方）
             float textX = x + padding + iconSize + padding;
             float nameY = entryY + padding + 1.0f;
             this.timerBarPaint.setColor(ColorUtil.fromARGB(255, 255, 255, (int)(255.0f * animHeight)));
             GlHelper.drawTextFormatted(entry.effectName, textX, nameY, this.rhythmNameFont, this.timerBarPaint, false);
 
-            // 药水时长（白色半透明，16f，下方）
             float durationY = nameY + 14f;
             this.timerBarPaint.setColor(ColorUtil.fromARGB(255, 255, 255, (int)(180.0f * animHeight)));
             GlHelper.drawTextFormatted(entry.durationText, textX, durationY, this.rhythmTimerFont, this.timerBarPaint, false);

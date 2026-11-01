@@ -38,7 +38,6 @@ public final class MusicHttp {
     }
 
     public static byte[] getBytes(URI uri) throws IOException, InterruptedException {
-        // 封面走网易 CDN（music.126.net），带 Referer 否则防盗链会偶发拒绝（抄 Melodify 的封面下载）。
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(uri)
                 .timeout(TIMEOUT)

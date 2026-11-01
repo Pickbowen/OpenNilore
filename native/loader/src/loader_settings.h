@@ -15,7 +15,6 @@ namespace loader_settings {
 // settings JSON stays readable.
 inline QString kKeyHwidSpoof()   { return QStringLiteral("hwidSpoof"); }
 inline QString kKeyNativeBypass(){ return QStringLiteral("nativeBypass"); }
-/** 旧键名（原 Early Mode），只用于把已经存下来的开关状态迁到 kKeyNativeBypass。 */
 inline QString kKeyLegacyEarlyMode() { return QStringLiteral("earlyMode"); }
 inline QString kKeyMachineGuid() { return QStringLiteral("hwid.machineGuid"); }
 inline QString kKeyVolumeSerial(){ return QStringLiteral("hwid.volumeSerial"); }

@@ -7,10 +7,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
-/**
- * 把加密/签名实现接进 HeyPixelProtocolRuntime 的 Id1 挑战应答。
- * keyString 已定为 challenge.challengeValue()（GCM 认证验证通过）。
- */
 public final class HeyPixelId1Wiring {
 
     private HeyPixelId1Wiring() {

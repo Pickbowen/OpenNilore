@@ -93,9 +93,7 @@ public class Scaffold extends Module {
 
     public Rotation rots = new Rotation();
     public Rotation lastRots = new Rotation();
-    /** 转头平滑(惯性+波动), 与 KillAura 共用同一实现。 */
     private final RotationSmoother rotSmoother = new RotationSmoother(new Random());
-    /** 抖动独立随机源: 不能和 smoother 共用, 否则平滑器的白噪声会与抖动相关。 */
     private final Random jitterRandom = new Random();
     public int targetYLevel = -1;
     public int velocityDelay = 0;
@@ -121,7 +119,6 @@ public class Scaffold extends Module {
     private int shelfInitialBlocks;
     private boolean shelfHudInitialized;
     private long hudLastFrameTime;
-
 
     public Scaffold() {
         super("Scaffold", Category.MOVEMENT);
@@ -223,7 +220,6 @@ public class Scaffold extends Module {
         }
     }
 
-    // 限制 BPS = 限制玩家移动速度: 超速时停止前进输入, 让玩家减速回限制内
     @EventTarget
     public void onStrafe(StrafeEvent strafeEvent) {
         if (mc.player == null) return;
@@ -294,7 +290,6 @@ public class Scaffold extends Module {
             if (this.clutch.getValue() && mc.player.getDeltaMovement().y < -0.1) {
                 MotionSimulator sim = new MotionSimulator(mc.player);
                 sim.simulateWithFriction(2);
-                // 预测位置需低于放置层超过 clutchDepth 才进入 clutch, 避免正常搭路时轻微下落误触发
                 if (this.currentPlacement.position.getY() > sim.y + this.clutchDepth.getValue().doubleValue()) {
                     this.canBuildNow = false;
                 }
@@ -308,7 +303,6 @@ public class Scaffold extends Module {
         } else if (this.clutch.getValue() && (!this.canBuildNow || this.velocityDelay > 0) && this.rotationDelay <= 8) {
             boolean useC06 = this.onTickRot.getValue() || !this.canBuildNow;
             if (useC06) {
-                // C06 模式：不转头，让 onPreMotion 中的 c06Place 处理放置
                 this.rots.setYawPitch(mc.player.getYRot(), mc.player.getXRot());
                 RotationHandler.setTargetRotation(this.rots);
                 this.rotationDelay++;
@@ -344,7 +338,6 @@ public class Scaffold extends Module {
             ClientBase.delayPackets.clear();
             this.rotationDelay = 0;
 
-            // SkipTicks 结束后无论 onTickRot 设置如何，都发 C06 恢复服务端旋转追踪
             if (wasInRescue) {
                 Rotation resumeRot = new Rotation(mc.player.getYRot() + rotationJitter(), mc.player.getXRot() + rotationJitter());
                 mc.getConnection().send(new ServerboundMovePlayerPacket.PosRot(
@@ -355,7 +348,6 @@ public class Scaffold extends Module {
             }
 
             if (this.onTickRot.getValue()) {
-                // OnTickRot: 不转头, 保持当前视角, 只靠 C06 发包欺骗
                 this.rots.setYawPitch(mc.player.getYRot(), mc.player.getXRot());
             } else {
                 this.calculateTargetRotation();
@@ -384,7 +376,6 @@ public class Scaffold extends Module {
         event.setCancelled(true);
         if (mc.screen != null || mc.player == null || this.currentPlacement == null) return;
 
-        // C06 旋转欺骗模式: OnTickRot 开启或 SkipTicks 期间强制启用
         if (this.onTickRot.getValue() || (!this.canBuildNow && this.rotationDelay > 0)) {
             if (this.mode.is("Telly Bridge") && this.airTicks < this.tellyAirTicks.getValue().intValue()) return;
             if (this.mode.is("Telly Bridge") && this.tellyPlaceDelay.getValue().intValue() > 0 && this.tellyPlaceDelayTimer < this.tellyPlaceDelay.getValue().intValue()) return;
@@ -612,11 +603,9 @@ public class Scaffold extends Module {
 
         Renderer.render(event.guiGraphics(), drawContext -> {
             try (Paint paint = new Paint()) {
-                // 圆角矩形背景
                 paint.setColor(0xCC10151C);
                 drawContext.drawRoundedRect(RoundedRectangle.ofXYWHR(boxX, boxY, boxW, boxH, radius), paint);
 
-                // 物品名：pingfang 逐字符跟随 ModuleListHud 渐变色（左移 1f）
                 float cursor = textX - 1f;
                 int len = itemName.length();
                 for (int i = 0; i < len; i++) {
@@ -627,7 +616,6 @@ public class Scaffold extends Module {
                             : 0xFFFFFFFF;
                     cursor = GlHelper.drawText(ch, cursor, textY + 0.75f, nameFont, color);
                 }
-                // 数量：openSans 白色（下移 1f、右移 1f）
                 GlHelper.drawText(" " + countStr, cursor + 1f, textY + 0.75f, countFont, 0xFFFFFFFF);
             }
         });
@@ -667,56 +655,65 @@ public class Scaffold extends Module {
     private void calculateTargetRotation() {
         if (this.currentPlacement == null || mc.player == null) return;
 
-        // 不转优先: 上一次真正下发的朝向如果已经打中本 tick 的目标放置面(方块 + 面都对得上),
-        // 这一 tick 就完全不动 rotation —— rots / targetRotation 保持上一 tick 的值, 出站角
-        // 逐位相同, 服务端看到的转头增量是 0。
-        // 因果反过来: 让放置去适配朝向, 而不是朝向去追放置。转头只在"目标面换了"或
-        // "原朝向确实打不到了"时才发生, 这已经是最少的转头次数。
+        if (!mc.level.getBlockState(this.currentPlacement.position.relative(this.currentPlacement.facing)).canBeReplaced()) {
+            return;
+        }
+
         Rotation held = RotationHandler.targetRotation;
         if (held != null && RayTraceUtil.canRayTrace(
                 held, this.currentPlacement.facing, this.currentPlacement.position, true)) {
             return;
         }
 
-        // 每 tick 一次机会: 预算在搜索开始时重置, 由 isRotationValidForPlacement 逐次扣减。
         this.raycastBudget = ROTATION_RAYCAST_BUDGET;
 
-        // 1. 基于移动方向计算基础yaw
-        float realYaw = mc.player.getYRot();
-        if (mc.options.keyDown.isDown()) {
-            realYaw += 180.0f;
-            if (mc.options.keyLeft.isDown()) realYaw += 45.0f;
-            else if (mc.options.keyRight.isDown()) realYaw -= 45.0f;
-        } else if (mc.options.keyUp.isDown()) {
-            if (mc.options.keyLeft.isDown()) realYaw -= 45.0f;
-            else if (mc.options.keyRight.isDown()) realYaw += 45.0f;
-        } else if (mc.options.keyRight.isDown()) {
-            realYaw += 90.0f;
-        } else if (mc.options.keyLeft.isDown()) {
-            realYaw -= 90.0f;
-        }
-
-        float yaw = realYaw - 180.0f;
+        Vec3 eye = mc.player.getEyePosition();
+        float yaw = baseYaw();
         float idealPitch = 75.5f;
         float currentPitch = this.rots.getPitch();
+        float exactPitch = RotationUtil.exactRotation(eye,
+                Vec3.atCenterOf(this.currentPlacement.position)
+                        .add(Vec3.atLowerCornerOf(this.currentPlacement.facing.getNormal()).scale(0.5)))
+                .getPitch();
 
-        // 2. 理想 pitch 优先: 直线搭路时 75.5° 全程有效, 旋转恒定 = 最流畅状态。
         if (isRotationValidForPlacement(new Rotation(yaw, idealPitch))) {
             applyRotationWithSpeed(yaw, idealPitch);
             return;
         }
 
-        // 3. 75.5 失效: 当前 pitch 仍能命中就原地不动 —— 不要在理想角和就近角之间来回
-        //    横跳(调试证实 75.5↔83~88 每 tick 乒乓, 这就是"放一次甩一次"的直接原因),
-        //    只在几何真正变化时移动。
+        if (isRotationValidForPlacement(new Rotation(yaw, exactPitch))) {
+            applyRotationWithSpeed(yaw, exactPitch);
+            return;
+        }
+
         if (isRotationValidForPlacement(new Rotation(yaw, currentPitch))) {
             applyRotationWithSpeed(yaw, currentPitch);
             return;
         }
 
-        // 3.5 直接瞄放置面上离眼睛最近的点: 构造上必然命中, 且旋转量比任何扫掠都小。
+        Float nearest = findValidPitchNear(yaw, currentPitch);
+        if (nearest != null) {
+            applyRotationWithSpeed(yaw, nearest);
+            return;
+        }
+
+        Float towardIdeal = findValidPitchNear(yaw, idealPitch);
+        if (towardIdeal != null) {
+            applyRotationWithSpeed(yaw, towardIdeal);
+            return;
+        }
+
+        if (isRotationValidForPlacement(new Rotation(yaw + 45.0f, exactPitch))) {
+            applyRotationWithSpeed(yaw + 45.0f, exactPitch);
+            return;
+        }
+
+        if (isRotationValidForPlacement(new Rotation(yaw - 45.0f, exactPitch))) {
+            applyRotationWithSpeed(yaw - 45.0f, exactPitch);
+            return;
+        }
+
         if (mc.player != null) {
-            Vec3 eye = mc.player.getEyePosition();
             Rotation direct = RotationUtil.exactRotation(eye,
                     faceAimPoint(this.currentPlacement.position, this.currentPlacement.facing, eye));
             if (isRotationValidForPlacement(direct)) {
@@ -725,47 +722,17 @@ public class Scaffold extends Module {
             }
         }
 
-        // 4. 当前 pitch 也失效: 从当前 pitch 双向外扩, 取最小修正步。
-        Float nearest = findValidPitchNear(yaw, currentPitch);
-        if (nearest != null) {
-            applyRotationWithSpeed(yaw, nearest);
-            return;
-        }
-
-        // 5. 当前邻域彻底无解: 从理想角就近找, 把旋转拉回基准。
-        Float towardIdeal = findValidPitchNear(yaw, idealPitch);
-        if (towardIdeal != null) {
-            applyRotationWithSpeed(yaw, towardIdeal);
-            return;
-        }
-
-        // 6. pitch 无解(yaw 偏了) -> 在目标面上找角度
         Rotation optimal = findOptimalRotation();
         if (optimal != null) {
             applyRotationWithSpeed(optimal.getYaw(), optimal.getPitch());
             return;
         }
 
-        // 7. 全部失败: 保持当前旋转。绝不明知 raytrace 无效还把 75.5 发出去。
         applyRotationWithSpeed(yaw, currentPitch);
     }
 
-    /**
-     * 每 tick 允许花在旋转搜索上的 raycast 次数。
-     *
-     * <p>旧实现的搜索是死循环式的：{@link #findValidPitchNear} 从 0 到 30° 每 0.3°
-     * 探一次(101×2 = 202 次 raycast)，而兜底那一层在角度网格上扫 yaw/pitch，最早的逐 1°
-     * 版本是 180×25×2 = 9000 次。每个 raycast 都是一次 {@code level.clip} 加一次实体
-     * 查询，9000 次就是肉眼可见的卡顿 —— 而且这条路径在"贴着墙/天花板搭路"时每 tick 都会
-     * 走到。
-     *
-     * <p>现在：pitch 扫掠改成 3° 粗扫 + 0.3° 回退并受本预算约束；兜底那一层不再是角度
-     * 网格扫描，而是直接对目标面撒 3×3 个点算精确朝向（{@link #findOptimalRotation()}），
-     * 固定 9 次、不吃这份预算。预算耗尽就返回"保持当前旋转"—— 少转一次远好过卡一帧。
-     */
     private int raycastBudget;
     private static final int ROTATION_RAYCAST_BUDGET = 72;
-    /** 目标面兜底搜索的 3×3 采样比例（面内两轴）。 */
     private static final double[] FACE_GRID = {0.5, 0.15, 0.85};
 
     private boolean isRotationValidForPlacement(Rotation rotation) {
@@ -775,12 +742,6 @@ public class Scaffold extends Module {
         return RayTraceUtil.canRayTrace(rotation, this.currentPlacement.facing, this.currentPlacement.position, true);
     }
 
-    /**
-     * 从 center(理想 pitch)向两侧对称外扩(向下最多 30°, 向上直到 90°), 取距 center
-     * 最近的有效 pitch。先以 3° 粗扫定位区间, 再在区间内以 0.3° 回退到最小修正量 ——
-     * 结果与逐 0.3° 完全一致(区间内无解时回落到已验证过的粗解), 但 raycast 从 202 次
-     * 降到十几次。
-     */
     private Float findValidPitchNear(float yaw, float center) {
         if (this.currentPlacement == null) return null;
 
@@ -802,7 +763,6 @@ public class Scaffold extends Module {
         return this.isRotationValidForPlacement(new Rotation(yaw, pitch));
     }
 
-    /** 粗扫命中后, 在 (offset-3, offset) 内以 0.3° 步长回退到最小修正量。 */
     private Float refinePitch(float yaw, float center, float coarseOffset, boolean downward) {
         float start = Math.max(0.0f, coarseOffset - 3.0f);
         for (float offset = start; offset < coarseOffset; offset += 0.3f) {
@@ -812,23 +772,9 @@ public class Scaffold extends Module {
                 return test;
             }
         }
-        // 回退段无解或预算耗尽: 粗解本身是通过校验的, 用它。
         return downward ? Mth.clamp(center - coarseOffset, -90.0f, 90.0f) : center + coarseOffset;
     }
 
-    /**
-     * 最后兜底的搜索：在**目标面的采样点**上找角度，而不是在角度网格上找。
-     *
-     * <p>旧实现是 yaw 0..180 每 6° × pitch 0..25 每 5° × 双向，约 360 次 raycast（更早的
-     * 逐 1° 版本就是 180×25×2 = 9000 次）。而且循环是外层 yaw、内层 pitch：72 次的预算
-     * 只够走完三个 yaw 就断，于是这一层几乎必然返回 null，最后还是"保持当前旋转"——
-     * 兜底实际上等于不存在，白花预算。
-     *
-     * <p>反过来做才对：目标本来就是一个确定的方块 + 面，能打到它的角度集合就是这个面上
-     * 各点的视线方向。在面上撒 3×3 个点，每个点算一次精确朝向再验一次射线，最多 9 次就能
-     * 找到解（包括"面心被挡、边角是通的"这种角度网格根本摸不到的几何），并按"转得最少"
-     * 挑一个。代价比扫角度网格低一个数量级，找到的概率反而更高。
-     */
     private Rotation findOptimalRotation() {
         if (this.currentPlacement == null || mc.player == null) return null;
         Vec3 eye = mc.player.getEyePosition();
@@ -842,11 +788,8 @@ public class Scaffold extends Module {
         for (double u : FACE_GRID) {
             for (double v : FACE_GRID) {
                 Vec3 point = faceSamplePoint(pos, face, u, v);
-                // 超出交互距离的采样点直接跳过：服务端不会接受那一次放置。
                 if (point.distanceToSqr(eye) > 20.25) continue;
                 Rotation candidate = RotationUtil.exactRotation(eye, point);
-                // 这里刻意不走共享预算：本层探测次数固定为 9 次，被前面的 pitch 扫掠
-                // 饿死就等于这层兜底不存在。
                 if (!RayTraceUtil.canRayTrace(candidate, face, pos, true)) continue;
                 double score = Math.abs(Mth.wrapDegrees(candidate.getYaw() - current.getYaw()))
                         + Math.abs(candidate.getPitch() - current.getPitch()) * 1.5;
@@ -859,7 +802,6 @@ public class Scaffold extends Module {
         return best;
     }
 
-    /** 目标面 3×3 网格上的采样点：法线方向固定在面上，另两轴按 u/v 在 inset 内插值。 */
     private static Vec3 faceSamplePoint(BlockPos pos, Direction face, double u, double v) {
         double inset = 0.15;
         double minX = pos.getX() + inset;
@@ -868,7 +810,6 @@ public class Scaffold extends Module {
         double maxY = pos.getY() + 1.0 - inset;
         double minZ = pos.getZ() + inset;
         double maxZ = pos.getZ() + 1.0 - inset;
-        // 面上那一轴取方块边界（与 faceAimPoint 同一个平面）。
         double planeX = pos.getX() + 0.5 + face.getStepX() * 0.5;
         double planeY = pos.getY() + 0.5 + face.getStepY() * 0.5;
         double planeZ = pos.getZ() + 0.5 + face.getStepZ() * 0.5;
@@ -894,10 +835,8 @@ public class Scaffold extends Module {
                 float currentDiffToReal = Math.abs(Mth.wrapDegrees(current.getYaw() - realYaw));
                 float newDiffToReal = Math.abs(Mth.wrapDegrees(yaw - realYaw));
                 if (newDiffToReal < currentDiffToReal) {
-                    // 转头回真实视角（如从前进切到后退，目标偏转=玩家实际视角）→ Return Speed
                     speed = this.returnSpeed.getValue().floatValue();
                 } else {
-                    // 转头去目标面 → Turn Speed
                     speed = this.turnSpeed.getValue().floatValue();
                 }
             } else {
@@ -907,9 +846,10 @@ public class Scaffold extends Module {
             speed = this.rotationSpeed.getValue().floatValue();
         }
 
-        // 抖动作为"目标偏移"参与平滑, 而不是直接叠加到出站值上。叠加到出站值上会让增量
-        // 离开灵敏度格点 —— Grim AimProcessor 用连续增量反推灵敏度, 格点外的偏移会把这个
-        // 反推毁掉, 反而比不抖更容易被抓。作为目标偏移, 它改变的是角速度, 输出仍被量化。
+        if (this.shouldBuild()) {
+            speed = 360.0f;
+        }
+
         Rotation desired = new Rotation(yaw, pitch);
         float jitterScale = this.jitter.getValue().floatValue();
         if (jitterScale > 0.0f) {
@@ -923,21 +863,12 @@ public class Scaffold extends Module {
             if (current == null) {
                 current = new Rotation(mc.player.getYRot(), mc.player.getXRot());
             }
-            // 惯性+波动平滑, 代替旧的 clamp(diff, ±speed) 方波 —— Grim 的 DuplicateRotPlace
-            // 专抓"相邻两次放置时 yaw 增量完全相同", 匀速转头正是它的靶子。
-            // speed 语义不变: 度/tick 上限, speed 以内一步到位。
             rotation = this.rotSmoother.tick(current, desired, speed);
         }
-        // GCD 对齐: 增量取整到灵敏度步长, 锚定在上一次发出的 rotation 上。Scaffold 之前
-        // 从不量化, Grim AimProcessor 用连续增量 GCD 反推灵敏度时推不出稳定值, 和真人
-        // 一眼就能区分。量化误差 <= 半个步长, 相对方块面的角尺寸可忽略。
         Rotation anchor = RotationHandler.prevRotation != null
                 ? RotationHandler.prevRotation
                 : new Rotation(mc.player.getYRot(), mc.player.getXRot());
         rotation = RotationSmoother.patchConstantRotation(rotation, anchor);
-        // 挂在同一个方块面上时, 平滑器收敛后每 tick 输出同一个量化值。DuplicateRotPlace 的
-        // 判据是"|deltaYaw| > 2 且与上一次放置的增量差 < 1e-4", 所以大转角时必须让增量
-        // 本身有差别: 沿格点挪一格, 网格与幅度都不变。
         rotation = this.rotSmoother.breakDuplicateDelta(rotation, anchor);
 
         this.rots.setYawPitch(rotation.getYaw(), rotation.getPitch());
@@ -959,10 +890,6 @@ public class Scaffold extends Module {
         int feetX = belowFeet.getX();
         int feetZ = belowFeet.getZ();
         if (mc.level.getBlockState(belowFeet).entityCanStandOn(mc.level, belowFeet, mc.player)) return;
-        // 目标粘滞: 上一 tick 找到的支撑面如果仍然可放, 直接复用, 不再重新搜。
-        // 每 tick 重搜有两个代价: 一是六个方向的 getBlockState 加距离比较, 二是在距离
-        // 并列的等价方块之间来回切换 —— 后者表现为"放一次甩一次", 也是转头的最大来源。
-        // 复用让旋转停在同一角上, 这是"尽量少的转头"最直接的一条。
         if (this.currentPlacement != null && this.isPlacementStillValid(this.currentPlacement, eye)) {
             return;
         }
@@ -979,8 +906,6 @@ public class Scaffold extends Module {
                                     feetX + (signX == 0 ? x : -x),
                                     this.targetYLevel - yOff,
                                     feetZ + (signZ == 0 ? z : -z));
-                            // 先按交互距离粗剪: 半径 6 的螺旋里大部分候选方块根本不在
-                            // 4.5 格的交互范围内, 每个都要走六次 getBlockState 才发现。
                             if (!this.isWithinSearchReach(eye, test)) continue;
                             if (this.isAbovePlaceable(eye, test)) return;
                         }
@@ -990,7 +915,6 @@ public class Scaffold extends Module {
         }
     }
 
-    /** 方块中心到眼睛的距离是否还在交互范围内(4.5 格的平方, 与服务端放置距离同量级)。 */
     private boolean isWithinSearchReach(Vec3 eye, BlockPos pos) {
         double dx = pos.getX() + 0.5 - eye.x;
         double dy = pos.getY() + 0.5 - eye.y;
@@ -998,14 +922,6 @@ public class Scaffold extends Module {
         return dx * dx + dy * dy + dz * dz <= 20.25;
     }
 
-    /**
-     * 上一 tick 的目标是否还值得继续瞄。
-     *
-     * <p>旧实现从不清理 {@code currentPlacement}: 方块放下去之后它仍然是"目标", 于是
-     * 后续每 tick 都在瞄一个已经是实心的方块 —— RayTraceUtil 打得到它(它是方块), 但
-     * 放置必然失败, 而转头一直照做。这里把三种失效情况一次判掉: 支撑面不再可站立、
-     * 待放置位置已经不可替换、或眼睛到面已超出交互距离。
-     */
     private boolean isPlacementStillValid(PlacementTarget target, Vec3 eye) {
         if (target == null || target.facing == null) return false;
         BlockPos support = target.position;
@@ -1018,23 +934,39 @@ public class Scaffold extends Module {
         return faceAimPoint(support, target.facing, eye).distanceToSqr(eye) <= 20.25;
     }
 
-    /**
-     * 亚感知抖动源: 幅度 0.03~0.07°, 随机符号。它被加到"目标旋转"上再经过平滑与量化,
-     * 所以出站值始终落在灵敏度格点上, 不会破坏 GCD 反推; 真正保证相邻两次放置增量不同的
-     * 是 {@link RotationSmoother#breakDuplicateDelta}。
-     */
     private float jitterOffset() {
         float offset = 0.03f + this.jitterRandom.nextFloat() * 0.04f;
         return this.jitterRandom.nextBoolean() ? offset : -offset;
+    }
+
+    private float baseYaw() {
+        float yaw = mc.player.getYRot();
+        if (mc.options.keyDown.isDown()) {
+            yaw += 180.0f;
+            if (mc.options.keyLeft.isDown()) yaw += 45.0f;
+            else if (mc.options.keyRight.isDown()) yaw -= 45.0f;
+        } else if (mc.options.keyUp.isDown()) {
+            if (mc.options.keyLeft.isDown()) yaw -= 45.0f;
+            else if (mc.options.keyRight.isDown()) yaw += 45.0f;
+        } else if (mc.options.keyRight.isDown()) {
+            yaw += 90.0f;
+        } else if (mc.options.keyLeft.isDown()) {
+            yaw -= 90.0f;
+        }
+        return yaw - 180.0f;
     }
 
     private boolean isAbovePlaceable(Vec3 from, BlockPos pos) {
         if (mc.level == null || mc.player == null) return false;
         if (!(mc.level.getBlockState(pos).getBlock() instanceof AirBlock)) return false;
         Vec3 center = new Vec3(pos.getX() + 0.5, pos.getY() + 0.5f, pos.getZ() + 0.5);
+        Rotation want = new Rotation(baseYaw(), 75.5f);
         BlockPos bestSupport = null;
         Direction bestFace = null;
         double bestDistance = Double.MAX_VALUE;
+        BlockPos aimSupport = null;
+        Direction aimFace = null;
+        double aimDistance = Double.MAX_VALUE;
         for (Direction direction : Direction.values()) {
             Vec3 offsetCenter = center.add(new Vec3(
                     direction.getNormal().getX() * 0.5,
@@ -1058,6 +990,15 @@ public class Scaffold extends Module {
                 bestSupport = offset;
                 bestFace = face;
             }
+            if (distance < aimDistance && RayTraceUtil.canRayTrace(want, face, offset, true)) {
+                aimDistance = distance;
+                aimSupport = offset;
+                aimFace = face;
+            }
+        }
+        if (aimSupport != null) {
+            this.currentPlacement = new PlacementTarget(aimSupport, aimFace);
+            return true;
         }
         if (bestSupport == null) {
             return false;
@@ -1104,20 +1045,16 @@ public class Scaffold extends Module {
         if (!this.hasPlaceableInHand()) return;
         InteractionHand hand = this.placementHand();
 
-        // 计算朝向放置面的旋转
         Vec3 aim = faceAimPoint(this.currentPlacement.position, facing, mc.player.getEyePosition());
         Rotation targetRot = RotationUtil.exactRotation(mc.player.getEyePosition(), aim);
 
-        // 用即将发包的旋转做射线校验，打不中就不发
         if (!RayTraceUtil.canRayTrace(targetRot, facing, this.currentPlacement.position, true)) {
             return;
         }
 
-        // 保存原视角
         float origYaw = mc.player.getYRot();
         float origPitch = mc.player.getXRot();
 
-        // 发包：C06 转到目标方向（带微抖）
         mc.getConnection().send(new ServerboundMovePlayerPacket.PosRot(
                 mc.player.getX(), mc.player.getY(), mc.player.getZ(),
                 targetRot.getYaw() + rotationJitter(),
@@ -1125,7 +1062,6 @@ public class Scaffold extends Module {
                 mc.player.onGround()
         ));
 
-        // 放置方块
         BlockHitResult hit = new BlockHitResult(aim, facing, this.currentPlacement.position, false);
         InteractionResult result = mc.gameMode.useItemOn(mc.player, hand, hit);
 
@@ -1135,7 +1071,6 @@ public class Scaffold extends Module {
             }
         }
 
-        // 发包：C06 恢复原视角（带微抖）
         mc.getConnection().send(new ServerboundMovePlayerPacket.PosRot(
                 mc.player.getX(), mc.player.getY(), mc.player.getZ(),
                 origYaw + rotationJitter(),
@@ -1150,7 +1085,6 @@ public class Scaffold extends Module {
         if (!this.hasPlaceableInHand()) return;
         InteractionHand hand = this.placementHand();
 
-        // SkipTicks时每次放置前都发送对准目标方块面的C05. Fix By StarSky
         if (!this.canBuildNow && this.clutch.getValue() && !this.currentPlacement.position.equals(this.lastC05Position)) {
             this.lastC05Position = this.currentPlacement.position;
             Vec3 c05Eye = new Vec3(mc.player.getX() + mc.player.getDeltaMovement().x, mc.player.getY() + mc.player.getEyeHeight() + mc.player.getDeltaMovement().y, mc.player.getZ() + mc.player.getDeltaMovement().z);

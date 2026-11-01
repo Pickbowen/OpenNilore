@@ -7,7 +7,6 @@ public final class FontRenderer {
     private final String fontName;
     @Getter
     private final float size;
-    /** 是否使用合成粗体（字形重复绘制撑粗）。 */
     @Getter
     private final boolean bold;
     @Getter

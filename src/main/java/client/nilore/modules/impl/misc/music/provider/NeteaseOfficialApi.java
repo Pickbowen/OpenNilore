@@ -29,18 +29,10 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 网易云官方接口（直连 music.163.com，走 weapi 加密）。
  *
- * <p>和 {@code NeteaseApi}（走 gdstudio 第三方聚合）的区别：
  * <ul>
- *   <li>未登录也能搜索、拿歌词、拿封面；只有播放地址需要登录（多数歌要会员 Cookie）。</li>
- *   <li>歌词里可能带 {@code yrc} 逐字时间，能做出精确的卡拉OK扫光 —— 第三方聚合接口拿不到这个。</li>
  * </ul>
  *
- * <p>接口地址和参数都实测过：搜索 {@code weapi/search/get}（不是 cloudsearch，后者未登录会被风控挡）、
- * 歌词 {@code weapi/song/lyric}、播放地址 {@code weapi/song/enhance/player/url/v1}、
- * 封面 {@code weapi/v3/song/detail}（直接给 picUrl，省得自己算图片地址的加密）、
- * 二维码 {@code weapi/login/qrcode/unikey} + {@code .../client/login}。
  */
 public final class NeteaseOfficialApi {
 
@@ -48,12 +40,9 @@ public final class NeteaseOfficialApi {
     private static final String UA =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
 
-    /** yrc 逐字行：[行起始ms,行时长ms](词起始ms,词时长ms,0)词 ... */
     private static final Pattern YRC_LINE = Pattern.compile("\\[(\\d+),(\\d+)](.*)");
     private static final Pattern YRC_WORD = Pattern.compile("\\((\\d+),(\\d+),\\d+\\)([^()]*)");
-    /** 普通 LRC 行的时间戳部分：[mm:ss.xx]。文本部分由调用方在时间戳之后截取（支持一行多个时间戳）。 */
     private static final Pattern LRC_LINE = Pattern.compile("\\[(\\d{2}):(\\d{2})[.:](\\d{2,3})]");
-    /** LRC 全局偏移标签：[offset:+500]，正数表示歌词提前 */
     private static final Pattern OFFSET_TAG = Pattern.compile("\\[offset:([+-]?\\d+)]", Pattern.CASE_INSENSITIVE);
 
     private static final HttpClient CLIENT = HttpClient.newBuilder()
@@ -61,14 +50,8 @@ public final class NeteaseOfficialApi {
             .followRedirects(HttpClient.Redirect.NORMAL)
             .build();
 
-    /**
-     * 手动维护的 Cookie 表（抄 Melodify：不依赖 CookieManager，自己解析 Set-Cookie）。
-     * Java 的 CookieManager 收网易 Set-Cookie 不稳定（domain/HttpOnly 偶发丢），
-     * 这是扫码登录没反应、封面偶发加载不出的根因之一。
-     */
     private static final Map<String, String> COOKIES = new ConcurrentHashMap<>();
 
-    /** weapi 请求头伪装的固定 IP，降低被网易风控拦的概率。 */
     private static final String REAL_IP = "116.25.146.177";
 
     private static final SecureRandom RANDOM = new SecureRandom();
@@ -82,7 +65,6 @@ public final class NeteaseOfficialApi {
         resetDeviceCookies();
     }
 
-    /** 生成一组随机设备 Cookie（抄 Melodify 的 resetDeviceCookies）。 */
     private static void resetDeviceCookies() {
         String nuid = randomHex(32);
         long ts = System.currentTimeMillis();
@@ -103,14 +85,12 @@ public final class NeteaseOfficialApi {
     }
 
     // ------------------------------------------------------------------
-    // 会话
     // ------------------------------------------------------------------
 
     public static boolean isLoggedIn() {
         return loggedIn;
     }
 
-    /** 从磁盘恢复登录态。启动时调一次即可。 */
     public static void loadSession(Path file) {
         try {
             if (!Files.isRegularFile(file)) {
@@ -120,7 +100,6 @@ public final class NeteaseOfficialApi {
             if (cookie.isEmpty()) {
                 return;
             }
-            // 解析 "a=b; c=d" 进 COOKIES；登录态看 MUSIC_U 是否出现
             for (String part : cookie.split(";")) {
                 String[] kv = part.trim().split("=", 2);
                 if (kv.length == 2 && !kv[0].isEmpty()) {
@@ -130,11 +109,9 @@ public final class NeteaseOfficialApi {
             String musicU = COOKIES.get("MUSIC_U");
             loggedIn = musicU != null && !musicU.isEmpty();
         } catch (Exception ignored) {
-            // 会话读不出来就当没登录，不影响使用
         }
     }
 
-    /** 把当前 Cookie 落盘，下次启动免扫码。 */
     private static void saveSession(Path file) {
         try {
             Path parent = file.getParent();
@@ -146,7 +123,6 @@ public final class NeteaseOfficialApi {
         }
     }
 
-    /** 从 COOKIES 拼请求头（末尾补 os/appver 兜底）。 */
     private static String cookieHeader() {
         StringBuilder sb = new StringBuilder();
         for (Map.Entry<String, String> e : COOKIES.entrySet()) {
@@ -158,7 +134,6 @@ public final class NeteaseOfficialApi {
         return sb.toString();
     }
 
-    /** 手动收 Set-Cookie（抄 Melodify 的 captureSetCookies）。 */
     private static void captureSetCookies(HttpResponse<?> response) {
         List<String> setCookies = response.headers().allValues("Set-Cookie");
         for (String header : setCookies) {
@@ -171,10 +146,8 @@ public final class NeteaseOfficialApi {
     }
 
     // ------------------------------------------------------------------
-    // 业务接口
     // ------------------------------------------------------------------
 
-    /** 搜索。未登录可用。 */
     public static CompletableFuture<List<SongInfo>> search(String keyword, int limit) {
         String json = "{\"s\":\"" + escape(keyword) + "\",\"type\":1,\"limit\":" + limit + ",\"offset\":0}";
         return post("/weapi/search/get", json).thenApply(root -> {
@@ -206,8 +179,6 @@ public final class NeteaseOfficialApi {
                 JsonObject album = firstAlbum(song);
                 if (album != null) {
                     albumName = optString(album, "name");
-                    // 官方的 album.picId 是个纯数字，这里沿用 SongInfo.albumPicUrl 存它，
-                    // 和 gdstudio 那边的用法保持一致
                     if (album.has("picId") && !album.get("picId").isJsonNull()) {
                         picId = album.get("picId").getAsString();
                     }
@@ -218,12 +189,6 @@ public final class NeteaseOfficialApi {
         });
     }
 
-    /**
-     * 歌词。
-     *
-     * <p>优先返回带逐字时间的版本（yrc），拿不到才退回行级 LRC。
-     * 逐字数据会填进 {@link LyricLine#words()}，界面据此做精确扫光。
-     */
     public static CompletableFuture<List<LyricLine>> lyrics(long songId) {
         String json = "{\"id\":" + songId + ",\"lv\":-1,\"kv\":-1,\"tv\":-1,\"rv\":-1,\"yv\":-1,\"ytv\":-1,\"yrv\":-1}";
         return post("/weapi/song/lyric", json).thenApply(root -> {
@@ -239,28 +204,11 @@ public final class NeteaseOfficialApi {
         });
     }
 
-    /**
-     * 请求的音频编码。
-     *
-     * <p><b>只能用 mp3</b>：播放侧走 JDK 的 {@code AudioSystem}，而这个环境里只装了
-     * jlayer + mp3spi（见 build.gradle），解不了 aac——换成 "aac" 的表现就是
-     * 每播一段突然静音（解码器中途失败，不是彻底没声音）。
-     *
-     * <p>代价是同档位的码率：{@code exhigh} 配 mp3 是 320kbps，配 aac 是 256kbps。
-     * 想再往上只能走 {@code lossless}，但那是 FLAC，得额外加一个 FLAC 解码库。
-     */
     private static final String ENCODE_TYPE = "mp3";
 
-    /** 播放地址 + 时长。 */
     public record PlayerUrl(String url, long durationMs) {
     }
 
-    /**
-     * 播放地址。未登录时多数歌会返回 null。
-     *
-     * <p>高码率拿不到会**自动降一档**再试一次，不管请求的是不是 lossless——
-     * 原来 {@code lossless} 请求失败时直接返回 null，等于白白放弃这次播放。
-     */
     public static CompletableFuture<PlayerUrl> songUrl(long songId, boolean lossless) {
         String level = lossless ? "lossless" : "exhigh";
         String json = "{\"ids\":\"[" + songId + "]\",\"level\":\"" + level + "\",\"encodeType\":\""
@@ -277,12 +225,6 @@ public final class NeteaseOfficialApi {
         });
     }
 
-    /**
-     * 从 song/url 的响应里取地址和时长。
-     *
-     * <p>{@code time} 是网易随播放地址一起返回的时长（毫秒），比搜索接口那个 duration 可靠得多——
-     * 搜索结果经常不带时长，界面就只能拿文件大小去估，进度条和倒计时会一直是错的。
-     */
     private static PlayerUrl parsePlayerUrl(JsonElement root) {
         if (root == null || !root.isJsonObject()) {
             return new PlayerUrl(null, 0L);
@@ -300,7 +242,6 @@ public final class NeteaseOfficialApi {
         return new PlayerUrl(url, optLong(obj, "time"));
     }
 
-    /** 封面直链。走 song/detail，省得自己实现图片地址的加密。 */
     public static CompletableFuture<String> coverUrl(long songId) {
         String json = "{\"ids\":\"[" + songId + "]\",\"c\":\"[{\\\"id\\\":" + songId + "}]\"}";
         return post("/weapi/v3/song/detail", json).thenApply(root -> {
@@ -312,8 +253,6 @@ public final class NeteaseOfficialApi {
                 return null;
             }
             JsonObject song = songs.getAsJsonArray().get(0).getAsJsonObject();
-            // 这个接口返回的专辑字段叫 al，只有老接口才叫 album。
-            // 之前只认 album，所以封面永远是 null。
             JsonObject album = firstAlbum(song);
             if (album == null) {
                 return null;
@@ -324,13 +263,10 @@ public final class NeteaseOfficialApi {
     }
 
     // ------------------------------------------------------------------
-    // 二维码登录
     // ------------------------------------------------------------------
 
-    /** 登录轮询的状态。 */
     public enum QrStatus { WAITING, SCANNED, CONFIRMED, EXPIRED, FAILED }
 
-    /** 申请一个二维码 key。把这个 key 拼进 {@link #qrContent} 就是二维码内容。 */
     public static CompletableFuture<String> requestQrKey() {
         return post("/weapi/login/qrcode/unikey", "{\"type\":1}").thenApply(root -> {
             if (root == null || !root.isJsonObject()) {
@@ -342,16 +278,10 @@ public final class NeteaseOfficialApi {
         });
     }
 
-    /** 二维码里要编码的字符串。 */
     public static String qrContent(String key) {
         return "https://music.163.com/login?codekey=" + key;
     }
 
-    /**
-     * 轮询扫码结果。服务端约定：800 过期 / 801 待扫码 / 802 已扫码待确认 / 803 成功。
-     *
-     * @param sessionFile 登录成功时把 Cookie 落盘到这里
-     */
     public static CompletableFuture<QrStatus> pollQr(String key, Path sessionFile) {
         return post("/weapi/login/qrcode/client/login", "{\"key\":\"" + key + "\",\"type\":1}")
                 .thenApply(root -> {
@@ -364,7 +294,6 @@ public final class NeteaseOfficialApi {
                             return QrStatus.SCANNED;
                         case 803:
                             loggedIn = true;
-                            // Set-Cookie 已经在 post 的 captureSetCookies 里收进 COOKIES 了，直接落盘即可
                             saveSession(sessionFile);
                             return QrStatus.CONFIRMED;
                         case 800:
@@ -378,13 +307,11 @@ public final class NeteaseOfficialApi {
     }
 
     // ------------------------------------------------------------------
-    // 网络
     // ------------------------------------------------------------------
 
     private static CompletableFuture<JsonElement> post(String path, String jsonBody) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                // body 里补 csrf_token（从 __csrf Cookie 来，登录类接口依赖它）。
                 String csrf = COOKIES.getOrDefault("__csrf", "");
                 JsonObject parsed = JsonParser.parseString(jsonBody).getAsJsonObject();
                 if (!parsed.has("csrf_token")) {
@@ -420,10 +347,8 @@ public final class NeteaseOfficialApi {
     }
 
     // ------------------------------------------------------------------
-    // 解析
     // ------------------------------------------------------------------
 
-    /** 从 {@code {"yrc":{"version":1,"lyric":"..."}}} 这类结构里取出 lyric 文本。 */
     private static String nestedLyric(JsonObject root, String field) {
         JsonElement el = root.get(field);
         if (el == null || !el.isJsonObject()) {
@@ -459,8 +384,6 @@ public final class NeteaseOfficialApi {
                 text.append(content);
             }
             String lineText = text.toString().trim();
-            // yrc 开头混着「作词 : xxx / 作曲 : xxx」这类元数据行 —— 它们不唱歌，
-            // 留在列表里会让前面多出几行、整体看起来歌词错位一截。
             if (words.isEmpty() || isMetadataLine(lineText)) {
                 continue;
             }
@@ -469,7 +392,6 @@ public final class NeteaseOfficialApi {
         return out;
     }
 
-    /** 词级元数据行：歌词开头那些署名行。 */
     private static boolean isMetadataLine(String text) {
         String lower = text.toLowerCase();
         return (text.contains(":") || text.contains("："))
@@ -480,14 +402,8 @@ public final class NeteaseOfficialApi {
     }
 
     /**
-     * 行级 LRC。
      *
-     * <p>两个易踩的坑都在这处理了：
      * <ul>
-     *   <li>多时间戳行 {@code [00:12.00][00:15.00]词} —— 用 {@code lookingAt} 逐个吞时间戳，
-     *       每个时间戳生成一行；不能拿 {@code matches} 一次匹配，那样第二个时间戳会被 {@code (.*)}
-     *       吃进歌词文本里。</li>
-     *   <li>{@code [offset:+500]} 全局偏移标签。</li>
      * </ul>
      */
     private static List<LyricLine> parseLrc(String raw) {
@@ -530,7 +446,6 @@ public final class NeteaseOfficialApi {
                 continue;
             }
             for (long t : times) {
-                // 正 offset 表示歌词提前出现，时间戳要减
                 out.add(new LyricLine(Math.max(0, t - offsetMs), text, null));
             }
         }
@@ -542,12 +457,6 @@ public final class NeteaseOfficialApi {
         return obj.has(key) && !obj.get(key).isJsonNull() ? obj.get(key).getAsString() : "";
     }
 
-    /**
-     * 专辑字段的取法。
-     *
-     * <p>网易有两套命名：新接口（搜索结果、{@code v3/song/detail}）用缩写 {@code al}，
-     * 老接口用全称 {@code album}。之前只认后者，所以封面和专辑名一直拿不到。
-     */
     private static JsonObject firstAlbum(JsonObject song) {
         if (song.has("al") && song.get("al").isJsonObject()) {
             return song.getAsJsonObject("al");
@@ -558,7 +467,6 @@ public final class NeteaseOfficialApi {
         return null;
     }
 
-    /** 时长字段同样有两套：新接口 {@code duration}，老接口 {@code dt}。 */
     private static long songDurationMs(JsonObject song) {
         long duration = optLong(song, "duration");
         return duration > 0 ? duration : optLong(song, "dt");

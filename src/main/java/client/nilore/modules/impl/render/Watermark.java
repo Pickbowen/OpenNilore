@@ -2,11 +2,13 @@ package client.nilore.modules.impl.render;
 
 import client.nilore.NiloreClient;
 import client.nilore.event.impl.GlRenderEvent;
+import client.nilore.event.impl.ModuleToggleEvent;
 import client.nilore.event.impl.Render2DEvent;
 import client.nilore.hud.DynamicIsland;
 import client.nilore.hud.LogoWatermark;
 import client.nilore.hud.ModuleListHud;
 import client.nilore.hud.NeverloseWatermark;
+import client.nilore.hud.OpaiWatermark;
 import client.nilore.modules.Category;
 import client.nilore.modules.Module;
 import client.nilore.network.PingTracker;
@@ -20,6 +22,7 @@ import client.nilore.render.Rectangle;
 import client.nilore.render.RoundedRectangle;
 import client.nilore.settings.impl.BooleanSetting;
 import client.nilore.settings.impl.ModeSetting;
+import client.nilore.settings.impl.NumberSetting;
 import client.nilore.event.EventTarget;
 import client.nilore.utils.render.RenderUtil;
 import java.time.LocalTime;
@@ -27,12 +30,16 @@ import java.time.format.DateTimeFormatter;
 import net.minecraft.client.gui.GuiGraphics;
 
 public class Watermark extends Module {
-    final ModeSetting styleSetting = new ModeSetting("Style", "Neverlose", "DynamicIsland", "Simple", "Pharos", "Exhibition", "Logo", "Naven").withDefault("Exhibition");
+    final ModeSetting styleSetting = new ModeSetting("Style", "Neverlose", "DynamicIsland", "Simple", "Pharos", "Exhibition", "Logo", "Naven", "Opai").withDefault("Exhibition");
     private final BooleanSetting showFpsSetting = new BooleanSetting("Show FPS", true, () -> this.styleSetting.is("Exhibition"));
     private final BooleanSetting showMsSetting = new BooleanSetting("Show MS", true, () -> this.styleSetting.is("Exhibition"));
+    private final NumberSetting accentRed = new NumberSetting("Opai Accent R", 187, 0, 255, 1, () -> this.styleSetting.is("Opai"));
+    private final NumberSetting accentGreen = new NumberSetting("Opai Accent G", 195, 0, 255, 1, () -> this.styleSetting.is("Opai"));
+    private final NumberSetting accentBlue = new NumberSetting("Opai Accent B", 255, 0, 255, 1, () -> this.styleSetting.is("Opai"));
     private final DynamicIsland dynamicIsland = new DynamicIsland();
     private final LogoWatermark logoWatermark = new LogoWatermark();
     private final NeverloseWatermark neverloseWatermark = new NeverloseWatermark();
+    private final OpaiWatermark opaiWatermark = new OpaiWatermark();
 
     // Pharos style (original Simple - client name + fps)
     private static final FontRenderer titleFont = Fonts.getRenderer("quicksand.ttf", 36.0f);
@@ -73,6 +80,11 @@ public class Watermark extends Module {
     }
 
     @EventTarget
+    public void onModuleToggle(ModuleToggleEvent moduleToggleEvent) {
+        this.opaiWatermark.onModuleToggle(moduleToggleEvent);
+    }
+
+    @EventTarget
     public void onGlRender(GlRenderEvent glRenderEvent) {
         if (!this.isEnabled()) {
             return;
@@ -93,6 +105,9 @@ public class Watermark extends Module {
                 break;
             case "Naven":
                 this.renderNaven(ctx);
+                break;
+            case "Opai":
+                this.opaiWatermark.onGlRender(glRenderEvent, rgb(this.accentRed, this.accentGreen, this.accentBlue));
                 break;
         }
     }
@@ -270,8 +285,6 @@ public class Watermark extends Module {
 
         String name = NiloreClient.CLIENT_NAME;
         String fpsText = mc.getFps() + "fps";
-        // PingTracker 已经扣掉了本地压 keep-alive 造成的持有时长; 没有可信读数时返回 -1,
-        // 这时候宁可不显示毫秒字段, 也不能显示一个凭空的 0ms。
         int ping = PingTracker.getPing();
         String pingText = ping + "ms";
 
@@ -319,6 +332,10 @@ public class Watermark extends Module {
             cursor += mc.font.width(pingText);
             gui.drawString(mc.font, "]", cursor, y, bracketColor);
         }
+    }
+
+    private static int rgb(NumberSetting red, NumberSetting green, NumberSetting blue) {
+        return 0xFF000000 | red.getValue().intValue() << 16 | green.getValue().intValue() << 8 | blue.getValue().intValue();
     }
 
     private int lerpColor(int from, int to, float t) {

@@ -62,11 +62,6 @@ extends ClientBase {
 
     private static final double DEFAULT_FOV = 1.2;
 
-    /**
-     * {@code GameRenderer.getFov} 是 private, 只能反射。方法句柄本身不变, 查一次就够 ——
-     * 每帧 {@code getDeclaredMethod} 要遍历整个方法表并重新分配参数数组, 而这里每个实体每帧都要调一次。
-     * 只有解析成功才缓存: 客户端还没起来时反射会失败, 那时保持重试, fov 退回默认值。
-     */
     private static double resolveFov(float partialTicks) {
         Method method = cachedFovMethod;
         if (method == null) {

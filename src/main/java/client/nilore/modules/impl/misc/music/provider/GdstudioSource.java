@@ -7,14 +7,6 @@ import client.nilore.modules.impl.misc.music.SongInfo;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
-/**
- * 走 gdstudio 第三方聚合 API（{@code music-api.gdstudio.xyz}）。
- *
- * <p>一直能用，但拿不到逐字歌词（只有行级 LRC）。
- *
- * <p>注意：这里直接调 {@link GdstudioApi}，不能再经过 {@code NeteaseApi} 门面 ——
- * 门面转发回 {@code MusicSources}，而当前 source 正是本类，会形成调用环导致 StackOverflow。
- */
 final class GdstudioSource implements MusicSource {
 
     @Override

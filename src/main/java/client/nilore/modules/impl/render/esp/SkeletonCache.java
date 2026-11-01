@@ -46,21 +46,16 @@ import client.nilore.modules.impl.render.ESP;
  */
 public final class SkeletonCache {
 
-    // body 立方体 (-4,0,-2)-(4,12,4)，原点在脖子：底边 y=12、肩线 y=2。
     private static final int CHEST = 0;
-    // head 立方体 (-4,-8,-4)-(4,8,8)，原点在脖子，头中心在 y=-4。
     private static final int HEAD = 1;
-    // 手臂立方体 (-3,-2,-2)-(1,10,4)：原点即肩关节，末端 y=10 是手。
     private static final int RIGHT_SHOULDER = 2;
     private static final int RIGHT_HAND = 3;
     private static final int LEFT_SHOULDER = 4;
     private static final int LEFT_HAND = 5;
-    // 腿立方体 (-2,0,-2)-(2,12,4)：原点即髋关节（在 root 坐标系里，不随躯干倾斜），y=12 是脚底。
     private static final int RIGHT_HIP = 6;
     private static final int RIGHT_FOOT = 7;
     private static final int LEFT_HIP = 8;
     private static final int LEFT_FOOT = 9;
-    // 两髋中点，脊柱从这里往上走。
     private static final int PELVIS = 10;
     private static final int POINT_COUNT = 11;
 
@@ -74,7 +69,6 @@ public final class SkeletonCache {
             {LEFT_HIP, LEFT_FOOT}
     };
 
-    /** 关节用模型空间坐标，矩阵是渲染这个模型时用的那个。 */
     private record Skeleton(float[] points, Matrix4f modelMatrix) {
     }
 
@@ -124,7 +118,6 @@ public final class SkeletonCache {
             Skeleton skeleton = entry.getValue();
             float[] points = skeleton.points();
             Matrix4f matrix = skeleton.modelMatrix();
-            // 恒为纯白: 不跟随玩家配色/队伍色, 所有实体同一个颜色。
             for (int[] edge : EDGES) {
                 vertex(builder, matrix, points, edge[0]);
                 vertex(builder, matrix, points, edge[1]);

@@ -109,7 +109,6 @@ public class EntityRenderDispatcherPatch {
                             }
                         }
 
-                        // 视觉宽高 / duang: 以脚底为锚点缩放, 所以"变高"是向上长, 而不是向两侧撑开。
                         applyVisualScale(poseStack, entity, partialTick, x, y, z);
 
                         float[] savedHead = NO_HEAD_SAVE;
@@ -155,10 +154,6 @@ public class EntityRenderDispatcherPatch {
             return;
         }
 
-        // 只开 EntityDuang、不换模型的情况: 这里必须自己 cancel 再重渲染一次, 否则没有任何
-        // 位置能插入 push/scale/pop —— EntityRenderDispatcher.render 的 PoseStack 是调用方
-        // 传进来的, 我们既不能在 HEAD 直接改它(没有对应的 pop 点), 也不能等 TAIL(多个出口)。
-        // 重入由 IS_RENDERING_FAKE 挡掉, 和上面两个分支同一套路。
         float[] visualOnly = visualScaleOf(entity, partialTick);
         if (visualOnly[0] != 1.0f || visualOnly[1] != 1.0f) {
             ci.cancel();
@@ -176,7 +171,6 @@ public class EntityRenderDispatcherPatch {
         }
     }
 
-    /** 取当前该用的视觉缩放; 模块没开或不需要缩放时返回单位值。 */
     private static float[] visualScaleOf(Entity entity, float partialTick) {
         if (EntityDuang.INSTANCE == null || !EntityDuang.INSTANCE.isEnabled()) {
             return UNIT_SCALE;
@@ -184,7 +178,6 @@ public class EntityRenderDispatcherPatch {
         return EntityDuang.INSTANCE.renderScale(entity, partialTick);
     }
 
-    /** 以脚底为锚点套一层缩放: 变高时向上长, 压扁时贴地, 不会整体浮起来或陷进地里。 */
     private static void applyVisualScale(com.mojang.blaze3d.vertex.PoseStack poseStack, Entity entity,
                                          float partialTick, double x, double y, double z) {
         float[] scale = visualScaleOf(entity, partialTick);

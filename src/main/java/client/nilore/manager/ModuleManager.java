@@ -131,7 +131,6 @@ public class ModuleManager extends ClientBase {
         this.register(new AspectRatio());
         this.register(new BetterChat());
         this.register(new BetterFPS());
-        this.register(new TerrainLOD());
         this.register(new ChestESP());
         this.register(new ClickGuiModule());
         this.register(new Compass());
@@ -176,7 +175,6 @@ public class ModuleManager extends ClientBase {
         this.cachesDirty = true;
     }
 
-    // 索引键是去掉空格的模块名；查询键沿用原先的行为，不对入参做去空格处理。
     public Module getModule(String string) {
         Module module = this.modulesByName.get(string.toLowerCase(Locale.ROOT));
         if (module == null) {
