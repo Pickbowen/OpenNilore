@@ -55,6 +55,10 @@ extends ClientBase {
         RenderSystem.assertOnRenderThread();
         BufferUploader.reset();
         GL33.glBindSampler(0, 0);
+        // The raw glXxx twins are deliberately kept even though they duplicate the
+        // RenderSystem call: custom shader code in this client toggles GL state directly, and
+        // RenderSystem's cache then disagrees with the driver. Without the raw call the
+        // leftover blend state carried over and dimmed the next UI element.
         RenderSystem.disableBlend();
         GL11.glDisable(3042);
         RenderSystem.blendFunc(770, 771);
@@ -97,6 +101,8 @@ extends ClientBase {
         try {
             consumer.accept(drawContext);
         } finally {
+            // Batched primitives must land before the state below is reset.
+            Batch2D.flushAll();
             currentCanvas = previousCanvas;
             drawContext.clearClipStack();
         }

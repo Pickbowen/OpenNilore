@@ -40,6 +40,7 @@ import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
 import client.nilore.ClientBase;
+import client.nilore.render.Batch2D;
 import client.nilore.render.GaussianBlur;
 import client.nilore.render.ResourceLocationWrapper;
 import client.nilore.render.BlurFbo;
@@ -354,6 +355,8 @@ extends ClientBase {
     }
 
     public static void pushScissor(int x, int y, int width, int height) {
+        // Deferred batches must land before the scissor box changes under them.
+        Batch2D.flushAll();
         int guiScale = (int)mc.getWindow().getGuiScale();
         int scaledX = x * guiScale;
         int scaledY = mc.getWindow().getHeight() - (y + height) * guiScale;
@@ -378,6 +381,7 @@ extends ClientBase {
     }
 
     public static void popScissor() {
+        Batch2D.flushAll();
         if (scissorStack.isEmpty()) {
             RenderSystem.disableScissor();
             return;

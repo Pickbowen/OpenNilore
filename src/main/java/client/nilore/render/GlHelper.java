@@ -2,6 +2,8 @@ package client.nilore.render;
 
 import java.awt.Color;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.player.AbstractClientPlayer;
@@ -13,7 +15,16 @@ import client.nilore.ClientBase;
 import client.nilore.utils.render.ColorUtil;
 
 public final class GlHelper {
-    private static final Map<FontRenderer, Map<String, Float>> stringWidthCache = new HashMap<>();
+    /**
+     * Width cache. Keyed by the original (possibly §-coloured) string and bounded, so HUD
+     * text that changes every frame (FPS counters, coordinates, timers) cannot grow it
+     * without limit. The previous unbounded {@code HashMap} both leaked and, because such
+     * strings never hit, still paid a regex per call.
+     */
+    private static final int WIDTH_CACHE_LIMIT = 4096;
+    private static final Map<FontRenderer, Map<String, Float>> stringWidthCache = new IdentityHashMap<>();
+    /** Wrapped textures, keyed by GL id: the level query below is a GPU readback. */
+    private static final Map<Integer, Texture> textureCache = new HashMap<>();
 
     public static DrawContext getCanvas() {
         DrawContext drawContext = Renderer.getCanvas();
@@ -39,6 +50,13 @@ public final class GlHelper {
             return null;
         }
         int glId = abstractTexture.getId();
+        if (glId <= 0) {
+            return new Texture(glId, 64, 64);
+        }
+        Texture cached = textureCache.get(glId);
+        if (cached != null) {
+            return cached;
+        }
         int width = GL11.glGetTexLevelParameteri(3553, 0, 4096);
         int height = GL11.glGetTexLevelParameteri(3553, 0, 4097);
         if (width <= 0) {
@@ -47,7 +65,9 @@ public final class GlHelper {
         if (height <= 0) {
             height = 64;
         }
-        return new Texture(glId, width, height);
+        Texture texture = new Texture(glId, width, height);
+        textureCache.put(glId, texture);
+        return texture;
     }
 
     public static void drawPlayerHead(AbstractClientPlayer player, float x, float y, float width, float height, float alpha) {
@@ -152,10 +172,44 @@ public final class GlHelper {
     }
 
     public static float getStringWidth(String text, FontRenderer fontRenderer) {
-        if (text == null || text.isEmpty()) {
+        if (text == null || text.isEmpty() || fontRenderer == null) {
             return 0.0f;
         }
-        return stringWidthCache.computeIfAbsent(fontRenderer, key -> new HashMap<>()).computeIfAbsent(text, key -> key != null ? fontRenderer.getWidth(key.replaceAll("§.", "")) : 0.0f);
+        Map<String, Float> cache = stringWidthCache.get(fontRenderer);
+        if (cache == null) {
+            cache = new LinkedHashMap<>(256, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Float> eldest) {
+                    return this.size() > WIDTH_CACHE_LIMIT;
+                }
+            };
+            stringWidthCache.put(fontRenderer, cache);
+        }
+        Float cached = cache.get(text);
+        if (cached != null) {
+            return cached;
+        }
+        float width = fontRenderer.getWidth(stripFormatting(text));
+        cache.put(text, width);
+        return width;
+    }
+
+    /** Drops {@code §} plus the following format character without a regex pass. */
+    public static String stripFormatting(String text) {
+        int first = text.indexOf('§');
+        if (first < 0) {
+            return text;
+        }
+        StringBuilder builder = new StringBuilder(text.length());
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '§') {
+                i++;
+                continue;
+            }
+            builder.append(c);
+        }
+        return builder.toString();
     }
 
     public static void drawRoundedRect(float x, float y, float width, float height, float radius, Paint paint) {

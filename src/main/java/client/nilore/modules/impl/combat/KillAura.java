@@ -15,12 +15,12 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Random;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 import net.minecraft.client.Camera;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
-import net.minecraft.network.protocol.game.ServerboundInteractPacket;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
@@ -43,10 +43,10 @@ import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 import client.nilore.ClientBase;
 import client.nilore.NiloreClient;
+import client.nilore.event.impl.EventAttackSlowdown;
 import client.nilore.event.impl.PreMotionEvent;
 import client.nilore.event.impl.RenderEvent;
 import client.nilore.event.impl.SprintEvent;
-import client.nilore.event.impl.StrafeEvent;
 import client.nilore.event.impl.TickEvent;
 import client.nilore.event.impl.WorldChangeEvent;
 import client.nilore.hud.ModuleListHud;
@@ -74,26 +74,23 @@ import client.nilore.utils.misc.Assets;
 import client.nilore.utils.render.RenderUtil;
 import client.nilore.utils.rotation.Rotation;
 import client.nilore.utils.rotation.RotationHandler;
-import client.nilore.utils.rotation.RotationSmoother;
 import client.nilore.event.EventTarget;
 
+/**
+ * KillAura — Naven Aura 引擎移植 (tech.naven.modules.impl.combat.Aura)。
+ *
+ * <p>Nilore 原版的攻击引擎 (有机抖动 / 旋转平滑器 / 旧朝向双闸门 / 慢扫描) 已整体废弃。
+ * 现在的流程与 Naven 一致: onTick(≈EventRunTicks PRE) 更新目标 + 直取瞄准朝向 + 蓄力 APS;
+ * onPreMotion(≈onClick) 蓄满即出刀; doAttack 瞄准射线打到谁就打谁; attackEntity 出刀瞬间
+ * 临时转向 + gameMode.attack。目标 HUD 未移植 (按要求排除)。
+ */
 public class KillAura extends Module {
     public static KillAura INSTANCE;
     public static Entity target;
     public static Entity aimingTarget;
     public static List<Entity> targetList = new ArrayList<>();
 
-    /** Hard ceiling on everything reach related: the aura must never validate beyond 3.0 blocks. */
     private static final double MAX_REACH = 3.0;
-    /** Per-tick pull of the organic aim offsets back toward the aim point (AR(1) decay). */
-    private static final float ORGANIC_DECAY = 0.85f;
-    /**
-     * 旧朝向打不中时，允许用本 tick 的瞄准结果放行的最大角度差。
-     *
-     * <p>超过这个差就不是"目标挪了一格"，而是"这一 tick 还在转身"，那种情况下放行等于用
-     * 一个服务端还没看到的角度出手，只会换来 Hitboxes/Reach 的抖动。
-     */
-    private static final float FRESH_SIGHT_MAX_DELTA = 30.0f;
 
     private static final ResourceLocation NURIK_CAPTURE_TEXTURE = ResourceLocation.tryParse("nilore:nurik/capture");
     private static final String NURIK_CAPTURE_ASSET = "/assets/nilore/nurik/capture.png";
@@ -130,30 +127,22 @@ public class KillAura extends Module {
     public final ModeSetting priorityMode = new ModeSetting("Priority", "Distance", "FoV", "Health", "LivingTime", "Armor", "None").withDefault("FoV");
     public final ModeSetting targetEsp    = new ModeSetting("Target ESP", "None", "Spiral", "Box", "Tab", "NurikZapen").withDefault("Spiral");
 
-    public final NumberSetting rotationSpeed = new NumberSetting("Rotation Speed", 110, 1, 180, 1);
-
-    public final NumberSetting rotationDrift = new NumberSetting("Drift", 0.3, 0, 3, 0.1);
-
-    public final NumberSetting rotationJitter = new NumberSetting("Jitter", 1.3, 0, 3, 0.1);
-
-    /** 把当前拦住攻击的那道门显示在模块列表后缀上，排查"为什么这一拍不打"用。 */
-    public final BooleanSetting debugGate = new BooleanSetting("Debug Gate", false);
-
     private int attackTimes;
     private float attacks;
     private int targetIndex;
     public int sprintTickCounter;
+    /** Naven markSprintReleased: one crit window releases sprint only once. */
+    private boolean sprintCancelled;
+
+    public void markSprintReleased() {
+        this.sprintCancelled = true;
+    }
+
+    public boolean isSprintReleased() {
+        return this.sprintCancelled;
+    }
+    /** RotationHandler 每 tick 拾取的瞄准朝向 (Naven: RotationManager.rotations)。 */
     public Rotation rotation;
-    /** 本 tick 攻击使用的服务端朝向快照, 见 {@link #authoritativeAttackRotation()}。 */
-    private Rotation authoritativeRotation;
-    /** 本 tick 被哪道门拦下（仅用于 {@link #getSuffix()} 的排查显示）。 */
-    private String gateBlock;
-
-    private Random organicRandom;
-    private final RotationSmoother rotSmoother = new RotationSmoother(new Random());
-
-    private float organicYawOffset;
-    private float organicPitchOffset;
 
     public KillAura() {
         super("KillAura", Category.COMBAT);
@@ -163,9 +152,8 @@ public class KillAura extends Module {
     @Override
     public void onEnable() {
         this.rotation = null;
-        this.reinitOrganicModel();
-        this.rotSmoother.reset();
         this.targetIndex = 0;
+        this.attackTimes = 0;
         this.attacks = 0.0f;
         target = null;
         aimingTarget = null;
@@ -181,99 +169,439 @@ public class KillAura extends Module {
         this.sprintTickCounter = 0;
         this.attackTimes = 0;
         this.rotation = null;
+        this.sprintCancelled = false;
         super.onDisable();
     }
 
-    private void reinitOrganicModel() {
-        this.organicRandom = new Random(System.nanoTime());
-        this.organicYawOffset = 0.0f;
-        this.organicPitchOffset = 0.0f;
+    // ===== Naven 引擎: 目标与朝向 (onMotion PRE) =====
+
+    @EventTarget
+    public void onTick(TickEvent event) {
+        if (!NiloreClient.isReady()) {
+            return;
+        }
+        double reach = Mth.clamp(this.reach.getValue().doubleValue(),
+                this.reach.getMin().doubleValue(),
+                this.reach.getMax().doubleValue());
+        reach = Math.min(reach, MAX_REACH);
+        RotationUtil.setReachLimit(reach);
+        if (mc.screen instanceof AbstractContainerScreen
+                || ItemUtil.hasServerItem()
+                || (Scaffold.INSTANCE != null && Scaffold.INSTANCE.isEnabled())
+                || (Stuck.INSTANCE != null && Stuck.INSTANCE.isEnabled())
+                || (Helper.INSTANCE != null && Helper.INSTANCE.isEnabled() && Helper.targetRotation != null)
+                || AntiWeb.targetRotation != null
+                || AntiTNT.targetRotation != null
+                || MidPearl.targetRotation != null
+                || this.isWebPlacing()) {
+            target = null;
+            aimingTarget = null;
+            this.rotation = null;
+            targetList.clear();
+            this.sprintTickCounter = 0;
+            this.attacks = 0.0f;
+            this.sprintCancelled = false;
+            return;
+        }
+
+        // Naven: reset sprintReleased every tick - next crit window may release again.
+        if (!isSprintReleaseWindow()
+                || mc.player.isInWater() || mc.player.isInLava()
+                || mc.player.isPassenger() || mc.player.isFallFlying()
+                || mc.player.getAbilities().flying) {
+            this.sprintCancelled = false;
+        }
+
+        boolean isSwitch = this.switchSize.getValue().intValue() > 1
+                || this.infSwitch.getValue()
+                || this.multiAttack.getValue()
+                || !this.targetMode.is("Single");
+
+        // Naven: updateAttackTargets() → targets = getTargets()
+        this.updateAttackTargets();
+        // Naven: aimingTarget = shouldPreAim()
+        aimingTarget = this.shouldPreAim();
+
+        // Naven: rotationData = getRotationDataToEntity(aimingTarget); rotation = data.getRotation()
+        this.rotation = this.aimingTarget != null ? this.aimRotationTo(this.aimingTarget) : null;
+
+        if (targetList.isEmpty()) {
+            target = null;
+            this.sprintCancelled = false;
+            return;
+        }
+
+        // Naven: 目标切换 (attackTimes 到 switchDelay 或超出 3.0 距离时换目标)
+        if (this.targetIndex > targetList.size() - 1) {
+            this.targetIndex = 0;
+        }
+        if (targetList.size() > 1
+                && this.targetMode.is("Switch")
+                && (this.attackTimes >= this.switchDelay.getValue().intValue()
+                || (this.attackTimes >= 1 && !RotationUtil.isWithinReach(aimingTarget)))) {
+            this.attackTimes = 0;
+            for (int i = 0; i < targetList.size(); ++i) {
+                ++this.targetIndex;
+                if (this.targetIndex > targetList.size() - 1) {
+                    this.targetIndex = 0;
+                }
+                if (RotationUtil.isWithinReach(targetList.get(this.targetIndex))) {
+                    break;
+                }
+            }
+        }
+        if (this.targetIndex > targetList.size() - 1 || !isSwitch) {
+            this.targetIndex = 0;
+        }
+        target = targetList.get(this.targetIndex);
+
+        // Naven: attacks += aps / 20 (蓄力)
+        this.attacks = Math.min(this.attacks + (float) (MathUtil.randomDouble(
+                this.minAps.getValue().doubleValue(), this.maxAps.getValue().doubleValue()) / 20.0), 2.0f);
     }
 
-    /** Debug Gate 打开时把当前拦住攻击的那道门挂到模块列表后缀上。 */
-    @Override
-    public String getSuffix() {
-        if (!(Boolean) this.debugGate.getValue()) {
-            return null;
+    // ===== Naven 引擎: 出刀 (onClick) =====
+
+    @EventTarget
+    public void onPreMotion(PreMotionEvent event) {
+        if (!NiloreClient.isReady()) {
+            return;
         }
-        return this.gateBlock;
+        this.attackTick();
     }
 
-    private Rotation computeRotation(Entity target, Rotation from, double speed, double range) {
-        // The old eye-to-eye hasLineOfSight gate was stricter than the attack raycast: a target
-        // whose eyes were hidden behind a slab or fence but whose body was exposed was dropped
-        // entirely (no turn, no swing). Let findAimPoint's per-point raycast decide instead;
-        // Through Walls keeps the occluded fallback.
-        Vec3 aimPoint = RotationUtil.findAimPoint(target, range, 1.0f,
-                this.throughWalls.getValue());
-        if (aimPoint == null) {
+    private void attackTick() {
+        if (mc.player == null || this.isWebPlacing()) {
+            if (mc.player != null) {
+                this.attacks = 0.0f;
+            }
+            return;
+        }
+        // Naven onClick 闸门: 用物品为空 + 无界面 + 无 lag + 1.9 冷却; 外加 NoXZ 互斥。
+        if (mc.player.getUseItem().isEmpty()
+                && mc.screen == null
+                && (this.ignoreSkipTicks.getValue() || ClientBase.delayPackets.isEmpty()
+                        || (Critical.INSTANCE != null && Critical.INSTANCE.isEnabled()))
+                && !NoXZMode.isCountering()
+                && !(NoXZMode.isInDelayWindow() && shouldKeepSprintInDelayWindow())) {
+            if (this.delayMode.is("1.9") && mc.player.getAttackStrengthScale(0.0f) < 0.95f) {
+                return;
+            }
+            while (this.attacks >= 1.0f) {
+                this.doAttack();
+                this.attacks -= 1.0f;
+            }
+        }
+    }
+
+    /** Naven doAttack: 瞄准射线打到谁就打谁; 多目标时射线打得到的都打 (上限 2)。 */
+    public void doAttack() {
+        if (targetList.isEmpty() || mc.player == null || mc.level == null) {
+            return;
+        }
+        Rotation aim = this.rotation != null ? this.rotation : this.attackRotation();
+        Entity hit = this.aimRayTarget(aim);
+
+        if (hit != null && AntiBots.isBot(hit)) {
+            return;
+        }
+
+        if (this.multiAttack.getValue() || this.targetMode.is("Multiple")) {
+            int limit = this.targetMode.is("Multiple") ? Integer.MAX_VALUE : 2;
+            int attacked = 0;
+            for (Entity entity : targetList) {
+                if (mc.player == null) {
+                    break;
+                }
+                if (!RotationUtil.isLookingAt(entity, MAX_REACH, 0.3f, aim)
+                        && !(this.throughWalls.getValue() && RotationUtil.isWithinReach(entity))) {
+                    continue;
+                }
+                this.attackEntity(entity);
+                if (++attacked >= limit) {
+                    break;
+                }
+            }
+        } else if (hit != null) {
+            this.attackEntity(hit);
+        }
+    }
+
+    /** Naven 的 hitResult.getEntity() 在 silent aim 下的等价: 沿瞄准朝向做射线取命中实体。 */
+    private Entity aimRayTarget(Rotation aim) {
+        if (mc.player == null || mc.level == null) {
             return null;
         }
-        Rotation base = RotationUtil.rotationToPoint(mc.player.getEyePosition(), aimPoint);
-
-        Rotation jittered = this.applyOrganicJitter(target, base, range);
-
-        Rotation smoothed = this.rotSmoother.tick(from, jittered, speed);
-        smoothed = RotationSmoother.patchConstantRotation(smoothed, from);
-        // Grim DuplicateRotPlace / AimDuplicateLook 的唯一判据是"相邻两 tick 的增量相同"。
-        // 平滑器收敛后每 tick 的输出会稳定在同一个量化值, 增量恒为 0 或同一个数; 这里
-        // 沿格点挪一格: 网格与幅度都不变, 只是不再重复。
-        smoothed = this.rotSmoother.breakDuplicateDelta(smoothed, from);
-        if (smoothed == null
-                || Float.isNaN(smoothed.getYaw()) || Float.isNaN(smoothed.getPitch())
-                || Float.isInfinite(smoothed.getYaw()) || Float.isInfinite(smoothed.getPitch())) {
-            return jittered;
+        HitResult result = RotationUtil.rayTraceForAim(aim, MAX_REACH);
+        if (result instanceof EntityHitResult entityHit) {
+            Entity hit = entityHit.getEntity();
+            return hit != null && this.isValidTarget(hit) ? hit : null;
         }
-        return smoothed;
+        return null;
     }
 
     /**
-     * 有机抖动: 两条轴都是零均值 AR(1) 过程, 衰减 {@link #ORGANIC_DECAY} 负责把偏移拉回
-     * 瞄准点, 幅度由 Drift(yaw) / Jitter(pitch) 两个设置控制。
-     *
-     * <p>旧实现有两个毛病: pitch 的白噪声乘了 2 再被 clamp 到 1 倍幅度, 于是实际分布是
-     * "一半时间贴着钳位边界"的偏置噪声; yaw 的钳位又是幅度的两倍, 长期停在极限值上 ——
-     * 两条轴的统计特征完全不一致, 而且都不是正态的。现在两轴同一套形状, 只在幅度上不同。
-     *
-     * <p>抖动后必须仍然打得中: 打不中就先把偏移减半再试一次, 还不行才回落到无偏移的
-     * 瞄准点。直接清零会让"靠判定盒边缘时抖动突然消失"变成一个可统计的开关。
+     * Naven getRotationDataToEntity: stable aim-point pick (LinkedHashSet dedup: center first,
+     * then closest point, then a 0.1 grid over the six faces). The first point whose rotation
+     * ray hits the target wins, so the aim point does not hop around between ticks.
      */
-    private Rotation applyOrganicJitter(Entity target, Rotation base, double range) {
-        double drift = this.rotationDrift.getValue().doubleValue();
-        double jitter = this.rotationJitter.getValue().doubleValue();
-        this.organicYawOffset = this.organicYawOffset * ORGANIC_DECAY
-                + (float) ((this.organicRandom.nextDouble() - 0.5) * drift);
-        this.organicPitchOffset = this.organicPitchOffset * ORGANIC_DECAY
-                + (float) ((this.organicRandom.nextDouble() - 0.5) * jitter);
-        float yawLimit = (float) drift;
-        float pitchLimit = (float) jitter;
-        this.organicYawOffset = Mth.clamp(this.organicYawOffset, -yawLimit, yawLimit);
-        this.organicPitchOffset = Mth.clamp(this.organicPitchOffset, -pitchLimit, pitchLimit);
+    private Rotation aimRotationTo(Entity target) {
+        if (mc.player == null) {
+            return null;
+        }
+        Vec3 eye = mc.player.getEyePosition();
+        AABB box = target.getBoundingBox();
+        java.util.LinkedHashSet<Vec3> points = new java.util.LinkedHashSet<>();
+        points.add(new Vec3((box.minX + box.maxX) / 2.0, (box.minY + box.maxY) / 2.0, (box.minZ + box.maxZ) / 2.0));
+        points.add(RotationUtil.closestPoint(eye, box));
 
-        Rotation full = this.offsetRotation(base, 1.0f);
-        if (this.jitterHits(target, full, range)) {
-            return full;
+        double spacing = 0.1;
+        for (double x = box.minX; x <= box.maxX; x += spacing) {
+            for (double y = box.minY; y <= box.maxY; y += spacing) {
+                points.add(new Vec3(x, y, box.minZ));
+                points.add(new Vec3(x, y, box.maxZ));
+            }
         }
-        Rotation half = this.offsetRotation(base, 0.5f);
-        if (this.jitterHits(target, half, range)) {
-            // 偏移已被削减, 状态同步跟上, 免得下一 tick 又从满幅开始。
-            this.organicYawOffset *= 0.5f;
-            this.organicPitchOffset *= 0.5f;
-            return half;
+        for (double x = box.minX; x <= box.maxX; x += spacing) {
+            for (double z = box.minZ; z <= box.maxZ; z += spacing) {
+                points.add(new Vec3(x, box.minY, z));
+                points.add(new Vec3(x, box.maxY, z));
+            }
         }
-        this.organicYawOffset = 0.0f;
-        this.organicPitchOffset = 0.0f;
-        return base;
+        for (double y = box.minY; y <= box.maxY; y += spacing) {
+            for (double z = box.minZ; z <= box.maxZ; z += spacing) {
+                points.add(new Vec3(box.minX, y, z));
+                points.add(new Vec3(box.maxX, y, z));
+            }
+        }
+
+        for (Vec3 point : points) {
+            Rotation brute = RotationUtil.rotationToPoint(eye, point);
+            HitResult hit = RotationUtil.rayTraceForAim(brute, MAX_REACH);
+            if (hit instanceof EntityHitResult entityHit && entityHit.getEntity() == target) {
+                return this.fixRotation(brute);
+            }
+        }
+        return null;
     }
 
-    private Rotation offsetRotation(Rotation base, float scale) {
-        return new Rotation(base.getYaw() + this.organicYawOffset * scale,
-                Mth.clamp(base.getPitch() + this.organicPitchOffset * scale, -90.0f, 90.0f));
+    /**
+     * Naven getFixedRotation: snap the delta from the last SENT rotation onto the mouse
+     * sensitivity GCD lattice. Real mouse input lands on this grid; that quantisation, not
+     * interpolation, is what makes Naven's aim smooth instead of twitchy.
+     */
+    private Rotation fixRotation(Rotation raw) {
+        Rotation last = RotationHandler.sentRotation != null
+                ? RotationHandler.sentRotation
+                : new Rotation(mc.player.getYRot(), mc.player.getXRot());
+        float f = (float) (mc.options.sensitivity().get().doubleValue() * 0.6 + 0.2);
+        float gcd = f * f * f * 1.2f;
+        float deltaYaw = raw.getYaw() - last.getYaw();
+        float deltaPitch = raw.getPitch() - last.getPitch();
+        return new Rotation(last.getYaw() + (deltaYaw - deltaYaw % gcd),
+                last.getPitch() + (deltaPitch - deltaPitch % gcd));
     }
 
-    private boolean jitterHits(Entity target, Rotation rotation, double range) {
-        HitResult probe = RotationUtil.rayTraceForAim(rotation, range);
-        return probe instanceof EntityHitResult hit && hit.getEntity() == target;
+    /** Naven attackEntity: 出刀瞬间临时面向瞄准方向, gameMode.attack + 挥手 + 粒子。 */
+    public boolean attackEntity(Entity entity) {
+        if (mc.player == null || mc.getConnection() == null || mc.gameMode == null) {
+            return false;
+        }
+        if (NoXZMode.isCountering()) {
+            return false;
+        }
+        if (!attackAndLock()) {
+            return false;
+        }
+
+        ++this.attackTimes;
+        float currentYaw = mc.player.getYRot();
+        float currentPitch = mc.player.getXRot();
+        Rotation aim = this.rotation != null ? this.rotation : this.attackRotation();
+        mc.player.setYRot(aim.getYaw());
+        mc.player.setXRot(aim.getPitch());
+        try {
+            mc.gameMode.attack(mc.player, entity);
+            mc.player.swing(InteractionHand.MAIN_HAND);
+            if (this.morePart.getValue()) {
+                mc.player.magicCrit(entity);
+                mc.player.crit(entity);
+            }
+        } finally {
+            mc.player.setYRot(currentYaw);
+            mc.player.setXRot(currentPitch);
+        }
+        return true;
+    }
+
+    /** 服务端此刻持有的朝向 (兜底用)。 */
+    private Rotation attackRotation() {
+        if (RotationHandler.sentRotation != null) {
+            return RotationHandler.sentRotation;
+        }
+        return new Rotation(mc.player.getYRot(), mc.player.getXRot());
+    }
+
+    // ===== Naven 引擎: 目标筛选 =====
+
+    /** Naven shouldPreAim: 已有目标优先, 否则列表头。 */
+    private Entity shouldPreAim() {
+        Entity t = target;
+        if (t == null && !targetList.isEmpty()) {
+            t = targetList.get(0);
+        }
+        return t;
+    }
+
+    private void updateAttackTargets() {
+        targetList = this.getTargets();
+    }
+
+    public boolean isValidTarget(Entity entity) {
+        if (!NiloreClient.isReady()) return false;
+        if (entity == mc.player) return false;
+        if (entity instanceof LivingEntity livingEntity) {
+            AntiBots antiBots = AntiBots.INSTANCE;
+            if (antiBots != null && antiBots.isEnabled() && (AntiBots.isBot(entity) || AntiBots.isBedWarsBot(entity))) {
+                return false;
+            }
+            if (livingEntity.isDeadOrDying() || livingEntity.getHealth() <= 0.0f) return false;
+            if (entity instanceof ArmorStand) return false;
+            if (entity.isInvisible() && !(Boolean) this.attackInvisible.getValue()) return false;
+            if (Teams.isSameTeam(entity)) return false;
+            if (entity instanceof Player && !(Boolean) this.attackPlayer.getValue()) return false;
+            if (entity instanceof Player && (entity.getBbWidth() < 0.5 || livingEntity.isSleeping())) return false;
+            if ((entity instanceof Mob || entity instanceof Slime || entity instanceof Bat || entity instanceof AbstractGolem)
+                    && !(Boolean) this.attackMobs.getValue()) {
+                return false;
+            }
+            if ((entity instanceof Animal || entity instanceof Squid) && !(Boolean) this.attackAnimals.getValue()) {
+                return false;
+            }
+            if (entity instanceof Villager && !(Boolean) this.attackAnimals.getValue()) return false;
+            return !(entity instanceof Player) || !entity.isSpectator();
+        }
+        return false;
+    }
+
+    /** Naven isValidAttack: isValidTarget + hurtTime 让刀 + 最近点距离 ≤ 范围 + FoV。 */
+    public boolean isValidAttack(Entity entity) {
+        if (mc.player == null || !this.isValidTarget(entity)) {
+            return false;
+        }
+        if (entity instanceof LivingEntity living
+                && (float) living.hurtTime > this.hurtTime.getValue().floatValue()) {
+            return false;
+        }
+        Vec3 eye = mc.player.getEyePosition();
+        if (RotationUtil.closestPoint(eye, entity.getBoundingBox()).distanceTo(eye)
+                > this.reach.getValue().doubleValue()) {
+            return false;
+        }
+        return RotationUtil.isEntityInFov(entity, this.fov.getValue().doubleValue());
+    }
+
+    /** Naven getTargets: 并发扫描 + 过滤 + 优先级排序 + Baby 偏好 + 末影水晶优先 + 切换上限。 */
+    private List<Entity> getTargets() {
+        if (mc.player == null || mc.level == null) {
+            return new ArrayList<>();
+        }
+        List<Entity> possibleTargets = StreamSupport.stream(mc.level.entitiesForRendering().spliterator(), true)
+                .filter(this::isValidAttack)
+                .collect(Collectors.toList());
+
+        if (possibleTargets.isEmpty()) {
+            return possibleTargets;
+        }
+        if (possibleTargets.size() > 1) {
+            if (this.priorityMode.is("Distance")) {
+                possibleTargets.sort(BY_DISTANCE);
+            } else if (this.priorityMode.is("FoV")) {
+                possibleTargets.sort(BY_ANGLE);
+            } else if (this.priorityMode.is("Health")) {
+                possibleTargets.sort(BY_HEALTH);
+            } else if (this.priorityMode.is("LivingTime")) {
+                possibleTargets.sort(BY_LIVING_TIME);
+            } else if (this.priorityMode.is("Armor")) {
+                possibleTargets.sort(BY_ARMOR);
+            }
+            if (this.preferBaby.getValue() && KillAura.hasBaby(possibleTargets)) {
+                possibleTargets.removeIf(KillAura::isNotBaby);
+            }
+            possibleTargets.sort(BY_CRYSTAL_PRIORITY);
+        }
+        if (this.infSwitch.getValue() || this.targetMode.is("Multiple")) {
+            return possibleTargets;
+        }
+        int limit = (int) Math.min(possibleTargets.size(), this.switchSize.getValue().intValue());
+        return new ArrayList<>(possibleTargets.subList(0, limit));
+    }
+
+    private boolean isWebPlacing() {
+        return AutoWebPlace.INSTANCE != null && AutoWebPlace.INSTANCE.isEnabled() && AutoWebPlace.targetRotation != null;
+    }
+
+    // ===== 外部 API (NoXZMode / Critical / Sprint / RotationHandler 依赖) =====
+
+    /** One attack per client tick, shared by the aura, NoXZMode's counter and Critical. */
+    public static boolean attackAndLock() {
+        long tick = mc.level != null ? mc.level.getGameTime()
+                : (mc.player != null ? mc.player.tickCount : 0);
+        if (tick == attackLockTick) {
+            return false;
+        }
+        attackLockTick = tick;
+        return true;
+    }
+
+    private static long attackLockTick = -1L;
+
+    public static boolean shouldKeepSprintInDelayWindow() {
+        if (mc.player == null || mc.level == null) return false;
+        if (mc.player.onGround() || NoXZMode.isCountering()) return true;
+        if (mc.player.getDeltaMovement().y > 0 || mc.player.fallDistance <= 0.0f) return false;
+        return new MotionSimulator(mc.player).findLandingBlock(1) != null;
+    }
+
+    /** Naven isSprintReleaseWindow: sprint is only released mid-air (fall-crit window). */
+    public static boolean isSprintReleaseWindow() {
+        return mc.player != null && !mc.player.onGround();
+    }
+
+    private boolean canAttackTarget() {
+        return target != null && mc.player != null
+                && target.getBoundingBox().distanceToSqr(mc.player.position()) <= 12.25
+                && (this.throughWalls.getValue() || mc.player.hasLineOfSight(target));
+    }
+
+    /**
+     * Naven shouldStopSprint: release happens in one narrow window only - airborne + in reach
+     * + not already released + NOXZ not owning the input. On the ground sprint is never
+     * touched, so running never "drops and instantly recovers".
+     */
+    public boolean shouldStopSprint() {
+        if (!this.isEnabled() || !this.keepSprint.getValue() || this.sprintCancelled) {
+            return false;
+        }
+        if (mc.player == null || target == null || mc.player.isUsingItem()) {
+            return false;
+        }
+        if (NoXZMode.isInDelayWindow() && shouldKeepSprintInDelayWindow()) {
+            return false;
+        }
+        return this.canAttackTarget() && isSprintReleaseWindow();
+    }
+
+    /**
+     * Naven onAttackSlowdown: keepSprint cancels the vanilla setSprinting(false) inside
+     * Player.attack at the source (PlayerPatch WrapInvoke -> EventAttackSlowdown). The
+     * release-for-crit half belongs to the Sprint module (Naven's Sprint.onSprint).
+     */
+    @EventTarget
+    public void onAttackSlowdown(EventAttackSlowdown event) {
+        if (event.isSprintReset() && this.keepSprint.getValue()) {
+            event.setCancelled(true);
+        }
     }
 
     @EventTarget
@@ -283,6 +611,8 @@ public class KillAura extends Module {
         this.attacks = 0.0f;
         this.setEnabled(false);
     }
+
+    // ===== Target ESP (保留, 与引擎无关) =====
 
     @EventTarget
     public void onRender(RenderEvent event) {
@@ -427,510 +757,14 @@ public class KillAura extends Module {
         }
     }
 
-    @EventTarget
-    public void onTick(TickEvent event) {
-        if (!NiloreClient.isReady()) {
-            return;
-        }
-        double reach = Mth.clamp(this.reach.getValue().doubleValue(),
-                this.reach.getMin().doubleValue(),
-                this.reach.getMax().doubleValue());
-        reach = Math.min(reach, MAX_REACH);
-        RotationUtil.setReachLimit(reach);
-        if (mc.screen instanceof AbstractContainerScreen
-                || ItemUtil.hasServerItem()
-                || (Scaffold.INSTANCE != null && Scaffold.INSTANCE.isEnabled())
-                || (Stuck.INSTANCE != null && Stuck.INSTANCE.isEnabled())
-                || (Helper.INSTANCE != null && Helper.INSTANCE.isEnabled() && Helper.targetRotation != null)
-                || AntiWeb.targetRotation != null
-                || AntiTNT.targetRotation != null
-                || MidPearl.targetRotation != null
-                || this.isWebPlacing()) {
-            target = null;
-            aimingTarget = null;
-            this.rotation = null;
-            targetList.clear();
-            this.sprintTickCounter = 0;
-            this.attacks = 0.0f;
-            return;
-        }
+    // ===== 排序器 =====
 
-        boolean isSwitch = this.switchSize.getValue().intValue() > 1
-                || this.infSwitch.getValue()
-                || this.multiAttack.getValue()
-                || !this.targetMode.is("Single");
-        this.updateTargets();
-        // getTarget() falls back to getTargets() whenever the remembered target is null, so the
-        // old `aimingTarget = getTarget()` right here re-ran the whole entity scan + four sorts
-        // a second time every tick. Decide on the list we already have instead.
-        if (targetList.isEmpty()) {
-            target = null;
-            aimingTarget = null;
-            this.rotation = null;
-            return;
-        }
-        // The switch decision below needs something to measure against before the index is
-        // settled; use the list head rather than asking getTarget() for another scan.
-        aimingTarget = targetList.get(Math.min(this.targetIndex, targetList.size() - 1));
-
-        if (this.targetIndex > targetList.size() - 1) {
-            this.targetIndex = 0;
-        }
-        if (targetList.size() > 1
-                && this.targetMode.is("Switch")
-                && (this.attackTimes >= this.switchDelay.getValue().intValue()
-                || (this.attackTimes >= 1 && !RotationUtil.isWithinReach(aimingTarget)))) {
-            this.attackTimes = 0;
-            for (int i = 0; i < targetList.size(); ++i) {
-                ++this.targetIndex;
-                if (this.targetIndex > targetList.size() - 1) {
-                    this.targetIndex = 0;
-                }
-                if (RotationUtil.isWithinReach(targetList.get(this.targetIndex))) {
-                    break;
-                }
-            }
-        }
-        if (this.targetIndex > targetList.size() - 1 || !isSwitch) {
-            this.targetIndex = 0;
-        }
-        target = targetList.get(this.targetIndex);
-        aimingTarget = this.getTarget();
-
-        if (this.aimingTarget != null) {
-            double speed = Mth.clamp(this.rotationSpeed.getValue().doubleValue(),
-                    this.rotationSpeed.getMin().doubleValue(),
-                    this.rotationSpeed.getMax().doubleValue());
-            if (speed <= 0.0) {
-                this.rotation = null;
-            } else {
-                Rotation from = RotationHandler.prevRotation != null
-                        ? RotationHandler.prevRotation
-                        : new Rotation(mc.player.getYRot(), mc.player.getXRot());
-                this.rotation = this.computeRotation(this.aimingTarget, from, speed, MAX_REACH);
-            }
-        } else {
-            this.rotation = null;
-        }
-
-        // The gate runs once per tick, inside attackTick at the tail of Minecraft.tick - after the
-        // move packet, which is what the server validates against. Checking it here as well only
-        // paid for a second block clip plus entity query per tick to get the same answer.
-        float apsValue = this.maxAps.getValue().floatValue();
-        float minApsValue = this.minAps.getValue().floatValue();
-        this.attacks = Math.min(this.attacks + (float)(MathUtil.randomDouble(minApsValue, apsValue) / 20.0), 2.0f);
-    }
-
-    /**
-     * 挥击挂在 {@code handleKeybinds} 里触发, 也就是**移动包之前** —— 和 vanilla 攻击同一个
-     * 位置 ({@code Minecraft.handleKeybinds -> startAttack}, 之后才跑 {@code player.tick()}
-     * 发 flying 包)。
-     *
-     * <p>之前挂在 {@code PostMotionEvent}({@code Minecraft.tick} 末尾)时, interact 包恒定排在
-     * 移动包之后。Grim 的 {@code Post} 检查正是按这个顺序判定的: 收到移动包后把
-     * {@code sentFlying} 置位, 之后收到的每个动作包(ATTACK / INTERACT_ENTITY / ...)都进
-     * {@code post} 队列, 下一个 transaction 到达时若队列非空就记一条 —— 于是每打一次人记一次。
-     *
-     * <p>代价是判定用的朝向: 这个位置服务端还没收到本 tick 的朝向, 它持有的仍是上一 tick
-     * 发出去的那个。所以下面的闸门也必须用同一个角度(见 {@link #attackRotation()}), 否则
-     * 本地按新朝向算"打得到"、服务端按旧朝向算空挥, 就是 Reach/Hitboxes 抖动。
-     */
-    @EventTarget
-    public void onPreMotion(PreMotionEvent event) {
-        if (!NiloreClient.isReady()) {
-            return;
-        }
-        this.attackTick();
-    }
-
-    /** 服务端此刻持有的朝向: 上一 tick 真正发出去的那个。 */
-    private Rotation attackRotation() {
-        if (RotationHandler.sentRotation != null) {
-            return RotationHandler.sentRotation;
-        }
-        return new Rotation(mc.player.getYRot(), mc.player.getXRot());
-    }
-
-    /** 本 tick 攻击用的朝向; 在 {@link #attackTick()} 里取一次, 供闸门与多目标分支共用。 */
-    private Rotation authoritativeAttackRotation() {
-        return this.authoritativeRotation != null ? this.authoritativeRotation : this.attackRotation();
-    }
-
-    private void attackTick() {
-        if (mc.player == null) return;
-        if (this.isWebPlacing()) {
-            this.attacks = 0.0f;
-            return;
-        }
-        this.authoritativeRotation = this.attackRotation();
-        if (!this.canAttackNow(this.authoritativeRotation)) {
-            // A gate that closes for one tick must not throw away the charge built up over the
-            // previous two: that turned every hitch into a full attack cycle of downtime. Cap it
-            // instead, so the swing fires the moment the gate reopens.
-            this.attacks = Math.min(this.attacks, 1.0f);
-            return;
-        }
-        while (this.attacks >= 1.0f) {
-            // Only a swing that actually left the client pays for itself. The per-tick lock can be
-            // taken by the antikb counter or Critical first, and charging the cost anyway pushed
-            // the accumulator negative - the next hit then had to make up the debt.
-            if (!this.doAttack()) {
-                break;
-            }
-            this.attacks -= 1.0f;
-        }
-    }
-
-    /**
-     * @param authoritative 服务端当前持有的朝向。视野闸门必须用它, 不能用本 tick 刚算出的
-     *                      {@link #rotation} —— 后者还没发出去, 服务端不会用它校验这次交互。
-     */
-    private boolean canAttackNow(Rotation authoritative) {
-        this.gateBlock = null;
-        if (mc.player == null || mc.screen != null || mc.player.isUsingItem()) {
-            return this.deny("using");
-        }
-        if (target == null || !targetList.contains(target)) {
-            return this.deny("no-target");
-        }
-        double reachNow = Math.min(Math.max(this.reach.getValue().doubleValue(),
-                RotationUtil.getReachLimit()), MAX_REACH);
-        // Sight and distance share one cap: the raycast used to allow the full reach while
-        // isWithinReach already subtracted the margin, so a target sitting in that last strip passed
-        // the visibility check and was then dropped by the distance gate every few ticks. Both now
-        // subtract the same (much smaller) margin, see RotationUtil#REACH_MARGIN.
-        double sightRange = reachNow - RotationUtil.REACH_MARGIN;
-        // Through Walls only skips the block-clipped raycast inside Through Walls Range; beyond
-        // it the attack still has to see the target, otherwise the range slider is never read.
-        if (!this.ignoreBlocksAt(target)
-                && !RotationUtil.isLookingAt(target, sightRange, 0.1f, authoritative)
-                && !this.freshAimSees(target, sightRange, authoritative)) {
-            return this.deny("sight");
-        }
-        if (this.delayMode.is("1.9") && mc.player.getAttackStrengthScale(0.0f) < 0.95f) {
-            return this.deny("cooldown");
-        }
-        if (!(this.ignoreSkipTicks.getValue() || ClientBase.delayPackets.isEmpty()
-                || (Critical.INSTANCE != null && Critical.INSTANCE.isEnabled()))) {
-            return this.deny("skip-ticks");
-        }
-        // Velocity gate. The counter hits are sprint hits by construction - the NoXZ counter only
-        // swings while isSprinting() holds - so they cannot crit, and swinging the aura into the
-        // same window would just fight it for the per-tick attack lock. The isInDelayWindow branch
-        // is the keepsprint half of the contract: while the delay window still owns the input
-        // (on ground, mid-counter, or about to land) the aura stays out so the window's own
-        // isSprinting() gate stays true.
-        if (NoXZMode.isCountering()) {
-            return this.deny("noxz-counter");
-        }
-        if (NoXZMode.isInDelayWindow() && shouldKeepSprintInDelayWindow()) {
-            return this.deny("noxz-window");
-        }
-        if (this.keepSprint.getValue() && mc.player.isSprinting()
-                && !NoXZMode.handlingVelocity && this.canCritUnderVelocity()) {
-            // Waiting one tick is only worth it when SprintEvent is actually going to drop the
-            // sprint this tick (that is what canCritUnderVelocity() answers): then the next move
-            // packet carries STOP_SPRINTING and the server settles the hit as a crit. When it
-            // cannot - target out of the 3.5 crit reach, mid jump-reset, NOXZ owning the input -
-            // the old gate still closed and the aura stood there doing nothing, which is the
-            // "inside 3.0 and it just will not swing" report.
-            return this.deny("sprint");
-        }
-        if (!RotationUtil.isWithinReach(target)) {
-            return this.deny("reach");
-        }
-        return true;
-    }
-
-    /**
-     * 本 tick 新算出来的朝向是否打得到目标，供 {@link #canAttackNow(Rotation)} 在旧朝向落空时兜底。
-     *
-     * <p>为什么可以这么做：interact 包排在移动包之前，服务端手里确实是上一 tick 的角度 —— 但
-     * vanilla 的 {@code ServerGamePacketListenerImpl#handleInteract} 只用距离判定，从不校验朝向；
-     * 真正看角度的是 Grim 的 Hitboxes 检查，而它只在角度明显不符时报。目标在这一 tick 里横向
-     * 移动（AD tap、击退）时，旧角度的射线会从判定盒边缘擦过去，旧实现于是整 tick 不打人。
-     * 这里只在两个角度相差不超过 {@link #FRESH_SIGHT_MAX_DELTA} 度时放行。
-     */
-    private boolean freshAimSees(Entity entity, double range, Rotation authoritative) {
-        Rotation fresh = this.rotation;
-        if (fresh == null) {
-            return false;
-        }
-        float delta = RotationUtil.angleDiff(fresh.getYaw(), authoritative.getYaw());
-        if (Float.isNaN(delta) || delta > FRESH_SIGHT_MAX_DELTA) {
-            return false;
-        }
-        return RotationUtil.isLookingAt(entity, range, 0.1f, fresh);
-    }
-
-    private boolean deny(String reason) {
-        this.gateBlock = reason;
-        return false;
-    }
-
-    /**
-     * Whether Through Walls may skip the block-clipped raycast for this entity. Measured from
-     * the eye to the closest point of the hitbox.
-     */
-    private boolean ignoreBlocksAt(Entity entity) {
-        if (!this.throughWalls.getValue() || entity == null || mc.player == null) {
-            return false;
-        }
-        Vec3 eyePos = mc.player.getEyePosition(1.0f);
-        double dist = RotationUtil.closestPoint(eyePos, entity.getBoundingBox()).distanceTo(eyePos);
-        return dist <= this.throughWallsRange.getValue().doubleValue();
-    }
-
-    /**
-     * The crit gate. While it holds, the sprint key is dropped and the sprint flag cleared from the
-     * SprintEvent handler, so the swing that follows lands as a crit instead of a sprint hit. The
-     * 3.5-block reach (12.25 squared) and the velocity interlocks are what keep the release from
-     * firing at the wrong time.
-     */
-    public boolean canCritUnderVelocity() {
-        if (mc.player == null || mc.level == null || target == null) {
-            return false;
-        }
-        if (AntiKB.INSTANCE != null && AntiKB.INSTANCE.isEnabled()) {
-            if (NoXZMode.isInDelayWindow() && shouldKeepSprintInDelayWindow()) {
-                return false;
-            }
-            if (NoXZMode.isCountering()) {
-                return false;
-            }
-            if (AntiKB.mode.is("Jump Reset") && JumpResetMode.isJumping) {
-                return false;
-            }
-        }
-        if (target.distanceToSqr(mc.player) > 12.25) {
-            return false;
-        }
-        if (mc.player.isDeadOrDying() || !this.keepSprint.getValue()) {
-            return false;
-        }
-        return !mc.player.isUsingItem() || !mc.options.keyUse.isDown();
-    }
-
-    /**
-     * SprintEvent sits right before LocalPlayer.tick() calls super.tick(), which is the only window
-     * where releasing the sprint still produces a STOP_SPRINTING packet before the attack. Later
-     * than this the client has already moved with the +30% sprint attribute for the tick.
-     */
-    @EventTarget
-    public void onSprint(SprintEvent sprintEvent) {
-        if (!this.canCritUnderVelocity()) {
-            return;
-        }
-        mc.options.keySprint.setDown(false);
-        if (mc.player != null && mc.player.isSprinting()) {
-            mc.player.setSprinting(false);
-        }
-    }
-
-    /**
-     * One attack per client tick, shared by the three paths that can swing: the aura itself, NoXZMode's
-     * counter and Critical's extra hit. Whoever calls first in a tick wins, the rest are dropped, so the
-     * same target can never eat two hits in one tick.
-     *
-     * <p>Keyed on the level's game time rather than {@code mc.player.tickCount}: Critical's SkipTicks
-     * mode cancels LocalPlayer.tick outright, so the player's own counter stops advancing for the whole
-     * fall and the lock stayed taken - every attack path was locked out until the player landed.
-     */
-    public static boolean attackAndLock() {
-        long tick = mc.level != null ? mc.level.getGameTime()
-                : (mc.player != null ? mc.player.tickCount : 0);
-        if (tick == attackLockTick) {
-            return false;
-        }
-        attackLockTick = tick;
-        return true;
-    }
-
-    private static long attackLockTick = -1L;
-
-    private boolean canAttackTarget() {
-        Entity entity = target;
-        if (entity == null || mc.player == null
-                || entity.getBoundingBox().distanceToSqr(mc.player.position()) > 12.25) {
-            return false;
-        }
-        return this.throughWalls.getValue() || mc.player.hasLineOfSight(entity);
-    }
-
-    public static boolean shouldKeepSprintInDelayWindow() {
-        if (mc.player == null || mc.level == null) return false;
-        if (mc.player.onGround() || NoXZMode.isCountering()) return true;
-        if (mc.player.getDeltaMovement().y > 0 || mc.player.fallDistance <= 0.0f) return false;
-        return new MotionSimulator(mc.player).findLandingBlock(1) != null;
-    }
-
-    public boolean doAttack() {
-        if (this.isWebPlacing()) {
-            this.attacks = 0.0f;
-            return false;
-        }
-        if (targetList.isEmpty()) return false;
-        // The old `if (this.rotation == null) return false;` was a second, silent gate: rotation is
-        // null whenever computeRotation() found no aim point *or* getTarget() filtered the remembered
-        // target (AntiBots) while `target` itself stayed set. canAttackNow() had already passed on
-        // that same `target`, so every tick went in, refused, and left `attacks` untouched. The only
-        // consumer of `rotation` below is the multi-target branch, which already falls back to
-        // authoritativeAttackRotation(), so the check only cost hits.
-
-        if (this.targetMode.is("Multiple") || this.multiAttack.getValue()) {
-            int limit = this.targetMode.is("Multiple") ? Integer.MAX_VALUE : 2;
-            int attacked = 0;
-            Rotation authoritative = this.authoritativeAttackRotation();
-            for (Entity entity : targetList) {
-                if (mc.player == null) break;
-                if (!RotationUtil.isWithinReach(entity)) continue;
-                // 这条分支以前只判"任意角度可见"(canSeeAnyPoint 自己造射线, 与服务端无关),
-                // 于是会出现"本地可见但服务端按当前朝向判空挥"的 Hitboxes 抖动。现在要求
-                // 服务端此刻持有的朝向也真的打得到它; canSeeAnyPoint 只留作额外的可见性过滤。
-                if (!this.ignoreBlocksAt(entity)) {
-                    if (!RotationUtil.isLookingAt(entity, MAX_REACH, 0.2f, authoritative)) continue;
-                    if (!RotationUtil.canSeeAnyPoint(entity)) continue;
-                }
-                if (this.attackEntity(entity)) {
-                    attacked++;
-                }
-                if (attacked >= limit) break;
-            }
-            return attacked > 0;
-        }
-        return target != null && targetList.contains(target) && this.attackEntity(target);
-    }
-
-    public Entity getTarget() {
-        Entity entity = target;
-        if (entity == null) {
-            List<Entity> list = this.getTargets();
-            if (!list.isEmpty()) {
-                entity = list.get(0);
-            }
-        }
-        if (entity != null) {
-            AntiBots antiBots = AntiBots.INSTANCE;
-            if (antiBots != null && antiBots.isEnabled() && AntiBots.isBot(entity)) {
-                return null;
-            }
-        }
-        return entity;
-    }
-
-    public void updateTargets() {
-        List<Entity> next = this.getTargets();
-        targetList = next != null ? next : new ArrayList<>();
-    }
-
-    public boolean isValidTarget(Entity entity) {
-        if (!NiloreClient.isReady()) return false;
-        if (entity == mc.player) return false;
-        if (entity instanceof LivingEntity livingEntity) {
-            AntiBots antiBots = AntiBots.INSTANCE;
-            if (antiBots != null && antiBots.isEnabled() && (AntiBots.isBot(entity) || AntiBots.isBedWarsBot(entity))) {
-                return false;
-            }
-            if (livingEntity.isDeadOrDying() || livingEntity.getHealth() <= 0.0f) return false;
-            if (entity instanceof ArmorStand) return false;
-            if (entity.isInvisible() && !(Boolean) this.attackInvisible.getValue()) return false;
-            if (Teams.isSameTeam(entity)) return false;
-            if (entity instanceof Player && !(Boolean) this.attackPlayer.getValue()) return false;
-            if (entity instanceof Player && (entity.getBbWidth() < 0.5 || livingEntity.isSleeping())) return false;
-            if ((entity instanceof Mob || entity instanceof Slime || entity instanceof Bat || entity instanceof AbstractGolem)
-                    && !(Boolean) this.attackMobs.getValue()) {
-                return false;
-            }
-            if ((entity instanceof Animal || entity instanceof Squid) && !(Boolean) this.attackAnimals.getValue()) {
-                return false;
-            }
-            if (entity instanceof Villager && !(Boolean) this.attackAnimals.getValue()) return false;
-            return !(entity instanceof Player) || !entity.isSpectator();
-        }
-        return false;
-    }
-
-    public boolean isValidAttack(Entity entity) {
-        if (mc.player == null) return false;
-        return this.isValidTarget(entity);
-    }
-
-    public boolean attackEntity(Entity entity) {
-        if (mc.player == null || mc.getConnection() == null) return false;
-        if (this.isWebPlacing()) return false;
-        if (!attackAndLock()) return false;
-
-        ++this.attackTimes;
-        mc.getConnection().send(ServerboundInteractPacket.createAttackPacket(entity, mc.player.isShiftKeyDown()));
-        mc.player.attack(entity);
-        mc.player.resetAttackStrengthTicker();
-        mc.player.swing(InteractionHand.MAIN_HAND);
-
-        if (this.morePart.getValue()) {
-            mc.player.magicCrit(entity);
-            mc.player.crit(entity);
-        }
-        return true;
-    }
-
-    private boolean isWebPlacing() {
-        return AutoWebPlace.INSTANCE != null && AutoWebPlace.INSTANCE.isEnabled() && AutoWebPlace.targetRotation != null;
-    }
-
-    private List<Entity> getTargets() {
-        if (mc.player == null || mc.level == null) {
-            return new ArrayList<>();
-        }
-        // Gathering radius, not the hit radius: reach is enforced later (isLookingAt / isWithinReach),
-        // this only decides who counts as "the opponent" for the sprint and crit machinery.
-        AABB box = mc.player.getBoundingBox().inflate(MAX_REACH);
-        // Plain loop, one pass, no stream: this runs every tick for the whole fight, and the old
-        // version built a parallel-stream pipeline (ForkJoin tasks on the render thread), collected a
-        // list, then made three more passes over it. Same filter set, same order (the sorts below are
-        // stable), minus the machinery that costs the most while the JIT is still cold.
-        double fov = this.fov.getValue().doubleValue();
-        List<Entity> possibleTargets = new ArrayList<>();
-        for (Entity entity : mc.level.entitiesForRendering()) {
-            if (!box.intersects(entity.getBoundingBox())) continue;
-            if (!this.isValidAttack(entity)) continue;
-            // FoV filter, around the rotation the aura actually sends. The setting was read nowhere
-            // before this, so raising or lowering it had no effect at all.
-            if (!RotationUtil.isEntityInFov(entity, fov)) continue;
-            possibleTargets.add(entity);
-        }
-        // Sorting is the expensive half of this method (three to four stable sorts per tick), and
-        // with zero or one candidate every one of them is a no-op that still walks the comparator
-        // machinery. The overwhelming majority of ticks in a real fight have exactly one candidate.
-        if (possibleTargets.isEmpty()) {
-            return possibleTargets;
-        }
-        if (possibleTargets.size() > 1) {
-            if (this.priorityMode.is("Distance")) {
-                possibleTargets.sort(BY_DISTANCE);
-            } else if (this.priorityMode.is("FoV")) {
-                possibleTargets.sort(BY_ANGLE);
-            } else if (this.priorityMode.is("Health")) {
-                possibleTargets.sort(BY_HEALTH);
-            } else if (this.priorityMode.is("LivingTime")) {
-                possibleTargets.sort(BY_LIVING_TIME);
-            } else if (this.priorityMode.is("Armor")) {
-                possibleTargets.sort(BY_ARMOR);
-            }
-            if (this.preferBaby.getValue() && KillAura.hasBaby(possibleTargets)) {
-                possibleTargets.removeIf(KillAura::isNotBaby);
-            }
-            possibleTargets.sort(BY_CRYSTAL_PRIORITY);
-            // Final stable sort: an in-reach opponent becomes the target, out-of-reach ones only stay in
-            // the list (ranked on the same 9.0 = 3.0^2). Inside each group the priority and
-            // crystal order above survive - a stable sort keeps them as the secondary key.
-            possibleTargets.sort(BY_OUT_OF_REACH);
-        }
-        if (this.infSwitch.getValue() || this.targetMode.is("Multiple")) {
-            return possibleTargets;
-        }
-        int limit = (int) Math.min(possibleTargets.size(), this.switchSize.getValue().intValue());
-        return new ArrayList<>(possibleTargets.subList(0, limit));
-    }
+    private static final Comparator<Entity> BY_DISTANCE = Comparator.comparingDouble(KillAura::getDistanceToPlayer);
+    private static final Comparator<Entity> BY_ANGLE = Comparator.comparingDouble(KillAura::getAngleDiffToTarget);
+    private static final Comparator<Entity> BY_HEALTH = Comparator.comparingDouble(KillAura::getEntityHealth);
+    private static final Comparator<Entity> BY_LIVING_TIME = Comparator.comparingInt(KillAura::getEntityLivingTime).reversed();
+    private static final Comparator<Entity> BY_ARMOR = Comparator.comparingDouble(KillAura::getEntityArmor);
+    private static final Comparator<Entity> BY_CRYSTAL_PRIORITY = Comparator.comparing(KillAura::getCrystalPriority);
 
     private static Integer getCrystalPriority(Entity entity) {
         return entity instanceof EndCrystal ? 0 : 1;
@@ -940,31 +774,13 @@ public class KillAura extends Module {
         return !(entity instanceof LivingEntity) || !((LivingEntity) entity).isBaby();
     }
 
-    private static boolean isBaby(Entity entity) {
-        return entity instanceof LivingEntity && ((LivingEntity) entity).isBaby();
-    }
-
     private static boolean hasBaby(List<Entity> entities) {
         for (Entity entity : entities) {
-            if (isBaby(entity)) {
+            if (entity instanceof LivingEntity living && living.isBaby()) {
                 return true;
             }
         }
         return false;
-    }
-
-    // Built once instead of per tick: getTargets runs every tick, the old code allocated a fresh
-    // comparator on each pass.
-    private static final Comparator<Entity> BY_DISTANCE = Comparator.comparingDouble(KillAura::getDistanceToPlayer);
-    private static final Comparator<Entity> BY_ANGLE = Comparator.comparingDouble(KillAura::getAngleDiffToTarget);
-    private static final Comparator<Entity> BY_HEALTH = Comparator.comparingDouble(KillAura::getEntityHealth);
-    private static final Comparator<Entity> BY_LIVING_TIME = Comparator.comparingInt(KillAura::getEntityLivingTime).reversed();
-    private static final Comparator<Entity> BY_ARMOR = Comparator.comparingDouble(KillAura::getEntityArmor);
-    private static final Comparator<Entity> BY_CRYSTAL_PRIORITY = Comparator.comparing(KillAura::getCrystalPriority);
-    private static final Comparator<Entity> BY_OUT_OF_REACH = Comparator.comparingInt(KillAura::getOutOfReachRank);
-
-    private static int getOutOfReachRank(Entity entity) {
-        return RotationUtil.isWithinReach(entity) ? 0 : 1;
     }
 
     private static double getEntityHealth(Entity entity) {
@@ -991,9 +807,5 @@ public class KillAura extends Module {
 
     private static double getDistanceToPlayer(Entity entity) {
         return entity.distanceTo(mc.player);
-    }
-
-    private static boolean isLivingEntity(Entity entity) {
-        return entity instanceof LivingEntity;
     }
 }

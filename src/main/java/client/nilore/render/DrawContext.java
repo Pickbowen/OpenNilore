@@ -89,6 +89,7 @@ public class DrawContext {
     }
 
     public void restore() {
+        Batch2D.flushAll();
         boolean useScissor;
         if (!this.clipStack.isEmpty() && (useScissor = this.clipStack.pop()) && this.guiGraphics != null) {
             this.guiGraphics.disableScissor();
@@ -109,6 +110,7 @@ public class DrawContext {
     }
 
     public void flush() {
+        Batch2D.flushAll();
     }
 
     public void clip(Rectangle rectangle) {
@@ -119,6 +121,7 @@ public class DrawContext {
         if (this.guiGraphics == null) {
             return;
         }
+        Batch2D.flushAll();
         Matrix4f pose = this.poseStack.last().pose();
         Vector4f topLeft = new Vector4f(rectangle.getX(), rectangle.getY(), 0.0f, 1.0f).mul(pose);
         Vector4f bottomRight = new Vector4f(rectangle.getRight(), rectangle.getBottom(), 0.0f, 1.0f).mul(pose);
@@ -134,6 +137,7 @@ public class DrawContext {
         if (this.guiGraphics == null) {
             return;
         }
+        Batch2D.flushAll();
         Matrix4f pose = this.poseStack.last().pose();
         Vector4f topLeft = new Vector4f(roundedRectangle.x1, roundedRectangle.y1, 0.0f, 1.0f).mul(pose);
         Vector4f bottomRight = new Vector4f(roundedRectangle.x2, roundedRectangle.y2, 0.0f, 1.0f).mul(pose);
@@ -157,6 +161,7 @@ public class DrawContext {
     }
 
     public void drawRectXYWH(float x, float y, float width, float height, Paint paint) {
+        Batch2D.flushAll();
         if (paint.getCapStyle() == Paint.StrokeCap.STROKE) {
             this.drawRectStroke(x, y, width, height, paint);
             return;
@@ -204,6 +209,16 @@ public class DrawContext {
             hasGradient = true;
         }
         float strokeWidth = paint.getCapStyle() == Paint.StrokeCap.STROKE ? Math.max(0.5f, paint.getStrokeWidth()) : 0.0f;
+        // Batching is only safe inside a canvas owned by Renderer.render: that block flushes
+        // everything before it hands control back. A DrawContext constructed ad hoc (GuiPatch
+        // does this for the scoreboard background, for example) can have vanilla bufferSource
+        // draws queued right behind it, and deferring would put the rect on top of that text.
+        if (RoundedRectShader.supportsBatch() && Renderer.getCanvas() == this) {
+            Batch2D.useRoundedRect();
+            RoundedRectShader.addBatchRect(this.poseStack.last().pose(), roundedRectangle.x1, roundedRectangle.y1, roundedRectangle.x2, roundedRectangle.y2, roundedRectangle.topLeftRadius, roundedRectangle.topRightRadius, roundedRectangle.bottomRightRadius, roundedRectangle.bottomLeftRadius, color1, color2, hasGradient, strokeWidth);
+            return;
+        }
+        Batch2D.flushAll();
         ROUNDED_RECT_SHADER.draw(this.poseStack.last().pose(), roundedRectangle.x1, roundedRectangle.y1, roundedRectangle.x2, roundedRectangle.y2, roundedRectangle.topLeftRadius, roundedRectangle.topRightRadius, roundedRectangle.bottomRightRadius, roundedRectangle.bottomLeftRadius, color1, color2, hasGradient, strokeWidth);
     }
 
@@ -254,6 +269,7 @@ public class DrawContext {
     }
 
     public void drawLine(float x1, float y1, float x2, float y2, Paint paint) {
+        Batch2D.flushAll();
         float strokeWidth = Math.max(0.5f, paint.getStrokeWidth());
         float dx = x2 - x1;
         float dy = y2 - y1;
@@ -280,6 +296,7 @@ public class DrawContext {
         if (text == null || text.isEmpty()) {
             return;
         }
+        Batch2D.flushAll();
         CustomFont customFont = fontRenderer.getFont();
         if (customFont == null) {
             return;
@@ -293,6 +310,7 @@ public class DrawContext {
         if (text == null || text.isEmpty()) {
             return;
         }
+        Batch2D.flushAll();
         CustomFont customFont = fontRenderer.getFont();
         if (customFont == null) {
             return;
@@ -306,6 +324,7 @@ public class DrawContext {
     }
 
     public void drawArc(float x1, float y1, float x2, float y2, float startAngle, float sweepAngle, boolean unused, int segments, Paint paint) {
+        Batch2D.flushAll();
         this.setupColorShader();
         Matrix4f pose = this.poseStack.last().pose();
         float centerX = (x1 + x2) * 0.5f;
@@ -346,6 +365,7 @@ public class DrawContext {
         if (path == null) {
             return;
         }
+        Batch2D.flushAll();
         float strokeWidth = Math.max(0.5f, paint.getStrokeWidth());
         float[] color = DrawContext.colorToFloats(paint.getColor());
         DrawContext.StrokeState strokeState = new DrawContext.StrokeState(paint.getLinGradient());
@@ -526,6 +546,7 @@ public class DrawContext {
         if (texture == null) {
             return;
         }
+        Batch2D.flushAll();
         this.setupTexShader();
         if (texture.getResourceLocation() != null) {
             RenderSystem.setShaderTexture(0, texture.getResourceLocation());
@@ -553,6 +574,7 @@ public class DrawContext {
     }
 
     public void drawBlurredRoundedRect(RoundedRectangle roundedRectangle, float offsetX, float offsetY, float blurRadius, float spread, int color) {
+        Batch2D.flushAll();
         float x = roundedRectangle.x1 + offsetX - spread;
         float y = roundedRectangle.y1 + offsetY - spread;
         float width = roundedRectangle.getWidth() + spread * 2.0f;
@@ -568,6 +590,7 @@ public class DrawContext {
     }
 
     public void drawBlur(float x, float y, float width, float height, float radius, Runnable runnable) {
+        Batch2D.flushAll();
         BlurRenderer.renderBlur(this, x, y, width, height, radius, runnable);
     }
 

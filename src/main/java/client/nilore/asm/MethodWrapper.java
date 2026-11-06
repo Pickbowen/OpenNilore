@@ -41,11 +41,24 @@ public final class MethodWrapper {
         return new MethodWrapper(handle);
     }
 
+    /**
+     * Resolves {@code methodName+methodDesc} starting at {@code clazz} and walking up the
+     * superclass chain.
+     *
+     * <p>It must walk: a {@code @WrapInvoke} target is named after the <b>static</b> receiver
+     * type at the call site, while the method itself may be declared higher up. Wrapping
+     * {@code Player.setSprinting} inside {@code Player.attack}, for instance, names
+     * {@code net/minecraft/world/entity/player/Player/setSprinting}, but 1.20.1 declares that
+     * method on {@code Entity}. A declared-methods-only lookup found nothing and threw from the
+     * wrapped call site — i.e. the client died the first time it actually hit something.
+     */
     private static MethodHandle lookup(Class<?> clazz, String methodName, String methodDesc) throws Exception {
-        for (Method method : clazz.getDeclaredMethods()) {
-            if (method.getName().equals(methodName) && Type.getMethodDescriptor(method).equals(methodDesc)) {
-                method.setAccessible(true);
-                return LOOKUP.unreflect(method);
+        for (Class<?> current = clazz; current != null; current = current.getSuperclass()) {
+            for (Method method : current.getDeclaredMethods()) {
+                if (method.getName().equals(methodName) && Type.getMethodDescriptor(method).equals(methodDesc)) {
+                    method.setAccessible(true);
+                    return LOOKUP.unreflect(method);
+                }
             }
         }
         return null;

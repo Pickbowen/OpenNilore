@@ -65,6 +65,7 @@ import client.nilore.event.EventTarget;
 public class Scaffold extends Module {
     public static Scaffold INSTANCE;
 
+
     public final ModeSetting mode = new ModeSetting("Mode", "Normal", "Telly Bridge", "Keep Y").withDefault("Normal");
     public final NumberSetting tellyAirTicks = new NumberSetting("AirTicks", 1, 0, 3, 0.1, () -> this.mode.is("Telly Bridge"));
     public final NumberSetting tellyPlaceDelay = new NumberSetting("PlaceDelay", 1, 0, 20, 1, () -> this.mode.is("Telly Bridge"));
@@ -110,6 +111,7 @@ public class Scaffold extends Module {
     private boolean canBuildNow;
     private BlockPos lastC05Position;
     private int tellyPlaceDelayTimer;
+    private boolean bpsCut;
 
     private static final FontRenderer shelfLabelFont = FontPresets.axiformaBold(12);
     private static final FontRenderer shelfBpsFont = FontPresets.axiformaBold(13);
@@ -136,6 +138,9 @@ public class Scaffold extends Module {
             this.rots.setYawPitch(mc.player.getYRot() - 180.0f, mc.player.getXRot());
             this.lastRots.setYawPitch(mc.player.yRotO - 180.0f, mc.player.xRotO);
             this.currentPlacement = null;
+            this.cachedOffset = Float.NaN;
+            this.lastKeyMask = -1;
+            this.bpsCut = false;
             this.targetYLevel = 10000;
             this.velocityDelay = 0;
             this.canBuildNow = true;
@@ -226,11 +231,19 @@ public class Scaffold extends Module {
         if (!this.bpsLimit.getValue()) return;
         double limit = this.bps.getValue().doubleValue();
         if (limit >= 10.0) return;
-        double maxSpeed = limit / 20.0;
-        if (MovementUtil.getSpeed() > maxSpeed) {
-            strafeEvent.setForward(0.0f);
-            strafeEvent.setStrafe(0.0f);
+
+        double speed = MovementUtil.getSpeed() * 20.0;
+        if (this.bpsCut) {
+            if (speed <= limit * 0.92) {
+                this.bpsCut = false;
+                return;
+            }
+        } else if (speed <= limit) {
+            return;
         }
+        this.bpsCut = true;
+        strafeEvent.setForward(0.0f);
+        strafeEvent.setStrafe(0.0f);
     }
 
     @EventTarget(value = 1)
@@ -668,7 +681,15 @@ public class Scaffold extends Module {
         this.raycastBudget = ROTATION_RAYCAST_BUDGET;
 
         Vec3 eye = mc.player.getEyePosition();
-        float yaw = baseYaw();
+        int keyMask = (mc.options.keyUp.isDown() ? 1 : 0)
+                | (mc.options.keyDown.isDown() ? 2 : 0)
+                | (mc.options.keyLeft.isDown() ? 4 : 0)
+                | (mc.options.keyRight.isDown() ? 8 : 0);
+        if (!this.mode.is("Normal") || keyMask != this.lastKeyMask) {
+            this.lastKeyMask = keyMask;
+            this.cachedOffset = baseYaw() - mc.player.getYRot();
+        }
+        float yaw = mc.player.getYRot() + this.cachedOffset;
         float idealPitch = 75.5f;
         float currentPitch = this.rots.getPitch();
         float exactPitch = RotationUtil.exactRotation(eye,
@@ -732,6 +753,8 @@ public class Scaffold extends Module {
     }
 
     private int raycastBudget;
+    private float cachedOffset = Float.NaN;
+    private int lastKeyMask = -1;
     private static final int ROTATION_RAYCAST_BUDGET = 72;
     private static final double[] FACE_GRID = {0.5, 0.15, 0.85};
 
@@ -890,9 +913,6 @@ public class Scaffold extends Module {
         int feetX = belowFeet.getX();
         int feetZ = belowFeet.getZ();
         if (mc.level.getBlockState(belowFeet).entityCanStandOn(mc.level, belowFeet, mc.player)) return;
-        if (this.currentPlacement != null && this.isPlacementStillValid(this.currentPlacement, eye)) {
-            return;
-        }
         this.currentPlacement = null;
         if (this.isAbovePlaceable(eye, belowFeet)) return;
         for (int radius = 1; radius <= 6; radius++) {
@@ -922,18 +942,6 @@ public class Scaffold extends Module {
         return dx * dx + dy * dy + dz * dz <= 20.25;
     }
 
-    private boolean isPlacementStillValid(PlacementTarget target, Vec3 eye) {
-        if (target == null || target.facing == null) return false;
-        BlockPos support = target.position;
-        if (!mc.level.getBlockState(support).entityCanStandOnFace(mc.level, support, mc.player, target.facing)) {
-            return false;
-        }
-        if (!mc.level.getBlockState(support.relative(target.facing)).canBeReplaced()) {
-            return false;
-        }
-        return faceAimPoint(support, target.facing, eye).distanceToSqr(eye) <= 20.25;
-    }
-
     private float jitterOffset() {
         float offset = 0.03f + this.jitterRandom.nextFloat() * 0.04f;
         return this.jitterRandom.nextBoolean() ? offset : -offset;
@@ -960,7 +968,8 @@ public class Scaffold extends Module {
         if (mc.level == null || mc.player == null) return false;
         if (!(mc.level.getBlockState(pos).getBlock() instanceof AirBlock)) return false;
         Vec3 center = new Vec3(pos.getX() + 0.5, pos.getY() + 0.5f, pos.getZ() + 0.5);
-        Rotation want = new Rotation(baseYaw(), 75.5f);
+        float wantYaw = Float.isNaN(this.cachedOffset) ? baseYaw() : mc.player.getYRot() + this.cachedOffset;
+        Rotation wantFlat = new Rotation(wantYaw, 75.5f);
         BlockPos bestSupport = null;
         Direction bestFace = null;
         double bestDistance = Double.MAX_VALUE;
@@ -990,10 +999,15 @@ public class Scaffold extends Module {
                 bestSupport = offset;
                 bestFace = face;
             }
-            if (distance < aimDistance && RayTraceUtil.canRayTrace(want, face, offset, true)) {
-                aimDistance = distance;
-                aimSupport = offset;
-                aimFace = face;
+            if (distance < aimDistance) {
+                Vec3 aimPoint = faceAimPoint(offset, face, from);
+                float facePitch = RotationUtil.exactRotation(from, aimPoint).getPitch();
+                if (RayTraceUtil.canRayTrace(wantFlat, face, offset, true)
+                        || RayTraceUtil.canRayTrace(new Rotation(wantYaw, facePitch), face, offset, true)) {
+                    aimDistance = distance;
+                    aimSupport = offset;
+                    aimFace = face;
+                }
             }
         }
         if (aimSupport != null) {

@@ -63,6 +63,8 @@ public final class BlurRenderer {
         } catch (Throwable throwable) {
             throwable.printStackTrace();
         }
+        // Batched primitives queued by the callback belong to this FBO, not to the screen.
+        Batch2D.flushAll();
         float pixelRadius = Math.max(1.0f, radius * guiScale);
         GlStateManager._disableBlend();
         fboB.bind();

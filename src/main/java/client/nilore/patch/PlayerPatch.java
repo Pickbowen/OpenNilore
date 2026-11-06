@@ -12,6 +12,7 @@ import client.nilore.ClientBase;
 import client.nilore.NiloreClient;
 import client.nilore.asm.Invocation;
 import client.nilore.event.impl.EntityRemoveEvent;
+import client.nilore.event.impl.EventAttackSlowdown;
 
 @Patch(Player.class)
 public class PlayerPatch {
@@ -38,6 +39,19 @@ public class PlayerPatch {
     @WrapInvoke(method = "attack", desc = "(Lnet/minecraft/world/entity/Entity;)V", target = "net/minecraft/world/entity/Entity/getYRot", targetDesc = "()F")
     public static float onAttackGetYRot(Player player, Entity target, Invocation<Player, Float> original) throws Exception {
         return ClientBase.yaw;
+    }
+
+    @WrapInvoke(method = "attack", desc = "(Lnet/minecraft/world/entity/Entity;)V",
+            target = "net/minecraft/world/entity/player/Player/setSprinting", targetDesc = "(Z)V")
+    public static void onAttackSetSprinting(Player player, Entity target, Invocation<Player, Void> original) throws Exception {
+        if (NiloreClient.isReady()) {
+            EventAttackSlowdown event = new EventAttackSlowdown(true);
+            NiloreClient.getInstance().getEventBus().call(event);
+            if (event.isCancelled()) {
+                return;
+            }
+        }
+        original.call();
     }
 
     @Inject(method = "attack", desc = "(Lnet/minecraft/world/entity/Entity;)V", at = @At(At.Type.HEAD))

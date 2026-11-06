@@ -43,6 +43,10 @@ public class GameRendererPatch {
         GuiGraphics graphics = new GuiGraphics(gameRenderer.getMinecraft(), gameRenderer.getMinecraft().renderBuffers().bufferSource());
         Render2DEvent event = new Render2DEvent(graphics.pose(), graphics, partialTick);
         if (NiloreClient.isReady()) {
+            // Each HUD element / module opens its own Renderer.render block, so every one of
+            // them still ends with a full GL state reset. Sharing one canvas across the pass
+            // was measured to be cheaper, but it let one element's blend/colour state leak
+            // into the next one and dimmed the whole UI — keep the per-element reset.
             NiloreClient.getInstance().getEventBus().call(event);
             graphics.pose().pushPose();
             Renderer.render(graphics, glEvent -> {

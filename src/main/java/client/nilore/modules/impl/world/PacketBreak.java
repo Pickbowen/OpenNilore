@@ -185,9 +185,7 @@ extends Module {
         AABB box = BlockUtil.getBoundingBox(pos);
         Vec3 center = box.getCenter();
         double reach = this.range.getValue().doubleValue();
-        Rotation current = RotationHandler.sentRotation != null
-                ? RotationHandler.sentRotation
-                : new Rotation(mc.player.getYRot(), mc.player.getXRot());
+        Rotation current = this.realRotation();
         Vec3 best = null;
         Direction bestFace = null;
         double bestScore = Double.MAX_VALUE;

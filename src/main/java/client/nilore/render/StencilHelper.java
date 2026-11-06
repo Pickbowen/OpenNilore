@@ -36,8 +36,11 @@ public class StencilHelper {
         }
         mask.setClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         mask.clear(Minecraft.ON_OSX);
+        // Everything queued for the screen has to land before we switch render targets.
+        Batch2D.flushAll();
         mask.bindWrite(false);
         drawMask.run();
+        Batch2D.flushAll();
         RenderTarget content = contentTarget.get();
         if (content.width != StencilHelper.mainRenderTarget.width || content.height != StencilHelper.mainRenderTarget.height) {
             content.resize(StencilHelper.mainRenderTarget.width, StencilHelper.mainRenderTarget.height, Minecraft.ON_OSX);
@@ -45,6 +48,7 @@ public class StencilHelper {
         content.clear(Minecraft.ON_OSX);
         content.bindWrite(false);
         drawContent.run();
+        Batch2D.flushAll();
         mainRenderTarget.bindWrite(false);
         RenderSystem.disableBlend();
         stencilShader.use();

@@ -18,23 +18,6 @@ public final class Fonts {
     private static final Set<String> awtFontMissing = ConcurrentHashMap.newKeySet();
     private static final Object AWT_LOCK = new Object();
 
-    /**
-     * Font files touched by the default HUD / ClickGUI. Parsing them is the expensive part
-     * (pingfang is 11 MB), so a background thread does it while the client is still installing
-     * patches instead of on the first text draw.
-     */
-    private static final String[] PRELOAD_FONTS = {
-            "pingfang_sc_regular.ttf",
-            "Poppins-Regular.ttf",
-            "Poppins-Medium.ttf",
-            "Poppins-Bold.ttf",
-            "product_sans_regular.ttf",
-            "quicksand.ttf",
-            "MaterialIcons-Regular.ttf",
-            "niloreicon-Regular.ttf",
-            "AstaSans-Medium.ttf"
-    };
-
     private static final int MAX_RASTER_VARIANTS = 24;
     private static final Map<String, CustomFont> scaledFontCache = new LinkedHashMap<>(16, 0.75f, true) {
         @Override
@@ -115,36 +98,6 @@ public final class Fonts {
         } catch (Exception exception) {
             exception.printStackTrace();
             return null;
-        }
-    }
-
-    private static volatile Thread preloadThread;
-
-    public static void preloadFontsAsync() {
-        Thread thread = new Thread(() -> {
-            for (String name : PRELOAD_FONTS) {
-                try {
-                    awtFont(name);
-                } catch (Throwable ignored) {
-                    // A missing or unreadable font is not fatal; the call sites fall back.
-                }
-            }
-        }, "Nilore-Font-Preload");
-        thread.setDaemon(true);
-        thread.setPriority(Math.max(Thread.MIN_PRIORITY, Thread.NORM_PRIORITY - 1));
-        preloadThread = thread;
-        thread.start();
-    }
-
-    public static void awaitPreload(long millis) {
-        Thread thread = preloadThread;
-        if (thread == null || !thread.isAlive()) {
-            return;
-        }
-        try {
-            thread.join(millis);
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
         }
     }
 

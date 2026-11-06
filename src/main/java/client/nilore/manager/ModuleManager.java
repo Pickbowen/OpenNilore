@@ -21,7 +21,6 @@ import client.nilore.modules.impl.combat.AutoThrow;
 import client.nilore.modules.impl.combat.Backtrack;
 import client.nilore.modules.impl.combat.Critical;
 import client.nilore.modules.impl.combat.CrystalAura;
-import client.nilore.modules.impl.combat.FakeLag;
 import client.nilore.modules.impl.combat.KillAura;
 import client.nilore.modules.impl.exploit.Disabler;
 import client.nilore.modules.impl.exploit.FastPlace;
@@ -31,7 +30,6 @@ import client.nilore.modules.impl.misc.AutoRod;
 import client.nilore.modules.impl.misc.KillSay;
 import client.nilore.modules.impl.misc.MusicPlayer;
 import client.nilore.modules.impl.misc.SafeWalk;
-import client.nilore.modules.impl.movement.CollisionSpeed;
 import client.nilore.modules.impl.movement.SpeedModule;
 import client.nilore.modules.impl.movement.NoSlow;
 import client.nilore.modules.impl.movement.FastWeb;
@@ -90,7 +88,6 @@ public class ModuleManager extends ClientBase {
         this.register(new Critical());
         this.register(new CrystalAura());
         this.register(new KillAura());
-        this.register(new FakeLag());
 
         this.register(new Disabler());
         this.register(new FastPlace());
@@ -103,7 +100,6 @@ public class ModuleManager extends ClientBase {
         this.register(new KillSay());
 
         this.register(new SpeedModule());
-        this.register(new CollisionSpeed());
         this.register(new NoSlow());
         this.register(new FastWeb());
         this.register(new FireballBlink());

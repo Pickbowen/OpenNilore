@@ -119,13 +119,27 @@ public final class FontRenderer {
             if (var5 <= 0f) {
                 var5 = 1f;
             }
+            // Called once per text segment per frame; this used to allocate a fresh
+            // GlyphMetrics every time. Invalidated when the font object or its gui scale
+            // changes, which is exactly when the numbers below can change.
+            if (this.cachedMetrics != null && this.cachedMetricsFont == var3 && this.cachedMetricsScale == var5) {
+                return this.cachedMetrics;
+            }
 
             float var6 = -var4.getAscent() / var5;
             float var7 = (float)var4.getDescent() / var5;
             float var8 = (float)var4.getLeading() / var5;
             float var9 = (float)var4.getHeight() / var5;
             float var10 = var4.getAscent() * 0.7F / var5;
-            return new GlyphMetrics(var6, var7, var9, var10);
+            GlyphMetrics metrics = new GlyphMetrics(var6, var7, var9, var10);
+            this.cachedMetrics = metrics;
+            this.cachedMetricsFont = var3;
+            this.cachedMetricsScale = var5;
+            return metrics;
         }
     }
+
+    private GlyphMetrics cachedMetrics;
+    private CustomFont cachedMetricsFont;
+    private float cachedMetricsScale = Float.NaN;
 }

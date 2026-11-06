@@ -1,7 +1,10 @@
 package client.nilore.modules.impl.player;
 
+import java.util.Random;
+import java.util.concurrent.ThreadLocalRandom;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ClipContext;
@@ -19,16 +22,24 @@ import client.nilore.settings.impl.NumberSetting;
 import client.nilore.utils.game.ItemUtil;
 import client.nilore.utils.game.RotationUtil;
 import client.nilore.utils.rotation.Rotation;
+import client.nilore.utils.rotation.RotationHandler;
+import client.nilore.utils.rotation.RotationSmoother;
 import client.nilore.event.EventTarget;
 
 public class AutoMLG
 extends Module {
     public static AutoMLG INSTANCE;
+    private static final double AIM_SPEED = 55.0;
+    private static final double AIM_SPEED_URGENT = 400.0;
+    private static final float AIM_PITCH_MIN = 87.0f;
+    private static final float AIM_PITCH_SPREAD = 2.0f;
     private final NumberSetting triggerDistanceSetting = new NumberSetting("Fall distance", 3, 1.0f, 10.0f, 0.1f);
     private final NumberSetting predictTicksSetting = new NumberSetting("Predict Ticks", 2, 1.0f, 5.0f, 1.0f);
     private final BooleanSetting solidCheckSetting = new BooleanSetting("Solid check", true);
     private final BooleanSetting recoverySetting = new BooleanSetting("Recorvey", true);
+    private final RotationSmoother rotationSmoother = new RotationSmoother(new Random());
     public Rotation targetRotation = null;
+    private float aimPitch = Float.NaN;
     private float accumulatedFall;
     private double lastY;
     private Integer slotToRestore;
@@ -62,6 +73,8 @@ extends Module {
         this.postActionCooldown = 0;
         this.extraCooldown = 0;
         this.accumulatedFall = 0.0f;
+        this.aimPitch = Float.NaN;
+        this.rotationSmoother.reset();
         this.lastY = mc.player != null ? mc.player.getY() : 0.0;
         super.onEnable();
     }
@@ -80,6 +93,8 @@ extends Module {
         this.postActionCooldown = 0;
         this.extraCooldown = 0;
         this.accumulatedFall = 0.0f;
+        this.aimPitch = Float.NaN;
+        this.rotationSmoother.reset();
         super.onDisable();
     }
 
@@ -127,6 +142,7 @@ extends Module {
         if (mc.player.onGround() || this.accumulatedFall <= 0.0f) {
             this.waterPlaced = false;
             this.readyToPlace = false;
+            this.aimPitch = Float.NaN;
         }
         if (this.recoveryActive) {
             if (this.recoveryDelay > 0) {
@@ -169,19 +185,26 @@ extends Module {
                 }
                 this.placedWaterPos = ownWater;
             }
-            Rotation recoveryRotation = RotationUtil.rotationToBlock(this.placedWaterPos, 0.0f);
+            Rotation recoveryRotation = this.steer(this.rotationTowards(this.placedWaterPos), AIM_SPEED);
             BlockHitResult recoveryHit = this.raycastFluid(recoveryRotation, 4.5);
             if (recoveryHit.getType() == HitResult.Type.MISS || !recoveryHit.getBlockPos().equals(this.placedWaterPos)) {
                 return;
             }
-            this.setTargetRotation(recoveryRotation);
             this.selectSlot(this.waterBucketSlot);
             this.useItem(recoveryRotation);
             this.extraCooldown = 2;
             return;
         }
-        if (!this.waterPlaced && !this.recoveryActive && this.placedWaterPos == null && this.postPlaceCooldown == 0 && this.postActionCooldown == 0 && this.accumulatedFall <= 0.5f && ItemUtil.findItemInRange(0, 9, Items.WATER_BUCKET) < 0 && (slot = ItemUtil.findItemInRange(0, 9, Items.BUCKET)) >= 0 && (bucketPos = this.findBucketPos()) != null && (hit = this.raycastFluid(rotation = RotationUtil.rotationToBlock(bucketPos, 0.0f), 4.5)).getType() != HitResult.Type.MISS && hit.getBlockPos().equals(bucketPos)) {
-            this.setTargetRotation(rotation);
+        if (!this.waterPlaced && !this.recoveryActive && this.placedWaterPos == null && this.postPlaceCooldown == 0 && this.postActionCooldown == 0 && this.accumulatedFall <= 0.5f && ItemUtil.findItemInRange(0, 9, Items.WATER_BUCKET) < 0 && (slot = ItemUtil.findItemInRange(0, 9, Items.BUCKET)) >= 0) {
+            bucketPos = this.findBucketPos();
+            if (bucketPos == null) {
+                return;
+            }
+            rotation = this.steer(this.rotationTowards(bucketPos), AIM_SPEED);
+            hit = this.raycastFluid(rotation, 4.5);
+            if (hit.getType() == HitResult.Type.MISS || !hit.getBlockPos().equals(bucketPos)) {
+                return;
+            }
             this.selectSlot(slot);
             this.useItem(rotation);
             this.postActionCooldown = 8;
@@ -206,13 +229,43 @@ extends Module {
             if (this.solidCheckSetting.getValue() && !this.hasSolidBelow(BlockPos.containing(mc.player.getX(), mc.player.getY(), mc.player.getZ()))) {
                 return;
             }
-            rotation = new Rotation(mc.player.getYRot(), 90.0f);
+            if (Float.isNaN(this.aimPitch)) {
+                this.aimPitch = AIM_PITCH_MIN + ThreadLocalRandom.current().nextFloat() * AIM_PITCH_SPREAD;
+            }
+            rotation = this.steer(new Rotation(RotationHandler.sentRotation != null ? RotationHandler.sentRotation.getYaw() : mc.player.getYRot(), this.aimPitch), ticksLeft <= 1 ? AIM_SPEED_URGENT : AIM_SPEED);
             hit = this.raycastSolid(rotation, 5.0);
-            if (hit.getType() == HitResult.Type.MISS) {
+            if (hit.getType() == HitResult.Type.MISS || !this.isPlacementNearFeet(hit)) {
                 return;
             }
-            this.placeWaterBucket(slot, true);
+            this.placeWaterBucket(slot, rotation, hit);
         }
+    }
+
+    private Rotation steer(Rotation target, double speed) {
+        Rotation from = RotationHandler.sentRotation != null
+                ? RotationHandler.sentRotation
+                : new Rotation(mc.player.getYRot(), mc.player.getXRot());
+        Rotation next = this.rotationSmoother.tick(from, target, speed);
+        next = RotationSmoother.patchConstantRotation(next, from);
+        next = this.rotationSmoother.breakDuplicateDelta(next, from);
+        next.setPitch(Mth.clamp(next.getPitch(), -89.5f, 89.5f));
+        this.setTargetRotation(next);
+        return next;
+    }
+
+    private Rotation rotationTowards(BlockPos blockPos) {
+        Rotation exact = RotationUtil.exactRotation(mc.player.getEyePosition(1.0f), Vec3.atCenterOf(blockPos));
+        return new Rotation(exact.getYaw(), Mth.clamp(exact.getPitch(), -89.5f, 89.5f));
+    }
+
+    private boolean isPlacementNearFeet(BlockHitResult hit) {
+        BlockPos placePos = hit.getBlockPos().relative(hit.getDirection());
+        if (!mc.level.getBlockState(placePos).canBeReplaced()) {
+            return false;
+        }
+        double dx = mc.player.getX() - ((double) placePos.getX() + 0.5);
+        double dz = mc.player.getZ() - ((double) placePos.getZ() + 0.5);
+        return dx * dx + dz * dz <= 4.0 && (double) placePos.getY() <= mc.player.getY() + 0.6;
     }
 
     private int ticksUntilGround() {
@@ -304,27 +357,15 @@ extends Module {
         mc.player.getInventory().selected = slot;
     }
 
-    private void placeWaterBucket(int slot, boolean markPlaced) {
-        Rotation rotation = new Rotation(mc.player.getYRot(), 90.0f);
-        this.setTargetRotation(rotation);
+    private void placeWaterBucket(int slot, Rotation rotation, BlockHitResult hit) {
         this.selectSlot(slot);
         this.useItem(rotation);
-        if (markPlaced) {
-            this.waterPlaced = true;
-        }
+        this.waterPlaced = true;
         this.recoveryActive = this.recoverySetting.getValue();
         this.recoveryDelay = 2;
         this.recoveryCountdown = this.recoveryActive ? 30 : 0;
         this.waterBucketSlot = null;
-        this.placedWaterPos = this.getPlacementBlockPos(rotation);
-    }
-
-    private BlockPos getPlacementBlockPos(Rotation rotation) {
-        BlockHitResult hit = this.raycastSolid(rotation, 4.5);
-        if (hit.getType() == HitResult.Type.MISS) {
-            return null;
-        }
-        return hit.getBlockPos().relative(hit.getDirection());
+        this.placedWaterPos = hit.getBlockPos().relative(hit.getDirection());
     }
 
     private BlockHitResult raycastSolid(Rotation rotation, double range) {
