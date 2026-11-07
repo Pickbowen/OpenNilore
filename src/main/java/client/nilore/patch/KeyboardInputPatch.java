@@ -21,7 +21,7 @@ public class KeyboardInputPatch extends Input {
         double sneakFactor = 0.3;
         input.forwardImpulse = event.getForward();
         input.leftImpulse = event.getStrafe();
-        input.jumping = event.isSprinting();
+        input.jumping = event.isJumping();
         if (isSneaking) {
             input.leftImpulse = (float) (input.leftImpulse * sneakFactor);
             input.forwardImpulse = (float) (input.forwardImpulse * sneakFactor);

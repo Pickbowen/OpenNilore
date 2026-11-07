@@ -21,7 +21,6 @@ import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket;
 import net.minecraft.network.protocol.game.ClientboundRespawnPacket;
 import net.minecraft.network.protocol.game.ClientboundSetEquipmentPacket;
 import net.minecraft.network.protocol.game.ServerboundContainerClosePacket;
-import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
 import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
 import net.minecraft.network.protocol.game.ServerboundUseItemOnPacket;
 import net.minecraft.network.protocol.game.ServerboundUseItemPacket;
@@ -55,8 +54,6 @@ public class NoSlow extends Module {
     public static boolean releaseItemSent;
 
     private enum Step { NONE, ARMED, EATING }
-
-    private static final int FOOD_SWAP_BACK_TIMEOUT = 20;
 
     private final Queue<Packet<ClientGamePacketListener>> inboundQueue = new ArrayDeque<>();
     private InteractionHand useHand     = InteractionHand.MAIN_HAND;
@@ -241,7 +238,12 @@ public class NoSlow extends Module {
             } else if (step == Step.EATING) {
                 if (mc.player.isUsingItem()) {
                     noUseTicks = 0;
-                } else if (++noUseTicks >= FOOD_SWAP_BACK_TIMEOUT) {
+                } else {
+                    // Interrupted (or finished) eat: swap back on this tick instead of sitting on
+                    // the 20-tick timeout. TickEvent runs at the head of Minecraft.tick(), before
+                    // this tick's sendPosition(), so the SWAP_ITEM_WITH_OFFHAND goes out *ahead*
+                    // of the move packet rather than behind it.
+                    ++noUseTicks;
                     release();
                 }
             } else {
@@ -302,11 +304,9 @@ public class NoSlow extends Module {
         Packet<?> p = event.getPacket();
 
         if (!event.isIncoming()) {
-            if (p instanceof ServerboundMovePlayerPacket
-                    && this.step == Step.EATING && !mc.player.isUsingItem()) {
-                this.release();
-                return;
-            }
+            // No swap is emitted from this callback: sending a packet from inside the
+            // PacketSendEvent path re-enters the send pipeline and puts the swap behind the
+            // move packet (the "post" ordering) instead of ahead of it. onTick() owns that now.
             // Send packet handling: use the incoming ping as trigger, not the outgoing pong
             if (p instanceof ServerboundPlayerActionPacket action
                     && action.getAction() == ServerboundPlayerActionPacket.Action.RELEASE_USE_ITEM) {

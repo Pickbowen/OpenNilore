@@ -210,7 +210,7 @@ extends HudElement {
                 if (triple != null) {
                     entry = new KeyBindsHud.KeyBindEntry(triple.first(), triple.second(), triple.isEnabled(), module);
                 }
-            } else if (module.isEnabled() && module.getKey() > 0
+            } else if (module.isEnabled() && module.getKey() != 0 && module.getKey() != -1
                     && !module.getName().equals("Interface")
                     && !module.getName().equals("ClickGui")) {
                 entry = new KeyBindsHud.KeyBindEntry(module.getName(), null, true, module);

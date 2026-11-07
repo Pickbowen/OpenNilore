@@ -30,6 +30,7 @@ import client.nilore.gui.nilore.NiloreRenderer.Row;
 import client.nilore.gui.nilore.NiloreTheme;
 import client.nilore.gui.nilore.NiloreTheme.Palette;
 import client.nilore.modules.Category;
+import client.nilore.modules.KeyBind;
 import client.nilore.modules.Module;
 import client.nilore.modules.impl.render.ClickGuiModule;
 import client.nilore.render.FontPresets;
@@ -846,7 +847,11 @@ public final class NiloreClickGui extends Screen {
             }
         }
         if (binding != null) {
-            binding = null;
+            if (button >= 0 && button <= 7) {
+                binding.setKey(KeyBind.mouseCode(button));
+                binding = null;
+                refresh(now());
+            }
             return true;
         }
         Rect box = searchBox();

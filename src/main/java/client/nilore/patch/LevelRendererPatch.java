@@ -37,6 +37,9 @@ public class LevelRendererPatch {
             Matrix4f projection,
             CallbackInfo callbackInfo) {
         if (NiloreClient.isReady()) {
+            // Frame boundary for the frame-scoped blur capture: everything drawn after this point
+            // (vanilla GUI, HUD, screens) shares one downsample of the framebuffer.
+            client.nilore.utils.render.RenderUtil.beginFrame();
             NiloreClient.getInstance().getEventBus().call(new RenderEvent(poseStack, partialTick));
         }
     }

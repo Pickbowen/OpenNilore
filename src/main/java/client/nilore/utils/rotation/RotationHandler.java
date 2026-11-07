@@ -32,7 +32,6 @@ import client.nilore.modules.impl.player.AutoMLG;
 import client.nilore.modules.impl.player.AutoWebPlace;
 import client.nilore.modules.impl.player.Helper;
 import client.nilore.modules.impl.player.MidPearl;
-import client.nilore.modules.impl.world.PacketBreak;
 import client.nilore.utils.animation.TickTimer;
 import client.nilore.utils.game.MovementUtil;
 import client.nilore.event.EventTarget;
@@ -47,9 +46,6 @@ public class RotationHandler
 
     public static void setTargetRotation(Rotation rotation) {
         targetRotation = rotation;
-        // Keep the value handed to other patches (attack direction reads this via
-        // PlayerPatch) in the same accumulated frame as the outgoing rotation and apply
-        // the same naturalisation - otherwise the two disagree by a multiple of 360.
         float y = rotation.getYaw();
         if (sentRotation != null) {
             y = sentRotation.getYaw() + Mth.wrapDegrees(y - sentRotation.getYaw());
@@ -127,13 +123,7 @@ public class RotationHandler
                 RotationHandler.setTargetRotation(TargetStrafe.aimRotation());
             } else if (antiKB != null && antiKB.isEnabled() && AntiKB.rotation != null) {
                 RotationHandler.setTargetRotation(AntiKB.rotation);
-            } else if (PacketBreak.INSTANCE != null && PacketBreak.INSTANCE.isEnabled()
-                    && PacketBreak.INSTANCE.targetRotation != null) {
-                RotationHandler.setTargetRotation(PacketBreak.INSTANCE.targetRotation);
             } else {
-                // NO module owns the rotation this tick -> hands off completely. The
-                // outgoing yaw/pitch stay exactly vanilla's; we only keep sentRotation in
-                // sync so the next silent-rotation starts from the right base.
                 isRotating = false;
             }
         }
@@ -166,13 +156,8 @@ public class RotationHandler
             if (mc.player == null) {
                 return;
             }
-            // Nobody owns the rotation: vanilla's own yaw/pitch go out untouched apart from
-            // the naturalisation below.
             if (!isRotating) {
                 prevSentRotation = sentRotation;
-                // Keep sentRotation in the same (accumulated) yaw frame as the silent
-                // rotation used: vanilla's yRot may sit 360 apart from it, and copying the
-                // wrapped value straight in made a -360 delta (Grim AimModulo360).
                 float vanillaYaw = e.getYaw();
                 float vanillaPitch = e.getPitch();
                 if (sentRotation != null) {
@@ -182,12 +167,6 @@ public class RotationHandler
                 float refPitch = sentRotation != null ? sentRotation.getPitch() : vanillaPitch;
                 float naturalYaw = naturalizeYaw(vanillaYaw, refYaw);
                 float naturalPitch = naturalizePitch(vanillaPitch, refPitch);
-                // Write even when the naturalisation was a no-op. sentRotation records this
-                // value, so leaving the packet on vanilla's own frame while sentRotation sat a
-                // multiple of 360 away made the next tick's write jump by that much - Grim
-                // AimModulo360, which fired on every tick spent standing at a yaw near 0. When
-                // nothing is quantised the value written is vanilla's own, so this changes
-                // nothing on the ticks that do not need a nudge.
                 e.setYaw(naturalYaw);
                 e.setPitch(naturalPitch);
                 prevRotation = sentRotation = new Rotation(naturalYaw, Mth.clamp(naturalPitch, -90.0f, 90.0f));
@@ -199,9 +178,6 @@ public class RotationHandler
                 targetRotation = prevRotation = new Rotation(mc.player.getYRot(), mc.player.getXRot());
             }
             prevSentRotation = sentRotation;
-            // Never wrap the outgoing yaw: the local yRot accumulates past +/-180 when the
-            // player spins the view, and normalising here would turn an identical rotation
-            // into a -360 delta (Grim AimModulo360).
             float baseYaw = sentRotation != null ? sentRotation.getYaw() : mc.player.getYRot();
             float yaw = baseYaw + Mth.wrapDegrees(targetRotation.getYaw() - baseYaw);
             float pitch = Mth.clamp(targetRotation.getPitch(), -90.0f, 90.0f);
@@ -220,7 +196,6 @@ public class RotationHandler
         }
     }
 
-    /** Rotation deltas landing exactly on these steps are a machine fingerprint. */
     private static final double[] ROTATION_STEPS = new double[]{
             0.0, 5.625, 11.25, 16.875, 22.5, 28.125, 33.75, 39.375, 45.0,
             50.625, 56.25, 61.875, 67.5, 73.125, 78.75, 84.375, 90.0};
@@ -253,12 +228,6 @@ public class RotationHandler
         return Math.abs(ratio - (double) Math.round(ratio)) <= 1.0E-10;
     }
 
-    /**
-     * Adds a sub-perceptual nudge whenever the outgoing rotation looks quantised: the
-     * delta hits a known step, the delta is an exact multiple of 360, or the value itself
-     * sits on a 360 boundary. 0.005 deg is far below anything a player or a hitbox check
-     * would notice, but it breaks the exact-match signatures.
-     */
     private static float naturalizeYaw(float yaw, float reference) {
         double delta = Math.abs(Mth.wrapDegrees(yaw - reference));
         double mod = Math.abs(yaw % 360.0f);
@@ -277,18 +246,9 @@ public class RotationHandler
                 : pitch;
     }
 
-    /** Yaw/pitch of the last rotation packet that actually left the client. NaN = none yet. */
     private static float lastWireYaw = Float.NaN;
     private static float lastWirePitch = Float.NaN;
 
-    /**
-     * Hard invariant on top of the naturalisation: two consecutive rotation packets must
-     * never carry the same yaw AND pitch. Grim's AimDuplicateLook flags exactly that
-     * ({@code oldYaw == newYaw && oldPitch == newPitch}). A held aim quantises to the same
-     * cell every tick, so without this the packet repeats itself for as long as the target
-     * stands still. This runs on the value the packet leaves with, so it holds whichever
-     * branch produced it.
-     */
     private static void guardDuplicateRotation(MotionEvent e) {
         float yaw = e.getYaw();
         float pitch = Mth.clamp(e.getPitch(), -90.0f, 90.0f);
@@ -300,15 +260,6 @@ public class RotationHandler
         lastWirePitch = pitch;
     }
 
-    /**
-     * Moves the yaw by exactly one sensitivity cell.
-     *
-     * <p>The old version added an arbitrary 0.0025~0.0075 deg, which broke the duplicate
-     * while stepping off the lattice Grim's AimProcessor reconstructs the sensitivity from:
-     * every such packet is a delta that cannot have come from a mouse. One whole cell keeps
-     * both invariants - the value differs from the previous packet (by 0.15 deg at default
-     * sensitivity, imperceptible) and the delta is still a multiple of the GCD.
-     */
     private static float nudgeApart(float value) {
         double step = RotationSmoother.sensitivityStep();
         float delta = (float) (step > 0.0 ? step : 0.15);
@@ -316,8 +267,6 @@ public class RotationHandler
             delta = -delta;
         }
         float nudged = value + delta;
-        // At a large accumulated yaw the addend can sit below one ULP and vanish; widen it
-        // until the float actually moves.
         for (int i = 0; nudged == value && i < 8; i++) {
             delta *= 2.0f;
             nudged = value + delta;

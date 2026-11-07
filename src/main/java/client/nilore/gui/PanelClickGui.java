@@ -202,9 +202,7 @@ extends Screen {
             return true;
         }
         if (this.keybindOverlay.isVisible()) {
-            if (button == 0) {
-                this.keybindOverlay.cancel();
-            }
+            this.keybindOverlay.onMousePress(button);
             return true;
         }
         int centerX = this.width / 2;

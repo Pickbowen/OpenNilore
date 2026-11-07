@@ -161,7 +161,7 @@ public class JumpResetMode extends AntiKBMode {
         if (canJumpNow(player)) {
             this.jumpTicks = 1;
         }
-        logger.info("[AntiKB] JumpReset kb=({},{},{}) onGround={} rotating={}",
+        logger.debug("[AntiKB] JumpReset kb=({},{},{}) onGround={} rotating={}",
                 motion.getXa(), motion.getYa(), motion.getZa(), player.onGround(), AntiKB.rotation != null);
     }
 
@@ -186,7 +186,7 @@ public class JumpResetMode extends AntiKBMode {
         if (this.shouldPredictJump(player)) {
             isJumping = true;
             this.jumpTicks = 1;
-            logger.info("[AntiKB] JumpReset predict jump tick={}", player.tickCount);
+            logger.debug("[AntiKB] JumpReset predict jump tick={}", player.tickCount);
         }
         if (this.jumpTicks > 0 && !Scaffold.INSTANCE.isEnabled()) {
             if (player.isOnFire()) {
@@ -204,7 +204,7 @@ public class JumpResetMode extends AntiKBMode {
             }
             mc.options.keyJump.setDown(true);
             this.jumpTicks--;
-            logger.info("[AntiKB] JumpReset jump tick={} onGround={}", player.tickCount, player.onGround());
+            logger.debug("[AntiKB] JumpReset jump tick={} onGround={}", player.tickCount, player.onGround());
             return;
         }
         if (!Scaffold.INSTANCE.isEnabled()) {

@@ -114,6 +114,7 @@ public class KillAura extends Module {
     public final BooleanSetting fakeAutoBlock   = new BooleanSetting("Fake AutoBlock", false);
 
     public final NumberSetting reach       = new NumberSetting("Reach", 3.0, 1.0, 4.0, 0.1);
+    public final NumberSetting rotationSpeed = new NumberSetting("Rotation Speed", 180.0, 1.0, 180.0, 1.0);
     public final NumberSetting maxAps      = new NumberSetting("Max APS", 9, 1.0, 20.0, 1.0);
     public final NumberSetting minAps      = new NumberSetting("Min APS", 8, 1.0, 20.0, 1.0);
     public final NumberSetting switchSize  = new NumberSetting("Switch Size", 1.0, 1.0, 5.0, 1.0,
@@ -131,16 +132,6 @@ public class KillAura extends Module {
     private float attacks;
     private int targetIndex;
     public int sprintTickCounter;
-    /** Naven markSprintReleased: one crit window releases sprint only once. */
-    private boolean sprintCancelled;
-
-    public void markSprintReleased() {
-        this.sprintCancelled = true;
-    }
-
-    public boolean isSprintReleased() {
-        return this.sprintCancelled;
-    }
     /** RotationHandler 每 tick 拾取的瞄准朝向 (Naven: RotationManager.rotations)。 */
     public Rotation rotation;
 
@@ -169,7 +160,6 @@ public class KillAura extends Module {
         this.sprintTickCounter = 0;
         this.attackTimes = 0;
         this.rotation = null;
-        this.sprintCancelled = false;
         super.onDisable();
     }
 
@@ -200,16 +190,7 @@ public class KillAura extends Module {
             targetList.clear();
             this.sprintTickCounter = 0;
             this.attacks = 0.0f;
-            this.sprintCancelled = false;
             return;
-        }
-
-        // Naven: reset sprintReleased every tick - next crit window may release again.
-        if (!isSprintReleaseWindow()
-                || mc.player.isInWater() || mc.player.isInLava()
-                || mc.player.isPassenger() || mc.player.isFallFlying()
-                || mc.player.getAbilities().flying) {
-            this.sprintCancelled = false;
         }
 
         boolean isSwitch = this.switchSize.getValue().intValue() > 1
@@ -227,7 +208,6 @@ public class KillAura extends Module {
 
         if (targetList.isEmpty()) {
             target = null;
-            this.sprintCancelled = false;
             return;
         }
 
@@ -396,8 +376,15 @@ public class KillAura extends Module {
                 : new Rotation(mc.player.getYRot(), mc.player.getXRot());
         float f = (float) (mc.options.sensitivity().get().doubleValue() * 0.6 + 0.2);
         float gcd = f * f * f * 1.2f;
-        float deltaYaw = raw.getYaw() - last.getYaw();
+        float deltaYaw = Mth.wrapDegrees(raw.getYaw() - last.getYaw());
         float deltaPitch = raw.getPitch() - last.getPitch();
+        double maxStep = this.rotationSpeed.getValue().doubleValue();
+        double dist = Math.sqrt(deltaYaw * deltaYaw + deltaPitch * deltaPitch);
+        if (maxStep > 0.0 && dist > maxStep) {
+            float k = (float) (maxStep / dist);
+            deltaYaw *= k;
+            deltaPitch *= k;
+        }
         return new Rotation(last.getYaw() + (deltaYaw - deltaYaw % gcd),
                 last.getPitch() + (deltaPitch - deltaPitch % gcd));
     }
@@ -563,11 +550,6 @@ public class KillAura extends Module {
         return new MotionSimulator(mc.player).findLandingBlock(1) != null;
     }
 
-    /** Naven isSprintReleaseWindow: sprint is only released mid-air (fall-crit window). */
-    public static boolean isSprintReleaseWindow() {
-        return mc.player != null && !mc.player.onGround();
-    }
-
     private boolean canAttackTarget() {
         return target != null && mc.player != null
                 && target.getBoundingBox().distanceToSqr(mc.player.position()) <= 12.25
@@ -575,21 +557,54 @@ public class KillAura extends Module {
     }
 
     /**
-     * Naven shouldStopSprint: release happens in one narrow window only - airborne + in reach
-     * + not already released + NOXZ not owning the input. On the ground sprint is never
-     * touched, so running never "drops and instantly recovers".
+     * The crit gate. While it holds, the sprint key is dropped and the sprint flag cleared from the
+     * SprintEvent handler, so the swing that follows lands as a crit instead of a sprint hit. The
+     * 3.5-block reach (12.25 squared) and the velocity interlocks are what keep the release from
+     * firing at the wrong time.
+     *
+     * <p>Per tick by construction: every caller re-evaluates it, so the moment the target leaves
+     * 3.5 blocks (or velocity takes over, or keepSprint is off) the sprint comes straight back.
+     * 60ad1c0 曾把它换成 sticky 的 sprintCancelled + 单一复位点，结果是打完人目标被击退、
+     * 或落地时 onGround 没及时翻 true，标记就永远粘着，疾跑再也回不来。
      */
-    public boolean shouldStopSprint() {
-        if (!this.isEnabled() || !this.keepSprint.getValue() || this.sprintCancelled) {
+    public boolean canCritUnderVelocity() {
+        if (mc.player == null || mc.level == null || target == null) {
             return false;
         }
-        if (mc.player == null || target == null || mc.player.isUsingItem()) {
+        if (AntiKB.INSTANCE != null && AntiKB.INSTANCE.isEnabled()) {
+            if (NoXZMode.isInDelayWindow() && shouldKeepSprintInDelayWindow()) {
+                return false;
+            }
+            if (NoXZMode.isCountering()) {
+                return false;
+            }
+            if (AntiKB.mode.is("Jump Reset") && JumpResetMode.isJumping) {
+                return false;
+            }
+        }
+        if (target.distanceToSqr(mc.player) > 12.25) {
             return false;
         }
-        if (NoXZMode.isInDelayWindow() && shouldKeepSprintInDelayWindow()) {
+        if (mc.player.isDeadOrDying() || !this.keepSprint.getValue()) {
             return false;
         }
-        return this.canAttackTarget() && isSprintReleaseWindow();
+        return !mc.player.isUsingItem() || !mc.options.keyUse.isDown();
+    }
+
+    /**
+     * SprintEvent sits right before LocalPlayer.tick() calls super.tick(), which is the only window
+     * where releasing the sprint still produces a STOP_SPRINTING packet before the attack. Later
+     * than this the client has already moved with the +30% sprint attribute for the tick.
+     */
+    @EventTarget
+    public void onSprint(SprintEvent sprintEvent) {
+        if (!this.canCritUnderVelocity()) {
+            return;
+        }
+        mc.options.keySprint.setDown(false);
+        if (mc.player != null && mc.player.isSprinting()) {
+            mc.player.setSprinting(false);
+        }
     }
 
     /**

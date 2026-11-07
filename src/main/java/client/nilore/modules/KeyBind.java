@@ -4,6 +4,8 @@ import java.util.HashMap;
 import java.util.Map;
 
 public class KeyBind {
+    private static final int MOUSE_BASE = -1000;
+    private static final int MOUSE_MAX_BUTTON = 7;
     private int keyCode;
     private static final Map<Integer, String> bindings = new HashMap<>();
 
@@ -11,9 +13,28 @@ public class KeyBind {
         this.keyCode = keyCode;
     }
 
+    public static int mouseCode(int button) {
+        return MOUSE_BASE - button;
+    }
+
+    public static boolean isMouse(int keyCode) {
+        return keyCode <= MOUSE_BASE && keyCode >= MOUSE_BASE - MOUSE_MAX_BUTTON;
+    }
+
+    public static int mouseButton(int keyCode) {
+        return MOUSE_BASE - keyCode;
+    }
+
+    public static String mouseName(int button) {
+        return "M" + (button + 1);
+    }
+
     public String getName() {
         if (this.keyCode == 0) {
             return "None";
+        }
+        if (isMouse(this.keyCode)) {
+            return mouseName(mouseButton(this.keyCode));
         }
         return bindings.getOrDefault(this.keyCode, "Unknown");
     }

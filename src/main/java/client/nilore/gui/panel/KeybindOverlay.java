@@ -76,17 +76,32 @@ extends ClientBase {
             return true;
         }
         if (this.targetModule != null && keyCode != -1) {
-            this.targetModule.setKey(keyCode);
-            if (NiloreClient.isReady()) {
-                NiloreClient.instance.getConfigManager().saveAll();
-            }
-            KeyBind keyBind = new KeyBind(keyCode);
-            String keyName = keyBind.getName();
-            PanelClickGui.panelClickGui.addToast(this.targetModule.getName() + " bound to " + keyName.toUpperCase());
-            this.cancel();
+            this.bind(keyCode);
             return true;
         }
         return false;
+    }
+
+    public boolean onMousePress(int button) {
+        if (!this.isVisible() || this.targetModule == null) {
+            return false;
+        }
+        if (button < 0 || button > 7) {
+            return false;
+        }
+        this.bind(KeyBind.mouseCode(button));
+        return true;
+    }
+
+    private void bind(int keyCode) {
+        this.targetModule.setKey(keyCode);
+        if (NiloreClient.isReady()) {
+            NiloreClient.instance.getConfigManager().saveAll();
+        }
+        KeyBind keyBind = new KeyBind(keyCode);
+        String keyName = keyBind.getName();
+        PanelClickGui.panelClickGui.addToast(this.targetModule.getName() + " bound to " + keyName.toUpperCase());
+        this.cancel();
     }
 
     private void updateAlpha() {
@@ -132,7 +147,7 @@ extends ClientBase {
                 GlHelper.drawText(text, textX, textY, textFont, textColor);
             }
             textFont = FontPresets.axiformaRegular(16.0f * scale);
-            text = "Press any key to bind";
+            text = "Press any key or mouse button to bind";
             textWidth = GlHelper.getStringWidth(text, textFont);
             textX = (float)boxX + (boxWidth - textWidth) / 2.0f;
             textY = (float)boxY + 105.0f * scale;

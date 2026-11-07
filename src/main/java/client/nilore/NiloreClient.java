@@ -44,6 +44,7 @@ import client.nilore.patch.LivingEntityPatch;
 import client.nilore.patch.LivingEntityRendererPatch;
 import client.nilore.patch.LocalPlayerPatch;
 import client.nilore.patch.MinecraftPatch;
+import client.nilore.patch.MouseHandlerPatch;
 import client.nilore.patch.PacketUtilsPatch;
 import client.nilore.patch.PlayerPatch;
 import client.nilore.patch.PlayerTabOverlayPatch;
@@ -184,6 +185,7 @@ public class NiloreClient extends ClientBase {
         PatchRegistry.register(ConnectionPatch.class);
         PatchRegistry.register(PacketUtilsPatch.class);
         PatchRegistry.register(KeyboardHandlerPatch.class);
+        PatchRegistry.register(MouseHandlerPatch.class);
         PatchRegistry.register(KeyboardInputPatch.class);
         PatchRegistry.register(ChatScreenPatch.class);
         PatchRegistry.register(ChatComponentPatch.class);

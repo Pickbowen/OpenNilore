@@ -30,6 +30,7 @@ import client.nilore.modules.impl.misc.AutoRod;
 import client.nilore.modules.impl.misc.KillSay;
 import client.nilore.modules.impl.misc.MusicPlayer;
 import client.nilore.modules.impl.misc.SafeWalk;
+import client.nilore.modules.impl.movement.LegitTelly;
 import client.nilore.modules.impl.movement.SpeedModule;
 import client.nilore.modules.impl.movement.NoSlow;
 import client.nilore.modules.impl.movement.FastWeb;
@@ -108,6 +109,7 @@ public class ModuleManager extends ClientBase {
         this.register(new NoDelay());
         this.register(new NoPush());
         this.register(new Scaffold());
+        this.register(new LegitTelly());
         this.register(new Sprint());
         this.register(new TargetStrafe());
 

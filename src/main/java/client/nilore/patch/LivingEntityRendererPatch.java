@@ -13,7 +13,6 @@ import net.minecraft.world.entity.LivingEntity;
 import client.nilore.ClientBase;
 import client.nilore.NiloreClient;
 import client.nilore.asm.Invocation;
-import client.nilore.event.impl.RenderEntityEvent;
 import client.nilore.event.impl.RotationAnimationEvent;
 import client.nilore.modules.impl.render.FakeAntiAim;
 import client.nilore.modules.impl.render.esp.SkeletonCache;
@@ -29,12 +28,6 @@ public class LivingEntityRendererPatch {
             LivingEntityRenderer<?, ?> renderer, LivingEntity entity, float yaw, float partialTick,
             PoseStack poseStack, MultiBufferSource bufferSource, int packedLight, CallbackInfo callbackInfo) {
         if (!NiloreClient.isReady()) return;
-        RenderEntityEvent.Post pre = new RenderEntityEvent.Post(renderer, entity, poseStack, bufferSource, partialTick, packedLight);
-        NiloreClient.getInstance().getEventBus().call(pre);
-        if (pre.isCancelled()) {
-            callbackInfo.cancel();
-            return;
-        }
         applyFakeAntiAimHead(entity, partialTick);
     }
 
@@ -92,9 +85,6 @@ public class LivingEntityRendererPatch {
             entity.yHeadRotO = savedYHeadRotO;
             headPoked = false;
         }
-        if (!NiloreClient.isReady()) return;
-        RenderEntityEvent.Pre post = new RenderEntityEvent.Pre(renderer, entity, poseStack, bufferSource, partialTick, packedLight);
-        NiloreClient.getInstance().getEventBus().call(post);
     }
 
     // PatchTransformer.wrapInvoke now tries strict owner+name+desc matching first,

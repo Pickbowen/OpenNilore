@@ -143,7 +143,7 @@ public class Critical extends Module {
             return;
         }
         if (mc.player.onGround() && mc.player.isSprinting() && this.isAttack) {
-            event.setSprinting(true);
+            event.setJumping(true);
         }
     }
 

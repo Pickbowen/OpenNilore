@@ -166,7 +166,7 @@ extends Module {
     public void onStrafe(StrafeEvent strafeEvent) {
         strafeEvent.setForward(0.0f);
         strafeEvent.setStrafe(0.0f);
-        strafeEvent.setSprinting(false);
+        strafeEvent.setJumping(false);
     }
 
     @EventTarget

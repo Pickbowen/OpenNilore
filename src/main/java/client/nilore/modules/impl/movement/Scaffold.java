@@ -78,11 +78,8 @@ public class Scaffold extends Module {
     public final ModeSetting blockCounterStyle = new ModeSetting("Block Counter Style", "Amunix", "Modern", "Naven", "Nitro").withDefault("Nitro");
     public final NumberSetting nitroOffsetY = new NumberSetting("Nitro Offset", 90, 0, 220, 5, () -> this.blockCounterStyle.is("Nitro"));
     public final BooleanSetting onTickRot = new BooleanSetting("OnTickRot", false);
-    public final NumberSetting rotationSpeed = new NumberSetting("Rotation Speed", 153.9, 0, 360, 5, () -> !this.syncRotSpeed.getValue());
-    public final NumberSetting jitter = new NumberSetting("Jitter", 2.5, 0.0, 5.0, 0.1);
-    public final BooleanSetting syncRotSpeed = new BooleanSetting("Sync RotSpeed", false);
-    public final NumberSetting turnSpeed = new NumberSetting("Turn Speed", 73.4, 0, 360, 5, this.syncRotSpeed::getValue);
-    public final NumberSetting returnSpeed = new NumberSetting("Return Speed", 101.8, 0, 360, 5, this.syncRotSpeed::getValue);
+    public final NumberSetting rotationSpeed = new NumberSetting("Rotation Speed", 153.9, 0, 360, 5);
+    public final ModeSetting moveFix = new ModeSetting("Move Fix", "Silent", "None", "Silent").withDefault("Silent");
     public final ModeSetting switchMode = new ModeSetting("Switch Mode", "Normal", "Hotbar", "Full").withDefault("Hotbar");
     public final BooleanSetting bpsLimit = new BooleanSetting("Limit BPS", true);
     public final NumberSetting bps = new NumberSetting("BPS", 3.5, 2.0, 10.0, 0.1, this.bpsLimit::getValue);
@@ -95,7 +92,6 @@ public class Scaffold extends Module {
     public Rotation rots = new Rotation();
     public Rotation lastRots = new Rotation();
     private final RotationSmoother rotSmoother = new RotationSmoother(new Random());
-    private final Random jitterRandom = new Random();
     public int targetYLevel = -1;
     public int velocityDelay = 0;
 
@@ -138,8 +134,6 @@ public class Scaffold extends Module {
             this.rots.setYawPitch(mc.player.getYRot() - 180.0f, mc.player.getXRot());
             this.lastRots.setYawPitch(mc.player.yRotO - 180.0f, mc.player.xRotO);
             this.currentPlacement = null;
-            this.cachedOffset = Float.NaN;
-            this.lastKeyMask = -1;
             this.bpsCut = false;
             this.targetYLevel = 10000;
             this.velocityDelay = 0;
@@ -225,9 +219,12 @@ public class Scaffold extends Module {
         }
     }
 
-    @EventTarget
+    @EventTarget(value = 0)
     public void onStrafe(StrafeEvent strafeEvent) {
         if (mc.player == null) return;
+        if (this.moveFix.is("Silent") && this.currentPlacement != null && this.rots != null) {
+            MovementUtil.handleStrafe(strafeEvent, this.rots.getYaw());
+        }
         if (!this.bpsLimit.getValue()) return;
         double limit = this.bps.getValue().doubleValue();
         if (limit >= 10.0) return;
@@ -668,231 +665,133 @@ public class Scaffold extends Module {
     private void calculateTargetRotation() {
         if (this.currentPlacement == null || mc.player == null) return;
 
-        if (!mc.level.getBlockState(this.currentPlacement.position.relative(this.currentPlacement.facing)).canBeReplaced()) {
-            return;
+        // 1. 基于移动方向计算基础yaw (Naven风格)
+        float realYaw = mc.player.getYRot();
+        if (mc.options.keyDown.isDown()) {
+            realYaw += 180.0f;
+            if (mc.options.keyLeft.isDown()) realYaw += 45.0f;
+            else if (mc.options.keyRight.isDown()) realYaw -= 45.0f;
+        } else if (mc.options.keyUp.isDown()) {
+            if (mc.options.keyLeft.isDown()) realYaw -= 45.0f;
+            else if (mc.options.keyRight.isDown()) realYaw += 45.0f;
+        } else if (mc.options.keyRight.isDown()) {
+            realYaw += 90.0f;
+        } else if (mc.options.keyLeft.isDown()) {
+            realYaw -= 90.0f;
         }
 
-        Rotation held = RotationHandler.targetRotation;
-        if (held != null && RayTraceUtil.canRayTrace(
-                held, this.currentPlacement.facing, this.currentPlacement.position, true)) {
-            return;
-        }
-
-        this.raycastBudget = ROTATION_RAYCAST_BUDGET;
-
-        Vec3 eye = mc.player.getEyePosition();
-        int keyMask = (mc.options.keyUp.isDown() ? 1 : 0)
-                | (mc.options.keyDown.isDown() ? 2 : 0)
-                | (mc.options.keyLeft.isDown() ? 4 : 0)
-                | (mc.options.keyRight.isDown() ? 8 : 0);
-        if (!this.mode.is("Normal") || keyMask != this.lastKeyMask) {
-            this.lastKeyMask = keyMask;
-            this.cachedOffset = baseYaw() - mc.player.getYRot();
-        }
-        float yaw = mc.player.getYRot() + this.cachedOffset;
+        float yaw = realYaw - 180.0f;
         float idealPitch = 75.5f;
         float currentPitch = this.rots.getPitch();
-        float exactPitch = RotationUtil.exactRotation(eye,
-                Vec3.atCenterOf(this.currentPlacement.position)
-                        .add(Vec3.atLowerCornerOf(this.currentPlacement.facing.getNormal()).scale(0.5)))
-                .getPitch();
 
+        // 2. 理想 pitch 优先: 直线搭路时 75.5° 全程有效, 旋转恒定 = 最流畅状态。
         if (isRotationValidForPlacement(new Rotation(yaw, idealPitch))) {
             applyRotationWithSpeed(yaw, idealPitch);
             return;
         }
 
-        if (isRotationValidForPlacement(new Rotation(yaw, exactPitch))) {
-            applyRotationWithSpeed(yaw, exactPitch);
-            return;
-        }
-
+        // 3. 75.5 失效: 当前 pitch 仍能命中就原地不动 —— 不要在理想角和就近角之间来回
+        //    横跳(调试证实 75.5↔83~88 每 tick 乒乓, 这就是"放一次甩一次"的直接原因),
+        //    只在几何真正变化时移动。
         if (isRotationValidForPlacement(new Rotation(yaw, currentPitch))) {
             applyRotationWithSpeed(yaw, currentPitch);
             return;
         }
 
+        // 4. 当前 pitch 也失效: 从当前 pitch 双向外扩, 取最小修正步。
         Float nearest = findValidPitchNear(yaw, currentPitch);
         if (nearest != null) {
             applyRotationWithSpeed(yaw, nearest);
             return;
         }
 
+        // 5. 当前邻域彻底无解: 从理想角就近找, 把旋转拉回基准。
         Float towardIdeal = findValidPitchNear(yaw, idealPitch);
         if (towardIdeal != null) {
             applyRotationWithSpeed(yaw, towardIdeal);
             return;
         }
 
-        if (isRotationValidForPlacement(new Rotation(yaw + 45.0f, exactPitch))) {
-            applyRotationWithSpeed(yaw + 45.0f, exactPitch);
-            return;
-        }
-
-        if (isRotationValidForPlacement(new Rotation(yaw - 45.0f, exactPitch))) {
-            applyRotationWithSpeed(yaw - 45.0f, exactPitch);
-            return;
-        }
-
-        if (mc.player != null) {
-            Rotation direct = RotationUtil.exactRotation(eye,
-                    faceAimPoint(this.currentPlacement.position, this.currentPlacement.facing, eye));
-            if (isRotationValidForPlacement(direct)) {
-                applyRotationWithSpeed(direct.getYaw(), direct.getPitch());
-                return;
-            }
-        }
-
-        Rotation optimal = findOptimalRotation();
+        // 6. pitch 无解(yaw 偏了) -> yaw+pitch 全搜
+        Rotation optimal = findOptimalRotation(yaw);
         if (optimal != null) {
             applyRotationWithSpeed(optimal.getYaw(), optimal.getPitch());
             return;
         }
 
+        // 7. 全部失败: 保持当前旋转。绝不明知 raytrace 无效还把 75.5 发出去。
         applyRotationWithSpeed(yaw, currentPitch);
     }
 
-    private int raycastBudget;
-    private float cachedOffset = Float.NaN;
-    private int lastKeyMask = -1;
-    private static final int ROTATION_RAYCAST_BUDGET = 72;
-    private static final double[] FACE_GRID = {0.5, 0.15, 0.85};
-
     private boolean isRotationValidForPlacement(Rotation rotation) {
         if (this.currentPlacement == null) return false;
-        if (this.raycastBudget <= 0) return false;
-        this.raycastBudget--;
         return RayTraceUtil.canRayTrace(rotation, this.currentPlacement.facing, this.currentPlacement.position, true);
     }
 
+    /**
+     * 从 center(理想 pitch)向两侧对称外扩(向下最多 30°, 向上直到 90°), 取距 center
+     * 最近的有效 pitch。以理想角为中心而不是当前 pitch, 保证偏离后始终被拉回基准。
+     */
     private Float findValidPitchNear(float yaw, float center) {
         if (this.currentPlacement == null) return null;
 
-        for (float offset = 0.0f; offset <= 30.0f; offset += 3.0f) {
+        for (float offset = 0.0f; offset <= 30.0f; offset += 0.3f) {
             float down = Mth.clamp(center - offset, -90.0f, 90.0f);
-            if (this.probePitch(yaw, down)) {
-                return this.refinePitch(yaw, center, offset, true);
+            if (isRotationValidForPlacement(new Rotation(yaw, down))) {
+                return down;
             }
             float up = center + offset;
-            if (up <= 90.0f && this.probePitch(yaw, up)) {
-                return this.refinePitch(yaw, center, offset, false);
+            if (up <= 90.0f && isRotationValidForPlacement(new Rotation(yaw, up))) {
+                return up;
             }
         }
         return null;
     }
 
-    private boolean probePitch(float yaw, float pitch) {
-        if (this.raycastBudget <= 0) return false;
-        return this.isRotationValidForPlacement(new Rotation(yaw, pitch));
-    }
+    private Rotation findOptimalRotation(float baseYaw) {
+        if (this.currentPlacement == null) return null;
 
-    private Float refinePitch(float yaw, float center, float coarseOffset, boolean downward) {
-        float start = Math.max(0.0f, coarseOffset - 3.0f);
-        for (float offset = start; offset < coarseOffset; offset += 0.3f) {
-            float test = downward ? Mth.clamp(center - offset, -90.0f, 90.0f) : center + offset;
-            if (test > 90.0f) break;
-            if (this.probePitch(yaw, test)) {
-                return test;
-            }
-        }
-        return downward ? Mth.clamp(center - coarseOffset, -90.0f, 90.0f) : center + coarseOffset;
-    }
+        for (float yawOffset = 0.0f; yawOffset < 180.0f; yawOffset++) {
+            float currentPitch = this.rots.getPitch();
+            for (float pitchOffset = 0.0f; pitchOffset < 25.0f; pitchOffset++) {
+                for (int i = 0; i < 2; i++) {
+                    float testPitch = currentPitch - pitchOffset * (i == 0 ? 1 : -1);
+                    testPitch = Mth.clamp(testPitch, -90.0f, 90.0f);
 
-    private Rotation findOptimalRotation() {
-        if (this.currentPlacement == null || mc.player == null) return null;
-        Vec3 eye = mc.player.getEyePosition();
-        BlockPos pos = this.currentPlacement.position;
-        Direction face = this.currentPlacement.facing;
-        Rotation current = this.rots != null
-                ? this.rots
-                : new Rotation(mc.player.getYRot(), mc.player.getXRot());
-        Rotation best = null;
-        double bestScore = Double.MAX_VALUE;
-        for (double u : FACE_GRID) {
-            for (double v : FACE_GRID) {
-                Vec3 point = faceSamplePoint(pos, face, u, v);
-                if (point.distanceToSqr(eye) > 20.25) continue;
-                Rotation candidate = RotationUtil.exactRotation(eye, point);
-                if (!RayTraceUtil.canRayTrace(candidate, face, pos, true)) continue;
-                double score = Math.abs(Mth.wrapDegrees(candidate.getYaw() - current.getYaw()))
-                        + Math.abs(candidate.getPitch() - current.getPitch()) * 1.5;
-                if (score < bestScore) {
-                    bestScore = score;
-                    best = candidate;
+                    Rotation test1 = new Rotation(baseYaw + yawOffset, testPitch);
+                    if (isRotationValidForPlacement(test1)) return test1;
+
+                    Rotation test2 = new Rotation(baseYaw - yawOffset, testPitch);
+                    if (isRotationValidForPlacement(test2)) return test2;
                 }
             }
         }
-        return best;
-    }
-
-    private static Vec3 faceSamplePoint(BlockPos pos, Direction face, double u, double v) {
-        double inset = 0.15;
-        double minX = pos.getX() + inset;
-        double maxX = pos.getX() + 1.0 - inset;
-        double minY = pos.getY() + inset;
-        double maxY = pos.getY() + 1.0 - inset;
-        double minZ = pos.getZ() + inset;
-        double maxZ = pos.getZ() + 1.0 - inset;
-        double planeX = pos.getX() + 0.5 + face.getStepX() * 0.5;
-        double planeY = pos.getY() + 0.5 + face.getStepY() * 0.5;
-        double planeZ = pos.getZ() + 0.5 + face.getStepZ() * 0.5;
-        return switch (face) {
-            case DOWN, UP -> new Vec3(lerp(minX, maxX, u), planeY, lerp(minZ, maxZ, v));
-            case NORTH, SOUTH -> new Vec3(lerp(minX, maxX, u), lerp(minY, maxY, v), planeZ);
-            case WEST, EAST -> new Vec3(planeX, lerp(minY, maxY, u), lerp(minZ, maxZ, v));
-        };
-    }
-
-    private static double lerp(double from, double to, double t) {
-        return from + (to - from) * t;
+        return null;
     }
 
     private void applyRotationWithSpeed(float yaw, float pitch) {
         if (this.currentPlacement == null || mc.player == null) return;
 
-        float speed;
-        if (this.syncRotSpeed.getValue()) {
-            Rotation current = RotationHandler.targetRotation;
-            if (current != null) {
-                float realYaw = mc.player.getYRot();
-                float currentDiffToReal = Math.abs(Mth.wrapDegrees(current.getYaw() - realYaw));
-                float newDiffToReal = Math.abs(Mth.wrapDegrees(yaw - realYaw));
-                if (newDiffToReal < currentDiffToReal) {
-                    speed = this.returnSpeed.getValue().floatValue();
-                } else {
-                    speed = this.turnSpeed.getValue().floatValue();
-                }
-            } else {
-                speed = this.turnSpeed.getValue().floatValue();
-            }
-        } else {
-            speed = this.rotationSpeed.getValue().floatValue();
-        }
+        float speed = this.rotationSpeed.getValue().floatValue();
 
-        if (this.shouldBuild()) {
-            speed = 360.0f;
-        }
-
-        Rotation desired = new Rotation(yaw, pitch);
-        float jitterScale = this.jitter.getValue().floatValue();
-        if (jitterScale > 0.0f) {
-            desired = new Rotation(yaw + jitterOffset() * jitterScale,
-                    Mth.clamp(pitch + jitterOffset() * jitterScale, -90.0f, 90.0f));
-        }
-
-        Rotation rotation = desired;
+        Rotation rotation = new Rotation(yaw, pitch);
         if (speed < 360f) {
             Rotation current = RotationHandler.targetRotation;
             if (current == null) {
                 current = new Rotation(mc.player.getYRot(), mc.player.getXRot());
             }
-            rotation = this.rotSmoother.tick(current, desired, speed);
+            // 惯性+波动平滑, 代替旧的 clamp(diff, ±speed) 方波 —— Grim 的 DuplicateRotPlace
+            // 专抓"相邻两次放置时 yaw 增量完全相同", 匀速转头正是它的靶子。
+            // speed 语义不变: 度/tick 上限, speed 以内一步到位。
+            rotation = this.rotSmoother.tick(current, rotation, speed);
         }
+        // GCD 对齐: 增量取整到灵敏度步长, 锚定在上一次发出的 rotation 上。Scaffold 之前
+        // 从不量化, Grim AimProcessor 用连续增量 GCD 反推灵敏度时推不出稳定值, 和真人
+        // 一眼就能区分。量化误差 <= 半个步长(默认灵敏度 0.075°), 相对方块面的角尺寸可忽略。
         Rotation anchor = RotationHandler.prevRotation != null
                 ? RotationHandler.prevRotation
                 : new Rotation(mc.player.getYRot(), mc.player.getXRot());
         rotation = RotationSmoother.patchConstantRotation(rotation, anchor);
-        rotation = this.rotSmoother.breakDuplicateDelta(rotation, anchor);
 
         this.rots.setYawPitch(rotation.getYaw(), rotation.getPitch());
         RotationHandler.setTargetRotation(this.rots);
@@ -913,7 +812,6 @@ public class Scaffold extends Module {
         int feetX = belowFeet.getX();
         int feetZ = belowFeet.getZ();
         if (mc.level.getBlockState(belowFeet).entityCanStandOn(mc.level, belowFeet, mc.player)) return;
-        this.currentPlacement = null;
         if (this.isAbovePlaceable(eye, belowFeet)) return;
         for (int radius = 1; radius <= 6; radius++) {
             if (this.isAbovePlaceable(eye, new BlockPos(feetX, this.targetYLevel - radius, feetZ))) return;
@@ -926,7 +824,6 @@ public class Scaffold extends Module {
                                     feetX + (signX == 0 ? x : -x),
                                     this.targetYLevel - yOff,
                                     feetZ + (signZ == 0 ? z : -z));
-                            if (!this.isWithinSearchReach(eye, test)) continue;
                             if (this.isAbovePlaceable(eye, test)) return;
                         }
                     }
@@ -935,91 +832,26 @@ public class Scaffold extends Module {
         }
     }
 
-    private boolean isWithinSearchReach(Vec3 eye, BlockPos pos) {
-        double dx = pos.getX() + 0.5 - eye.x;
-        double dy = pos.getY() + 0.5 - eye.y;
-        double dz = pos.getZ() + 0.5 - eye.z;
-        return dx * dx + dy * dy + dz * dz <= 20.25;
-    }
-
-    private float jitterOffset() {
-        float offset = 0.03f + this.jitterRandom.nextFloat() * 0.04f;
-        return this.jitterRandom.nextBoolean() ? offset : -offset;
-    }
-
-    private float baseYaw() {
-        float yaw = mc.player.getYRot();
-        if (mc.options.keyDown.isDown()) {
-            yaw += 180.0f;
-            if (mc.options.keyLeft.isDown()) yaw += 45.0f;
-            else if (mc.options.keyRight.isDown()) yaw -= 45.0f;
-        } else if (mc.options.keyUp.isDown()) {
-            if (mc.options.keyLeft.isDown()) yaw -= 45.0f;
-            else if (mc.options.keyRight.isDown()) yaw += 45.0f;
-        } else if (mc.options.keyRight.isDown()) {
-            yaw += 90.0f;
-        } else if (mc.options.keyLeft.isDown()) {
-            yaw -= 90.0f;
-        }
-        return yaw - 180.0f;
-    }
-
     private boolean isAbovePlaceable(Vec3 from, BlockPos pos) {
         if (mc.level == null || mc.player == null) return false;
         if (!(mc.level.getBlockState(pos).getBlock() instanceof AirBlock)) return false;
         Vec3 center = new Vec3(pos.getX() + 0.5, pos.getY() + 0.5f, pos.getZ() + 0.5);
-        float wantYaw = Float.isNaN(this.cachedOffset) ? baseYaw() : mc.player.getYRot() + this.cachedOffset;
-        Rotation wantFlat = new Rotation(wantYaw, 75.5f);
-        BlockPos bestSupport = null;
-        Direction bestFace = null;
-        double bestDistance = Double.MAX_VALUE;
-        BlockPos aimSupport = null;
-        Direction aimFace = null;
-        double aimDistance = Double.MAX_VALUE;
         for (Direction direction : Direction.values()) {
             Vec3 offsetCenter = center.add(new Vec3(
                     direction.getNormal().getX() * 0.5,
                     direction.getNormal().getY() * 0.5,
                     direction.getNormal().getZ() * 0.5));
             BlockPos offset = pos.offset(direction.getNormal());
-            if (!mc.level.getBlockState(offset).entityCanStandOnFace(mc.level, offset, mc.player, direction)) {
-                continue;
-            }
-            Vec3 delta = offsetCenter.subtract(from);
-            if (delta.lengthSqr() > 20.25
-                    || delta.normalize().dot(Vec3.atLowerCornerOf(direction.getNormal()).normalize()) < 0.0) {
-                continue;
-            }
-            // Rank by the face point the view will actually aim at rather than by the block
-            // centre: the nearest face means the shortest rotation and the cleanest click ray.
-            Direction face = direction.getOpposite();
-            double distance = faceAimPoint(offset, face, from).distanceToSqr(from);
-            if (distance < bestDistance) {
-                bestDistance = distance;
-                bestSupport = offset;
-                bestFace = face;
-            }
-            if (distance < aimDistance) {
-                Vec3 aimPoint = faceAimPoint(offset, face, from);
-                float facePitch = RotationUtil.exactRotation(from, aimPoint).getPitch();
-                if (RayTraceUtil.canRayTrace(wantFlat, face, offset, true)
-                        || RayTraceUtil.canRayTrace(new Rotation(wantYaw, facePitch), face, offset, true)) {
-                    aimDistance = distance;
-                    aimSupport = offset;
-                    aimFace = face;
+            if (mc.level.getBlockState(offset).entityCanStandOnFace(mc.level, offset, mc.player, direction)) {
+                Vec3 delta = offsetCenter.subtract(from);
+                if (delta.lengthSqr() <= 20.25
+                        && delta.normalize().dot(Vec3.atLowerCornerOf(direction.getNormal()).normalize()) >= 0.0) {
+                    this.currentPlacement = new PlacementTarget(new BlockPos(offset.getX(), offset.getY(), offset.getZ()), direction.getOpposite());
+                    return true;
                 }
             }
         }
-        if (aimSupport != null) {
-            this.currentPlacement = new PlacementTarget(aimSupport, aimFace);
-            return true;
-        }
-        if (bestSupport == null) {
-            return false;
-        }
-        this.currentPlacement = new PlacementTarget(
-                new BlockPos(bestSupport.getX(), bestSupport.getY(), bestSupport.getZ()), bestFace);
-        return true;
+        return false;
     }
 
     private boolean hasPlaceableInHand() {

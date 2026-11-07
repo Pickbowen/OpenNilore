@@ -111,37 +111,127 @@ extends ClientBase {
         return Math.hypot(mc.player.getDeltaMovement().x, mc.player.getDeltaMovement().z);
     }
 
-    public static void handleStrafe(StrafeEvent strafeEvent, float partialTicks) {
-        float forward = strafeEvent.getForward();
-        float strafe = strafeEvent.getStrafe();
-        if (TargetStrafe.isOrbiting()) {
-            TargetStrafe.ensureOrbitComputed();
-            //
-            //
-            strafeEvent.setForward(TargetStrafe.radialStep());
-            strafeEvent.setStrafe(TargetStrafe.strafeSign());
+    /**
+     * 把这一拍的输入重映射成"相对 {@code targetYaw} 的等价八向输入"。
+     *
+     * <p>口径照 OpenMyau 的 {@code MoveUtil.fixStrafe}：先算出输入在世界里指向哪个
+     * yaw，再减去即将发给服务端的视角 {@code targetYaw}，落到 45° 扇区取整，最后
+     * 从八向表里取对应的 {@code (forward, strafe)}。这样客户端 {@code moveRelative}
+     * 用 {@code targetYaw} 旋转出来的世界方向，和玩家按键时的真实朝向一致。
+     *
+     * <p>和旧实现的两点差别：
+     * <ul>
+     *   <li>旧实现用 {@code Math.abs(target - candidate)} 比角度差，没有 wrap：
+     *       目标 179°、候选 -179° 会算成 358° 而不是 2°，直接挑到反向的输入。
+     *       现在统一走 {@link Mth#wrapDegrees} 后的扇区编号。</li>
+     *   <li>旧实现枚举 9 个组合，边界（正好 22.5°）会抖；扇区法每 tick 只有一个解。</li>
+     * </ul>
+     */
+    public static void handleStrafe(StrafeEvent strafeEvent, float targetYaw) {
+        if (strafeEvent.isMoveFixed()) {
             return;
         }
-        float yaw = mc.player.getYRot();
-        double targetDirection = Mth.wrapDegrees(Math.toDegrees(MovementUtil.getDirectionYaw(yaw, forward, strafe)));
+        if (TargetStrafe.isOrbiting()) {
+            TargetStrafe.ensureOrbitComputed();
+            strafeEvent.setForward(TargetStrafe.radialStep());
+            strafeEvent.setStrafe(TargetStrafe.strafeSign());
+            strafeEvent.setMoveFixed(true);
+            return;
+        }
+        float forward = strafeEvent.getForward();
+        float strafe = strafeEvent.getStrafe();
         if (forward == 0.0f && strafe == 0.0f) {
             return;
         }
-        int bestForward = 0;
-        int bestStrafe = 0;
-        float bestDiff = Float.MAX_VALUE;
-        for (int i = -1; i <= 1; ++i) {
-            for (int j = -1; j <= 1; ++j) {
-                double candidateDir;
-                double diff;
-                if (j == 0 && i == 0 || !((diff = Math.abs(targetDirection - (candidateDir = Mth.wrapDegrees(Math.toDegrees(MovementUtil.getDirectionYaw(partialTicks, i, j)))))) < (double)bestDiff)) continue;
-                bestDiff = (float)diff;
-                bestForward = i;
-                bestStrafe = j;
+        float inputYaw = MovementUtil.adjustYaw(mc.player.getYRot(), forward, strafe);
+        float relative = Mth.wrapDegrees(inputYaw - targetYaw + 22.5f);
+        int sector = Mth.floor((relative + 180.0f) / 45.0f) % 8;
+        if (sector < 0) {
+            sector += 8;
+        }
+        switch (sector) {
+            case 0 -> {
+                strafeEvent.setForward(-1.0f);
+                strafeEvent.setStrafe(0.0f);
+            }
+            case 1 -> {
+                strafeEvent.setForward(-1.0f);
+                strafeEvent.setStrafe(1.0f);
+            }
+            case 2 -> {
+                strafeEvent.setForward(0.0f);
+                strafeEvent.setStrafe(1.0f);
+            }
+            case 3 -> {
+                strafeEvent.setForward(1.0f);
+                strafeEvent.setStrafe(1.0f);
+            }
+            case 4 -> {
+                strafeEvent.setForward(1.0f);
+                strafeEvent.setStrafe(0.0f);
+            }
+            case 5 -> {
+                strafeEvent.setForward(1.0f);
+                strafeEvent.setStrafe(-1.0f);
+            }
+            case 6 -> {
+                strafeEvent.setForward(0.0f);
+                strafeEvent.setStrafe(-1.0f);
+            }
+            default -> {
+                strafeEvent.setForward(-1.0f);
+                strafeEvent.setStrafe(-1.0f);
             }
         }
-        strafeEvent.setForward(bestForward);
-        strafeEvent.setStrafe(bestStrafe);
+        strafeEvent.setMoveFixed(true);
+    }
+
+    /** 这一拍的前后输入：-1 / 0 / 1（口径同 OpenMyau 的 getForwardValue）。 */
+    public static int getForwardValue() {
+        int value = 0;
+        if (mc.options.keyUp.isDown()) {
+            value++;
+        }
+        if (mc.options.keyDown.isDown()) {
+            value--;
+        }
+        return value;
+    }
+
+    /** 这一拍的左右输入：左 +1 / 右 -1。 */
+    public static int getLeftValue() {
+        int value = 0;
+        if (mc.options.keyLeft.isDown()) {
+            value++;
+        }
+        if (mc.options.keyRight.isDown()) {
+            value--;
+        }
+        return value;
+    }
+
+    /** 有没有按下任意一个移动键（前后或左右两个轴上都成对抵消时算没有）。 */
+    public static boolean isForwardPressed() {
+        if (mc.options.keyUp.isDown() != mc.options.keyDown.isDown()) {
+            return true;
+        }
+        return mc.options.keyLeft.isDown() != mc.options.keyRight.isDown();
+    }
+
+    /**
+     * 输入方向换算成世界 yaw（口径同 OpenMyau 的 {@code MoveUtil.adjustYaw}）。
+     * {@code forward<0} 先翻半圈，再按 strafe 方向偏 90°；前后键同时按下时
+     * 偏移量减半，正好对上原版 {@code moveRelative} 的斜向缩放。
+     */
+    public static float adjustYaw(float yaw, float forward, float strafe) {
+        if (forward < 0.0f) {
+            yaw += 180.0f;
+        }
+        if (strafe != 0.0f) {
+            float multiplier = forward == 0.0f ? 1.0f : 0.5f * Math.signum(forward);
+            yaw += -90.0f * multiplier * Math.signum(strafe);
+        }
+        return Mth.wrapDegrees(yaw);
     }
 
     public static boolean isInputActive() {

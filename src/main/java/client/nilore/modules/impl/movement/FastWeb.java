@@ -27,7 +27,7 @@ extends Module {
     @EventTarget
     public void onStrafe(StrafeEvent strafeEvent) {
         if (this.webCount > 1) {
-            strafeEvent.setSprinting(false);
+            strafeEvent.setJumping(false);
         }
     }
 

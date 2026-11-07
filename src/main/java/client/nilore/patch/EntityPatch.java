@@ -57,11 +57,12 @@ public class EntityPatch {
 
     @Overwrite(method = "moveRelative", desc = "(FLnet/minecraft/world/phys/Vec3;)V")
     public static void overwriteMoveRelative(Entity entity, float speed, Vec3 movement) throws Exception {
-        RotationEvent event = new RotationEvent(entity.getYRot(), speed);
+        float yaw = entity.getYRot();
         if (NiloreClient.isReady() && entity == ClientBase.mc.player) {
+            RotationEvent event = new RotationEvent(yaw, speed);
             NiloreClient.getInstance().getEventBus().call(event);
+            yaw = event.getYaw();
         }
-        float yaw = event.getYaw();
         Vec3 result = applyRotation(movement, speed, yaw);
         entity.setDeltaMovement(entity.getDeltaMovement().add(result));
         if (NiloreClient.isReady() && entity == ClientBase.mc.player) {
@@ -71,12 +72,12 @@ public class EntityPatch {
 
     @Overwrite(method = "calculateViewVector", desc = "(FF)Lnet/minecraft/world/phys/Vec3;")
     public static Vec3 overwriteCalculateViewVector(Entity entity, float pitch, float yaw) throws Exception {
-        RayTraceEvent event = new RayTraceEvent(entity, yaw, pitch);
-        if (NiloreClient.isReady()) {
+        if (NiloreClient.isReady() && entity == ClientBase.mc.player) {
+            RayTraceEvent event = new RayTraceEvent(entity, yaw, pitch);
             NiloreClient.getInstance().getEventBus().call(event);
+            yaw = event.getYaw();
+            pitch = event.getPitch();
         }
-        yaw = event.getYaw();
-        pitch = event.getPitch();
         float pitchRad = pitch * (float) (Math.PI / 180.0);
         float yawRad = -yaw * (float) (Math.PI / 180.0);
         float cosYaw = Mth.cos(yawRad);

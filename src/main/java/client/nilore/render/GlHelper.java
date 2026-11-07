@@ -110,19 +110,27 @@ public final class GlHelper {
         int color = paint.getColor();
         float cursorX = x;
         float baselineY = y + (float)GlHelper.getFontAscent(fontRenderer);
-        String[] parts = text.split("§");
-        for (int i = 0; i < parts.length; ++i) {
-            char code;
-            ChatFormatting chatFormatting;
-            String part = parts[i];
-            if (i > 0 && !part.isEmpty() && (chatFormatting = ChatFormatting.getByCode(code = part.charAt(0))) != null) {
-                if (!keepColor && chatFormatting.getColor() != null) {
-                    color = ColorUtil.withAlpha(chatFormatting.getColor(), (float)(color >> 24 & 0xFF) / 255.0f);
-                }
-                part = part.substring(1);
+        // Same walk as before, without text.split("§"): that call built an array plus one
+        // substring per format code, on every string, every frame — pure young-gen garbage in the
+        // HUD pass. The semantics are unchanged (a code applies to the text that follows it).
+        int length = text.length();
+        int from = 0;
+        while (from < length) {
+            int marker = text.indexOf('§', from);
+            int end = marker < 0 ? length : marker;
+            if (end > from) {
+                String part = text.substring(from, end);
+                drawContext.drawString(part, cursorX, baselineY, fontRenderer, paint.setColor(color));
+                cursorX += GlHelper.getStringWidth(part, fontRenderer);
             }
-            drawContext.drawString(part, cursorX, baselineY, fontRenderer, paint.setColor(color));
-            cursorX += GlHelper.getStringWidth(part, fontRenderer);
+            if (marker < 0 || marker + 1 >= length) {
+                break;
+            }
+            ChatFormatting chatFormatting = ChatFormatting.getByCode(text.charAt(marker + 1));
+            if (!keepColor && chatFormatting != null && chatFormatting.getColor() != null) {
+                color = ColorUtil.withAlpha(chatFormatting.getColor(), (float)(color >> 24 & 0xFF) / 255.0f);
+            }
+            from = marker + 2;
         }
         return cursorX;
     }

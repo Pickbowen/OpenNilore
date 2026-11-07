@@ -55,6 +55,11 @@ public class GameRendererPatch {
             });
             graphics.pose().popPose();
         }
+        // Safety net for the frame-scoped blur capture: screens and menus do not go through
+        // LevelRenderer.renderLevel, so without this a screen opened from the main menu would keep
+        // compositing the last capture forever. Marking the boundary at the very end of our 2D pass
+        // means the next frame's first blur call grabs a fresh downsample.
+        client.nilore.utils.render.RenderUtil.beginFrame();
     }
 
     @WrapInvoke(
