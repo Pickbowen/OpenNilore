@@ -79,6 +79,18 @@ extends AntiKBMode {
     private long lastFrameNanos;
     private long compensateUntilMs = -1L;
     private Entity target;
+    /**
+     * 最近一次真正打到我的实体。
+     *
+     * <p>进入 delay window 的那一包（自己的 {@code ClientboundSetEntityMotionPacket}）只要求
+     * {@link #shouldNotEngage()} 为 false，而它里面唯一的"软"条件就是 {@code target != null}。
+     * 可 {@link #target} 每拍都被 {@code KillAura.target} 覆盖，而 KillAura 的
+     * {@code isValidAttack} 会被 hurtTime / FoV / 距离过滤 —— 刚砍中的人 hurtTime 是 10，
+     * 跳砍转身又会掉出 FoV，于是那一拍 {@code KillAura.target} 就是 null，"跳着砍人被打"
+     * 永远进不了 delay window。受击来源本身是确定的，用它兜底。
+     */
+    private Entity lastAttacker;
+    private int lastAttackerTick = Integer.MIN_VALUE / 2;
 
     private static final int WINDUP_TICKS = 2;
 
@@ -159,8 +171,14 @@ extends AntiKBMode {
         if (attacker == null) {
             attacker = event.damageSource().getEntity();
         }
-        if (attacker != null && attacker != mc.player && attacker.isAlive() && this.target == null) {
-            this.target = attacker;
+        if (attacker != null && attacker != mc.player && attacker.isAlive()) {
+            // 记下受击来源：onTick 每拍会把 target 改成 KillAura.target，可能为 null，
+            // 这条记录是"被打了却没索敌目标"时唯一还能进 delay window 的依据。
+            this.lastAttacker = attacker;
+            this.lastAttackerTick = mc.player.tickCount;
+            if (this.target == null) {
+                this.target = attacker;
+            }
         }
     }
 
@@ -262,6 +280,14 @@ extends AntiKBMode {
         this.target = AntiKB.INSTANCE.requireKillAura.getValue()
                 ? KillAura.target
                 : this.crosshairTarget();
+        // KillAura 这一拍没锁到人时，用最近打我的那个兜底。否则 shouldNotEngage() 的
+        // target == null 会直接把进入 delay window 的那一包挡掉（跳砍时最常见）。
+        if (this.target == null && AntiKB.INSTANCE.requireKillAura.getValue()
+                && this.lastAttacker != null && this.lastAttacker.isAlive()
+                && this.lastAttacker.distanceToSqr(mc.player) <= 64.0
+                && mc.player.tickCount - this.lastAttackerTick <= 40) {
+            this.target = this.lastAttacker;
+        }
 
         if (this.compensateUntilMs != -1L
                 && (System.currentTimeMillis() >= this.compensateUntilMs || mc.options.keyUp.isDown())) {
