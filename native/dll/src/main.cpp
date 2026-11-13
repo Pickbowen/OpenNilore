@@ -1,6 +1,8 @@
 #include "openzen.h"
 #include "hwid_hook.h"
 #include "hwid_wmi.h"
+#include "hwid_firmware.h"
+#include "hwid_disk.h"
 
 #include <atomic>
 
@@ -11,6 +13,12 @@ namespace openzen {
 namespace {
 
 std::atomic<bool> g_already_attached{false};
+
+void report_install(const char* what, int code) {
+    if (code > 0) openzen::log::info("%s active (%d modules)", what, code);
+    else if (code == 0) openzen::log::info("%s armed, no importer yet", what);
+    else openzen::log::info("%s unavailable", what);
+}
 
 // Early-mode risk: the loader injects the moment a Minecraft window appears,
 // but at that point Forge's game class loader may not have defined
@@ -37,23 +45,10 @@ DWORD WINAPI inject_thread(LPVOID) {
     log::init();
     log::info("OpenZen.dll bootstrap thread started, pid=%lu", GetCurrentProcessId());
 
-    // HWID spoof (IAT-level) is installed as early as possible, before the
-    // JVM attaches - so any later registry reads from Minecraft/Forge see the
-    // fake values. If no module imports RegQueryValueExW, install() returns
-    // false and the spoof stays OFF (per the user's "default OFF" rule).
-    // NEVER logs on failure; silent = disabled.
-    if (hwid::install()) {
-        log::info("HWID spoof active (%ld IAT slots patched)", (long)hwid::g_patch_count);
-    } else {
-        // Early Mode lands us here before the JVM's modules exist, so there is
-        // nothing to patch yet - retried below, once the VM is up.
-        log::info("HWID spoof: no importers yet - retrying after the JVM");
-    }
-    if (hwid::install_wmi()) {
-        log::info("HWID WMI spoof active (CoCreateInstance patched)");
-    } else {
-        log::info("HWID WMI spoof not installed - disabled");
-    }
+    report_install("HWID registry spoof", hwid::install());
+    report_install("HWID WMI spoof", hwid::install_wmi());
+    report_install("HWID SMBIOS spoof", hwid::install_firmware());
+    report_install("HWID disk spoof", hwid::install_disk());
 
     // Early Mode puts us inside the process before the JVM exists, so wait for
     // it instead of bailing out. nullptr after the deadline = the game never
@@ -64,11 +59,12 @@ DWORD WINAPI inject_thread(LPVOID) {
         return 1;
     }
 
-    // Second chance for the IAT hooks: on the normal injection path they went in
-    // above, on the early path this is the first moment their targets exist.
-    if (hwid::g_patch_count == 0 && hwid::install()) {
-        log::info("HWID spoof active after retry (%ld slots)", (long)hwid::g_patch_count);
-    }
+    // Second chance: with early injection most importers only exist once the
+    // JVM and the game are up. Every install is idempotent.
+    report_install("HWID registry spoof (retry)", hwid::install());
+    report_install("HWID WMI spoof (retry)", hwid::install_wmi());
+    report_install("HWID SMBIOS spoof (retry)", hwid::install_firmware());
+    report_install("HWID disk spoof (retry)", hwid::install_disk());
 
     JNIEnv* env = nullptr;
     JavaVMAttachArgs args{};

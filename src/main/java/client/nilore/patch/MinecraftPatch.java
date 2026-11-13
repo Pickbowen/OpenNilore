@@ -27,6 +27,7 @@ import client.nilore.event.impl.PreMotionEvent;
 import client.nilore.event.impl.TickEvent;
 import client.nilore.modules.impl.movement.NoSlow;
 import client.nilore.modules.impl.render.ESP;
+import client.nilore.modules.impl.world.PacketBreak;
 import client.nilore.render.Renderer;
 
 @Patch(Minecraft.class)
@@ -100,6 +101,29 @@ public class MinecraftPatch {
                 callbackInfo.cancel();
             }
         }
+    }
+
+    /**
+     * 静默旋转会把原版 pick 拉到正在挖的方块上, 于是每次点击的 START 都指向旧目标, 换不了方块。
+     * 这里在点击入口把 hitResult 换成客户端真实准星选中的方块, 后续 startDestroyBlock /
+     * 预测窗口 / 本次 tick 的 continueDestroyBlock 就都跟着真实视角走。
+     * 不还原: 下一帧 GameRenderer.pick 会重新计算, 而这一 tick 内保持真实命中才不会让
+     * continueDestroyBlock 又按旧目标补一次 START。
+     */
+    @Inject(method = "startAttack", desc = "()Z", at = @At(At.Type.HEAD))
+    public static void onStartAttackPre(Minecraft minecraft, CallbackInfo callbackInfo) {
+        if (!NiloreClient.isReady() || PacketBreak.INSTANCE == null || !PacketBreak.INSTANCE.isEnabled()) {
+            return;
+        }
+        BlockHitResult clientHit = PacketBreak.INSTANCE.clientViewBlockHit();
+        if (clientHit == null) {
+            return;
+        }
+        if (!(minecraft.hitResult instanceof BlockHitResult blockHit)
+                || blockHit.getBlockPos().equals(clientHit.getBlockPos())) {
+            return;
+        }
+        minecraft.hitResult = clientHit;
     }
 
     @Inject(method = "startUseItem", desc = "()V", at = @At(At.Type.HEAD))

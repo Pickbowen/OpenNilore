@@ -39,6 +39,7 @@ qt_add_executable(OpenNiloreLoader WIN32
     src/SettingsPage.h
     src/PillSwitch.cpp
     src/PillSwitch.h
+    src/UiTheme.h
     src/loader_settings.cpp
     src/loader_settings.h
     src/hwid_spoof.cpp

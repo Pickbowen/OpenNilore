@@ -29,7 +29,9 @@ import net.minecraft.network.protocol.game.ClientboundTeleportEntityPacket;
 import net.minecraft.network.protocol.game.ServerboundInteractPacket;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.Vec3;
@@ -47,6 +49,7 @@ import client.nilore.event.impl.RotationEvent;
 import client.nilore.event.impl.SprintEvent;
 import client.nilore.event.impl.StrafeEvent;
 import client.nilore.event.impl.TickEvent;
+import client.nilore.event.impl.UseItemRayTraceEvent;
 import client.nilore.modules.impl.combat.AntiKB;
 import client.nilore.modules.impl.combat.KillAura;
 import client.nilore.modules.impl.movement.NoSlow;
@@ -69,7 +72,9 @@ extends AntiKBMode {
     public static int counterRemaining;
 
     private boolean positionCorrection;
+    private int coolDownTicks;
     private int delayTicks;
+    private long lastFireballTick = Long.MIN_VALUE;
     private int noAimTicks;
     private int noSprintTicks;
     private int jumpTicks;
@@ -223,21 +228,28 @@ extends AntiKBMode {
             return;
         }
 
-        if (this.shouldNotEngage()) {
-            return;
-        }
-
         if (packet instanceof ClientboundSetEntityMotionPacket motion
                 && motion.getId() == mc.player.getId()) {
             if (!inDelayWindow) {
+                if (this.shouldNotEngage()) {
+                    return;
+                }
+                double horizontal = Math.hypot(motion.getXa(), motion.getZa()) / 8000.0;
+                if (this.coolDownTicks > 0 || horizontal < 0.13) {
+                    return;
+                }
                 inDelayWindow = true;
                 this.delayTicks = 0;
                 handlingVelocity = true;
             }
             receivePacketEvent.setCancelled(true);
             this.packetQueue.add(packet);
+            return;
         }
 
+        if (this.shouldNotEngage()) {
+            return;
+        }
         if (this.isAllowedPacket(packet)) {
             return;
         }
@@ -280,8 +292,9 @@ extends AntiKBMode {
         this.target = AntiKB.INSTANCE.requireKillAura.getValue()
                 ? KillAura.target
                 : this.crosshairTarget();
-        // KillAura 这一拍没锁到人时，用最近打我的那个兜底。否则 shouldNotEngage() 的
-        // target == null 会直接把进入 delay window 的那一包挡掉（跳砍时最常见）。
+        if (this.target == null) {
+            this.target = this.nearestPlayer(4.0);
+        }
         if (this.target == null && AntiKB.INSTANCE.requireKillAura.getValue()
                 && this.lastAttacker != null && this.lastAttacker.isAlive()
                 && this.lastAttacker.distanceToSqr(mc.player) <= 64.0
@@ -295,6 +308,10 @@ extends AntiKBMode {
             this.compensateUntilMs = -1L;
         }
 
+        if (this.coolDownTicks > 0) {
+            --this.coolDownTicks;
+        }
+
         if (this.shouldNotEngage() || this.noAimTicks >= 3) {
             this.resetAll();
             return;
@@ -302,21 +319,22 @@ extends AntiKBMode {
 
         if (inDelayWindow) {
             compensating = true;
-            counterRemaining = 0;
             if (this.delayTicks >= AntiKB.INSTANCE.maxDelayTicks.getValue().intValue()) {
                 this.resetAll();
                 return;
             }
-            ++this.delayTicks;
-            if (this.isAimingAtTarget() && mc.player.isSprinting() && mc.player.onGround()) {
-                counterRemaining = AntiKB.INSTANCE.attackAmount.getValue().intValue();
-                this.noAimTicks = 0;
+            if (this.ready() && this.isWithinReleaseDistance() && this.isAimingAtTarget()) {
+                this.flushQueue();
                 inDelayWindow = false;
                 handlingVelocity = false;
-                this.flushQueue();
+                counterRemaining = Math.max(1, AntiKB.INSTANCE.attackAmount.getValue().intValue());
+                this.noAimTicks = 0;
+                this.noSprintTicks = 0;
                 if (AntiKB.INSTANCE.jumpReset.getValue()) {
                     this.jumpTicks = 1;
                 }
+            } else {
+                ++this.delayTicks;
             }
         }
 
@@ -352,6 +370,23 @@ extends AntiKBMode {
                 && AntiKB.INSTANCE.autoForwards.getValue()) {
             strafeEvent.setForward(1.0f);
         }
+    }
+
+    @Override
+    public void onItemUseRayTrace(UseItemRayTraceEvent event) {
+        if (mc.player == null || mc.level == null) {
+            return;
+        }
+        if (!mc.player.getMainHandItem().is(Items.FIRE_CHARGE)
+                && !mc.player.getOffhandItem().is(Items.FIRE_CHARGE)) {
+            return;
+        }
+        long tick = mc.level.getGameTime();
+        if (tick == this.lastFireballTick) {
+            return;
+        }
+        this.lastFireballTick = tick;
+        this.coolDownTicks = 10;
     }
 
     @Override
@@ -445,6 +480,25 @@ extends AntiKBMode {
         return mc.hitResult instanceof EntityHitResult hit ? hit.getEntity() : null;
     }
 
+    private Entity nearestPlayer(double range) {
+        if (mc.player == null || mc.level == null) {
+            return null;
+        }
+        Entity best = null;
+        double bestDistance = range * range;
+        for (Player player : mc.level.players()) {
+            if (player == mc.player || !player.isAlive() || player.isSpectator()) {
+                continue;
+            }
+            double distance = player.distanceToSqr(mc.player);
+            if (distance <= bestDistance) {
+                bestDistance = distance;
+                best = player;
+            }
+        }
+        return best;
+    }
+
     private boolean isAimingAtTarget() {
         if (this.target == null || mc.player == null) {
             return false;
@@ -452,15 +506,24 @@ extends AntiKBMode {
         if (!AntiKB.INSTANCE.requireKillAura.getValue()) {
             return mc.hitResult instanceof EntityHitResult hit && hit.getEntity() == this.target;
         }
-        return RotationUtil.isLookingAt(this.target,
-                Math.max(3.0, RotationUtil.getReachLimit()), 0.1f);
+        double range = Math.max(3.0, AntiKB.INSTANCE.releaseDistance.getValue().doubleValue() + 1.0);
+        return RotationUtil.isLookingAt(this.target, range, 0.1f);
+    }
+
+    private boolean isWithinReleaseDistance() {
+        if (this.target == null || mc.player == null) {
+            return false;
+        }
+        Vec3 eye = mc.player.getEyePosition();
+        double limit = AntiKB.INSTANCE.releaseDistance.getValue().doubleValue();
+        return RotationUtil.closestPoint(eye, this.target.getBoundingBox()).distanceTo(eye) <= limit;
     }
 
     private boolean shouldNotEngage() {
         if (mc.player == null || mc.getConnection() == null) {
             return true;
         }
-        if (mc.player.isUsingItem() || mc.player.isInLava() || mc.player.isInWater()) {
+        if (mc.player.isInLava() || mc.player.isInWater()) {
             return true;
         }
         if (mc.level != null && mc.level.getBlockState(mc.player.blockPosition()).is(Blocks.COBWEB)) {
@@ -503,6 +566,13 @@ extends AntiKBMode {
                 || packet instanceof ClientboundDisconnectPacket
                 || packet instanceof ClientboundAnimatePacket animation
                 && animation.getId() != mc.player.getId();
+    }
+
+    private boolean ready() {
+        return mc.player != null
+                && !mc.player.isUsingItem()
+                && mc.player.isSprinting()
+                && mc.player.onGround();
     }
 
     private void flushQueue() {

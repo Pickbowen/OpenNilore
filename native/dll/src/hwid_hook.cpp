@@ -2,7 +2,6 @@
 
 #include <windows.h>
 #include <winternl.h>
-#include <psapi.h>
 
 #include <atomic>
 #include <cstring>
@@ -11,9 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "iat_patch.h"
 #include "spoof_values.h"
-
-#pragma comment(lib, "psapi.lib")
 
 namespace hwid {
 
@@ -26,8 +24,8 @@ namespace {
 typedef LSTATUS (WINAPI* RegQueryValueExW_t)(
     HKEY, LPCWSTR, LPDWORD, LPDWORD, LPBYTE, LPDWORD);
 
-// Loaded in install().
-HMODULE g_advapi = nullptr;
+// Resolved on first use: at injection time advapi32 may not be loaded yet, and
+// a hook that cannot be armed yet must still be registered for later modules.
 RegQueryValueExW_t g_real = nullptr;
 
 std::mutex g_mtx;
@@ -93,63 +91,7 @@ const std::wstring* pick_fake(HKEY key, LPCWSTR name) {
     return nullptr;
 }
 
-// ---- IAT patch ------------------------------------------------------------
-// Find a module in the target that imports RegQueryValueExW from advapi32,
-// and rewrite its IAT slot to point at our hook.
-bool patch_module_iat(HMODULE mod, RegQueryValueExW_t hook) {
-    // Enumerate imports of `mod`, look for advapi32!RegQueryValueExW.
-    auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(mod);
-    if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
-    auto nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(
-        reinterpret_cast<const BYTE*>(mod) + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE) return false;
-
-    const auto& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
-    if (dir.Size == 0) return false;
-
-    auto desc = reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR*>(
-        reinterpret_cast<const BYTE*>(mod) + dir.VirtualAddress);
-
-    while (desc->Name) {
-        const char* dllName = reinterpret_cast<const char*>(
-            reinterpret_cast<const BYTE*>(mod) + desc->Name);
-        if (_stricmp(dllName, "advapi32.dll") != 0) { ++desc; continue; }
-
-        // Without the import-name table the IAT slots hold resolved addresses, not
-        // name RVAs - walking them as names reads garbage (and can fault). Skip.
-        if (!desc->OriginalFirstThunk) { ++desc; continue; }
-
-        IMAGE_THUNK_DATA* thunk = reinterpret_cast<IMAGE_THUNK_DATA*>(
-            reinterpret_cast<BYTE*>(mod) + desc->OriginalFirstThunk);
-        IMAGE_THUNK_DATA* iat = reinterpret_cast<IMAGE_THUNK_DATA*>(
-            reinterpret_cast<BYTE*>(mod) + desc->FirstThunk);
-
-        bool patched = false;
-        while (thunk->u1.AddressOfData) {
-            if (IMAGE_SNAP_BY_ORDINAL(thunk->u1.Ordinal)) { ++thunk; ++iat; continue; }
-            auto byName = reinterpret_cast<const IMAGE_IMPORT_BY_NAME*>(
-                reinterpret_cast<const BYTE*>(mod) + thunk->u1.AddressOfData);
-            if (_stricmp(byName->Name, "RegQueryValueExW") == 0) {
-                DWORD oldProtect = 0;
-                if (VirtualProtect(iat, sizeof(IMAGE_THUNK_DATA),
-                                   PAGE_READWRITE, &oldProtect)) {
-                    iat->u1.Function =
-                        reinterpret_cast<ULONGLONG>(hook);
-                    VirtualProtect(iat, sizeof(IMAGE_THUNK_DATA),
-                                   oldProtect, &oldProtect);
-                    FlushInstructionCache(GetCurrentProcess(),
-                                          iat, sizeof(IMAGE_THUNK_DATA));
-                    patched = true;
-                    ++g_patch_count;
-                }
-            }
-            ++thunk; ++iat;
-        }
-        if (patched) return true;
-        ++desc;
-    }
-    return false;
-}
+RegQueryValueExW_t real_reg_query();
 
 // ---- the hook -------------------------------------------------------------
 // Answered entirely from the fake set, without calling the real function: the
@@ -178,39 +120,35 @@ LSTATUS WINAPI HookRegQueryValueExW(
             return ERROR_MORE_DATA;
         }
     }
-    return g_real(key, name, reserved, type, data, cbData);
+    RegQueryValueExW_t real = real_reg_query();
+    if (!real) return ERROR_PROC_NOT_FOUND;
+    return real(key, name, reserved, type, data, cbData);
+}
+
+RegQueryValueExW_t real_reg_query() {
+    if (g_real) return g_real;
+    HMODULE advapi = GetModuleHandleA("advapi32.dll");
+    if (!advapi) return nullptr;
+    g_real = reinterpret_cast<RegQueryValueExW_t>(
+        GetProcAddress(advapi, "RegQueryValueExW"));
+    return g_real;
 }
 
 } // namespace
 
-bool install() {
+int install() {
     std::lock_guard<std::mutex> lk(g_mtx);
-    if (g_active) return true;
-
-    g_advapi = GetModuleHandleA("advapi32.dll");
-    if (!g_advapi) return false;
-    g_real = reinterpret_cast<RegQueryValueExW_t>(
-        GetProcAddress(g_advapi, "RegQueryValueExW"));
-    if (!g_real) return false;
+    if (g_active) return g_patch_count;
 
     // Generate the per-process set before the hook can be reached, so a first
     // read from another thread never pays for the initialisation.
     values();
 
-    // Patch every loaded module that imports RegQueryValueExW from advapi32.
-    HMODULE mods[512];
-    DWORD cb = 0;
-    if (EnumProcessModules(GetCurrentProcess(), mods, sizeof mods, &cb)) {
-        DWORD n = cb / sizeof(HMODULE);
-        for (DWORD i = 0; i < n; ++i) {
-            if (patch_module_iat(mods[i], HookRegQueryValueExW)) {
-                g_active = true;
-            }
-        }
-    }
-
-    // No importers found -> not active (silent).
-    return g_active;
+    int patched = install_import("ADVAPI32.dll", "RegQueryValueExW",
+                                 reinterpret_cast<void*>(&HookRegQueryValueExW));
+    g_patch_count = patched;
+    g_active = patched > 0;
+    return patched;
 }
 
 bool active() {

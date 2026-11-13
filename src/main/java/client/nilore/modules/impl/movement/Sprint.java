@@ -51,7 +51,8 @@ public class Sprint extends Module {
         if (Stuck.INSTANCE != null && Stuck.INSTANCE.isEnabled()) {
             return true;
         }
-        return KillAura.INSTANCE != null && KillAura.INSTANCE.canCritUnderVelocity();
+        return KillAura.INSTANCE != null
+                && (KillAura.INSTANCE.canCritUnderVelocity() || KillAura.INSTANCE.isCritDropArmed());
     }
 
     @Override

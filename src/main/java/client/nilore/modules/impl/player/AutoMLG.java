@@ -29,7 +29,7 @@ import client.nilore.event.EventTarget;
 public class AutoMLG
 extends Module {
     public static AutoMLG INSTANCE;
-    private static final double AIM_SPEED = 55.0;
+    private static final double AIM_SPEED = 150.0;
     private static final double AIM_SPEED_URGENT = 400.0;
     private static final float AIM_PITCH_MIN = 87.0f;
     private static final float AIM_PITCH_SPREAD = 2.0f;

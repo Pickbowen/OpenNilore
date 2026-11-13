@@ -15,6 +15,7 @@ import client.nilore.event.impl.RotationEvent;
 import client.nilore.event.impl.SprintEvent;
 import client.nilore.event.impl.StrafeEvent;
 import client.nilore.event.impl.TickEvent;
+import client.nilore.event.impl.UseItemRayTraceEvent;
 import client.nilore.modules.Category;
 import client.nilore.modules.Module;
 import client.nilore.modules.impl.combat.antikb.AntiKBMode;
@@ -38,7 +39,8 @@ public class AntiKB
     public final BooleanSetting predict = new BooleanSetting("Predict", false, () -> mode.is("Jump Reset"));
     public final NumberSetting rotateTicks = new NumberSetting("Rotate Ticks", 12, 3, 20, 1, () -> mode.is("Jump Reset") && (this.rotate.getValue() != false || this.followDirection.getValue() != false));
     public final BooleanSetting delayEnable = new BooleanSetting("Delay", true, () -> mode.is("NoXZ"));
-    public final NumberSetting maxDelayTicks = new NumberSetting("Max Delay Ticks", 11.9, 1.0, 120.0, 1.0, () -> mode.is("NoXZ") && this.delayEnable.getValue());
+    public final NumberSetting maxDelayTicks = new NumberSetting("Max Delay Ticks", 11.9, 1.0, 20.0, 1.0, () -> mode.is("NoXZ") && this.delayEnable.getValue());
+    public final NumberSetting releaseDistance = new NumberSetting("Release Distance", 2.6, 2.0, 3.0, 0.1, () -> mode.is("NoXZ"));
     public final BooleanSetting autoForwards = new BooleanSetting("Auto Forwards", false, () -> mode.is("NoXZ"));
     public final BooleanSetting requireKillAura = new BooleanSetting("Require KillAura", true, () -> mode.is("NoXZ"));
     public final BooleanSetting jumpReset = new BooleanSetting("Jump Reset", true, () -> mode.is("NoXZ"));
@@ -148,6 +150,15 @@ public class AntiKB
             return;
         }
         optional.get().onReceivePacket(receivePacketEvent);
+    }
+
+    @EventTarget
+    public void onItemUseRayTrace(UseItemRayTraceEvent event) {
+        Optional<AntiKBMode> optional = AntiKBMode.findMode(mode.getValue());
+        if (FireballBlink.INSTANCE.isEnabled() || HighJump.INSTANCE.isEnabled() || Scaffold.INSTANCE.isEnabled() || optional.isEmpty()) {
+            return;
+        }
+        optional.get().onItemUseRayTrace(event);
     }
 
     @EventTarget

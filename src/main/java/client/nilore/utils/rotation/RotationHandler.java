@@ -32,6 +32,7 @@ import client.nilore.modules.impl.player.AutoMLG;
 import client.nilore.modules.impl.player.AutoWebPlace;
 import client.nilore.modules.impl.player.Helper;
 import client.nilore.modules.impl.player.MidPearl;
+import client.nilore.modules.impl.world.PacketBreak;
 import client.nilore.utils.animation.TickTimer;
 import client.nilore.utils.game.MovementUtil;
 import client.nilore.event.EventTarget;
@@ -123,6 +124,9 @@ public class RotationHandler
                 RotationHandler.setTargetRotation(TargetStrafe.aimRotation());
             } else if (antiKB != null && antiKB.isEnabled() && AntiKB.rotation != null) {
                 RotationHandler.setTargetRotation(AntiKB.rotation);
+            } else if (PacketBreak.INSTANCE != null && PacketBreak.INSTANCE.isEnabled()
+                    && PacketBreak.INSTANCE.targetRotation != null) {
+                RotationHandler.setTargetRotation(PacketBreak.INSTANCE.targetRotation);
             } else {
                 isRotating = false;
             }

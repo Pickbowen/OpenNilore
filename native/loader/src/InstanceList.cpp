@@ -1,6 +1,7 @@
 #include "InstanceList.h"
 
 #include "InstanceRow.h"
+#include "UiTheme.h"
 
 #include <QLabel>
 #include <QPushButton>
@@ -10,29 +11,63 @@
 
 namespace loader {
 
+namespace {
+const char* kScrollQss = R"qss(
+    QScrollArea { background: transparent; border: none; }
+    QScrollBar:vertical {
+        background: transparent;
+        width: 8px;
+        margin: 0;
+    }
+    QScrollBar::handle:vertical {
+        background: rgba(255, 255, 255, 26);
+        border-radius: 4px;
+        min-height: 28px;
+    }
+    QScrollBar::handle:vertical:hover {
+        background: rgba(255, 255, 255, 45);
+    }
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+        height: 0;
+    }
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+        background: transparent;
+    }
+)qss";
+} // namespace
+
 InstanceList::InstanceList(QWidget* parent)
         : QWidget(parent) {
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
+    auto* header = new QWidget(this);
+    auto* headerLayout = new QVBoxLayout(header);
+    headerLayout->setContentsMargins(ui::kGutter, 24, ui::kGutterRight, 14);
+    headerLayout->setSpacing(0);
+
+    auto* title = new QLabel(QStringLiteral("Instances"), header);
+    title->setStyleSheet(QStringLiteral(
+        "color: #FFFFFF; font-size: 17px; font-weight: 600;"));
+    headerLayout->addWidget(title);
+    headerLayout->addSpacing(4);
+
+    note_ = new QLabel(
+        QStringLiteral("Minecraft 1.20.1 · Forge 47.4.20 · JDK 17"),
+        header);
+    note_->setAlignment(Qt::AlignLeft);
+    note_->setStyleSheet(QStringLiteral(
+        "color: #666C76; font-size: 11px;"));
+    headerLayout->addWidget(note_);
+    root->addWidget(header);
+
     scroll_ = new QScrollArea(this);
     scroll_->setFrameShape(QFrame::NoFrame);
     scroll_->setWidgetResizable(true);
     scroll_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    scroll_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    scroll_->setStyleSheet(QStringLiteral(
-        "QScrollArea { background: transparent; border: none; }"
-        "QScrollBar:vertical {"
-        "  background: transparent; width: 8px; margin: 4px 1px;"
-        "}"
-        "QScrollBar::handle:vertical {"
-        "  background: #3a3d45; border-radius: 4px; min-height: 28px;"
-        "}"
-        "QScrollBar::handle:vertical:hover { background: #4a4e58; }"
-        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {"
-        "  height: 0;"
-        "}"));
+    scroll_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+    scroll_->setStyleSheet(QString::fromUtf8(kScrollQss));
 
     container_ = new QWidget(scroll_);
     container_->setObjectName("instanceContainer");
@@ -40,19 +75,8 @@ InstanceList::InstanceList(QWidget* parent)
         "#instanceContainer { background: transparent; }"));
 
     containerLayout_ = new QVBoxLayout(container_);
-    containerLayout_->setContentsMargins(2, 2, 2, 2);
-    containerLayout_->setSpacing(0);
-
-    // Small note under the section title, before any instance rows: pins the
-    // supported environment so users don't file bug reports for 1.21+ or
-    // Java 21 games.
-    note_ = new QLabel(
-        QStringLiteral("Minecraft 1.20.1 · Forge 47.4.20 · JDK 17"),
-        container_);
-    note_->setAlignment(Qt::AlignLeft);
-    note_->setStyleSheet(QStringLiteral(
-        "color: #5c626e; font-size: 11px; padding: 0 10px 10px 10px;"));
-    containerLayout_->addWidget(note_);
+    containerLayout_->setContentsMargins(ui::kGutter, 0, ui::kGutterRight, 8);
+    containerLayout_->setSpacing(ui::kRowSpacing);
 
     emptyLabel_ = new QLabel(
         QStringLiteral("No Minecraft instances detected.\n"
@@ -60,26 +84,22 @@ InstanceList::InstanceList(QWidget* parent)
         container_);
     emptyLabel_->setAlignment(Qt::AlignCenter);
     emptyLabel_->setStyleSheet(QStringLiteral(
-        "color: #6a6f7a; font-size: 12px; font-style: italic;"
-        "padding: 40px 12px;"));
+        "color: #666C76; font-size: 11px; padding: 40px 12px;"));
     containerLayout_->addWidget(emptyLabel_);
 
-    // Stretch keeps rows aligned to the top of the scroll viewport.
     containerLayout_->addStretch(1);
 
     scroll_->setWidget(container_);
-    root->addWidget(scroll_);
+    root->addWidget(scroll_, 1);
 
     updateEmptyState();
 }
 
 void InstanceList::setInstances(const QVector<Instance>& list) {
-    // Compute incoming pid set.
     QSet<unsigned long> incoming;
     incoming.reserve(list.size());
     for (const auto& it : list) incoming.insert(it.pid);
 
-    // Remove rows no longer present.
     QList<unsigned long> toRemove;
     toRemove.reserve(rows_.size());
     for (auto it = rows_.constBegin(); it != rows_.constEnd(); ++it) {
@@ -89,13 +109,9 @@ void InstanceList::setInstances(const QVector<Instance>& list) {
         InstanceRow* r = rows_.take(pid);
         containerLayout_->removeWidget(r);
         r->deleteLater();
-        // Windows recycles pids; dropping the flag with the row keeps the badge
-        // from showing up on an unrelated process later.
         nativeBypassed_.remove(pid);
     }
 
-    // Note is index 0; rows start at index 1 so they sit below the note and
-    // the empty label / stretch are at the end.
     for (int i = 0; i < list.size(); ++i) {
         const auto& it = list[i];
         InstanceRow* r = rows_.value(it.pid, nullptr);
@@ -104,27 +120,26 @@ void InstanceList::setInstances(const QVector<Instance>& list) {
             connect(r, &InstanceRow::injectClicked,
                     this, &InstanceList::injectRequested);
             rows_.insert(it.pid, r);
-            containerLayout_->insertWidget(i + 1, r);
+            containerLayout_->insertWidget(i, r);
             r->playEntrance();
             if (nativeBypassed_.contains(it.pid)) r->setNativeBypassed(true);
         } else {
             r->updateTitle(it.title);
             int currentIndex = containerLayout_->indexOf(r);
-            if (currentIndex != i + 1) {
+            if (currentIndex != i) {
                 containerLayout_->removeWidget(r);
-                containerLayout_->insertWidget(i + 1, r);
+                containerLayout_->insertWidget(i, r);
             }
         }
     }
 
-    setInteractive(interactive_);  // re-apply enabled state on new rows
+    setInteractive(interactive_);
     updateEmptyState();
 }
 
 void InstanceList::setInteractive(bool on) {
     interactive_ = on;
     for (auto* r : rows_) {
-        // The Inject button is the only interactive child we care about.
         if (auto* btn = r->findChild<QPushButton*>()) {
             btn->setEnabled(on);
         }

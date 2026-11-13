@@ -34,9 +34,15 @@ public final class GlHelper {
         return drawContext;
     }
 
+    /**
+     * Reused paint for the plain (text, x, y, font, color) path. That overload used to allocate a
+     * {@link Paint} per call — a few hundred per frame in the click GUI. Only the render thread
+     * touches it, and callers never keep the instance.
+     */
+    private static final Paint FAST_TEXT_PAINT = new Paint();
+
     public static float drawText(String text, float x, float y, FontRenderer fontRenderer, int color) {
-        Paint paint = GlHelper.toPaint(color);
-        return GlHelper.drawTextFormatted(text, x, y, fontRenderer, paint, false);
+        return GlHelper.drawTextFormatted(text, x, y, fontRenderer, FAST_TEXT_PAINT.setColor(color), false);
     }
 
     public static int getFontAscent(FontRenderer fontRenderer) {

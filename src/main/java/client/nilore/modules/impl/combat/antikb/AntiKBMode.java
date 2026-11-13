@@ -77,6 +77,9 @@ extends ClientBase {
     public void onRender(RenderEvent renderEvent) {
     }
 
+    public void onItemUseRayTrace(client.nilore.event.impl.UseItemRayTraceEvent event) {
+    }
+
     public void onRender2D(Render2DEvent render2DEvent) {
     }
 

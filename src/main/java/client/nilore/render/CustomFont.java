@@ -244,14 +244,14 @@ implements Closeable {
         RenderSystem.disableCull();
         RenderSystem.setShader(GameRenderer::getPositionTexColorShader);
         Matrix4f pose = poseStack.last().pose();
-        char[] chars = text.toCharArray();
+        int textLength = text.length();
         float penX = 0.0F;
         float penY = 0.0F;
         boolean inFormatting = false;
         int lineStart = 0;
         synchronized (this.glyphPageMap) {
-            for (int i = 0; i < chars.length; i++) {
-                char ch = chars[i];
+            for (int i = 0; i < textLength; i++) {
+                char ch = text.charAt(i);
                 if (inFormatting) {
                     inFormatting = false;
                     char upper = Character.toUpperCase(ch);
@@ -345,9 +345,10 @@ implements Closeable {
         RenderSystem.setShader(GameRenderer::getPositionTexColorShader);
         Matrix4f pose = poseStack.last().pose();
         float penX = 0.0f;
+        int textLength = text.length();
         synchronized (this.glyphPageMap) {
-            for (char ch : text.toCharArray()) {
-                Glyph glyph = this.getOrLoadGlyph(ch);
+            for (int ci = 0; ci < textLength; ci++) {
+                Glyph glyph = this.getOrLoadGlyph(text.charAt(ci));
                 if (glyph == null) continue;
                 if (glyph.value() != ' ') {
                     this.glyphPageMap.computeIfAbsent(glyph.owner().textureLocation, key -> new ObjectArrayList<>())

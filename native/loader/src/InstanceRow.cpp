@@ -1,10 +1,11 @@
 #include "InstanceRow.h"
 
+#include "UiTheme.h"
+
 #include <QEasingCurve>
 #include <QEnterEvent>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QLinearGradient>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPropertyAnimation>
@@ -13,36 +14,34 @@
 namespace loader {
 
 namespace {
-constexpr int kRowHeight   = 56;
-constexpr int kCornerRadius = 9;
+constexpr int kRowHeight    = ui::kRowHeight;
+constexpr int kCornerRadius = ui::kRadiusCard;
 
 const char* kInjectBtnQss = R"qss(
     QPushButton {
-        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                    stop:0 #4a83e0, stop:1 #3260bd);
-        color: white;
-        border: 1px solid rgba(255, 255, 255, 22);
+        background: #5C9DFF;
+        color: #FFFFFF;
+        border: none;
         border-radius: 6px;
-        padding: 6px 18px;
-        font-weight: 600;
+        padding: 0 14px;
         font-size: 12px;
-        font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+        font-weight: 600;
     }
     QPushButton:hover {
-        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                    stop:0 #5a93f0, stop:1 #4275d8);
-        border: 1px solid rgba(255, 255, 255, 60);
+        background: #70AAFF;
     }
     QPushButton:pressed {
-        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                    stop:0 #2c5db0, stop:1 #1e468f);
+        background: #4A88E6;
     }
     QPushButton:disabled {
-        background: #2c2f37;
-        color: #6a6f7a;
-        border: 1px solid #2c2f37;
+        background: #2A2F35;
+        color: #666C76;
     }
 )qss";
+
+int lerp(int a, int b, qreal t) {
+    return int(a + (b - a) * t);
+}
 } // namespace
 
 InstanceRow::InstanceRow(unsigned long pid, const QString& title,
@@ -53,43 +52,43 @@ InstanceRow::InstanceRow(unsigned long pid, const QString& title,
     setMouseTracking(true);
 
     auto* layout = new QHBoxLayout(this);
-    // Leave a slight inner padding so the painted panel has visible breathing
-    // room from the sibling rows above/below it.
-    layout->setContentsMargins(14, 6, 12, 6);
+    layout->setContentsMargins(ui::kCardPadX, 0, 10, 0);
     layout->setSpacing(12);
 
     pidLabel_ = new QLabel(QString::number(pid_), this);
-    pidLabel_->setMinimumWidth(72);
+    pidLabel_->setFixedWidth(64);
     pidLabel_->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
     pidLabel_->setStyleSheet(QStringLiteral(
-        "color: #9aa3b2;"
-        "font-family: 'JetBrains Mono', 'Consolas', 'Segoe UI', monospace;"
-        "font-size: 12px; font-weight: 600;"));
+        "color: #666C76;"
+        "font-family: 'Consolas';"
+        "font-size: 11px;"));
     layout->addWidget(pidLabel_);
 
     titleLabel_ = new QLabel(title_, this);
     titleLabel_->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
     titleLabel_->setStyleSheet(QStringLiteral(
-        "color: #e7eaf2; font-size: 13px;"
+        "color: #D2D6DC;"
+        "font-size: 13px;"
         "font-family: 'Segoe UI', 'Microsoft YaHei UI', sans-serif;"));
     titleLabel_->setTextInteractionFlags(Qt::NoTextInteraction);
     layout->addWidget(titleLabel_, 1);
 
-    // Green tag showing this instance is one the loader restarted and injected
-    // itself. Hidden until Native Bypass has actually run for that pid.
-    nativeBadge_ = new QLabel(QStringLiteral("Native Bypass Injected"), this);
-    nativeBadge_->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+    nativeBadge_ = new QLabel(QStringLiteral("Native Bypass"), this);
+    nativeBadge_->setAlignment(Qt::AlignCenter);
+    nativeBadge_->setFixedHeight(20);
     nativeBadge_->setStyleSheet(QStringLiteral(
-        "color: #3ddc84;"
-        "font-family: 'Segoe UI', 'Microsoft YaHei UI', sans-serif;"
-        "font-size: 11px; font-weight: 700;"));
+        "color: #4ADE80;"
+        "background: rgba(74, 222, 128, 30);"
+        "border-radius: 5px;"
+        "padding: 0 8px;"
+        "font-size: 11px;"));
     nativeBadge_->setVisible(false);
-    layout->addWidget(nativeBadge_);
+    layout->addWidget(nativeBadge_, 0, Qt::AlignVCenter);
 
     injectBtn_ = new QPushButton(QStringLiteral("Inject"), this);
     injectBtn_->setCursor(Qt::PointingHandCursor);
     injectBtn_->setStyleSheet(QString::fromUtf8(kInjectBtnQss));
-    injectBtn_->setFixedHeight(30);
+    injectBtn_->setFixedHeight(28);
     connect(injectBtn_, &QPushButton::clicked, this, [this] {
         emit injectClicked(pid_, title_, commandLine_);
     });
@@ -110,16 +109,7 @@ void InstanceRow::setNativeBypassed(bool on) {
 
 void InstanceRow::setEntrance(qreal v) {
     entrance_ = v;
-    // Slide-in vertical offset + opacity baked into a single property so we
-    // can drive them with one animation.
-    setWindowOpacity(1.0);                  // no-op on child widgets, kept for clarity
-    auto* eff = graphicsEffect();
-    Q_UNUSED(eff);
     update();
-    // Translate by setting contents margins doesn't move us. Instead we
-    // shift via a property-based geometry: simplest is to update an
-    // internal offset that paintEvent honours. We just call update() and
-    // let paintEvent read entrance_ to translate / fade.
 }
 
 void InstanceRow::playEntrance() {
@@ -127,7 +117,7 @@ void InstanceRow::playEntrance() {
     update();
 
     auto* anim = new QPropertyAnimation(this, "entrance", this);
-    anim->setDuration(280);
+    anim->setDuration(220);
     anim->setStartValue(0.0);
     anim->setEndValue(1.0);
     anim->setEasingCurve(QEasingCurve::OutCubic);
@@ -140,7 +130,7 @@ void InstanceRow::animateHover(qreal target) {
         hoverAnim_->deleteLater();
     }
     hoverAnim_ = new QPropertyAnimation(this, "hoverIntensity", this);
-    hoverAnim_->setDuration(140);
+    hoverAnim_->setDuration(120);
     hoverAnim_->setStartValue(hoverIntensity_);
     hoverAnim_->setEndValue(target);
     hoverAnim_->setEasingCurve(QEasingCurve::OutCubic);
@@ -155,9 +145,9 @@ void InstanceRow::flashHighlight() {
     highlightAnim_ = new QPropertyAnimation(this, "highlight", this);
     highlightAnim_->setDuration(1400);
     highlightAnim_->setStartValue(0.0);
-    highlightAnim_->setKeyValueAt(0.25, 1.0);   // fast in
-    highlightAnim_->setKeyValueAt(0.75, 1.0);   // hold
-    highlightAnim_->setEndValue(0.0);           // fade out
+    highlightAnim_->setKeyValueAt(0.25, 1.0);
+    highlightAnim_->setKeyValueAt(0.7, 1.0);
+    highlightAnim_->setEndValue(0.0);
     highlightAnim_->setEasingCurve(QEasingCurve::OutCubic);
     highlightAnim_->start();
     update();
@@ -175,60 +165,34 @@ void InstanceRow::paintEvent(QPaintEvent*) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
 
-    // Combine entrance offset (slight slide up) + opacity in one go. The
-    // labels and button still paint at their layout positions because they
-    // are children with their own paint passes - so the visual effect of
-    // entrance_ is limited to the painted background. To get the labels to
-    // fade in too we apply a global opacity to ourselves via setWindowOpacity
-    // (no-op for child widget), so instead drop opacity here only for the
-    // panel; the labels appear "writing in" against a darker panel which
-    // reads as a fade-in anyway in practice.
-    qreal slideDy = (1.0 - entrance_) * 8.0;
-    qreal panelAlpha = entrance_;
+    const qreal slideDy    = (1.0 - entrance_) * 6.0;
+    const qreal panelAlpha = entrance_;
 
-    QRectF rect = QRectF(this->rect()).adjusted(4, 4 + slideDy, -4, -4 + slideDy);
+    const QRectF r = QRectF(rect()).adjusted(0, slideDy, 0, slideDy);
     QPainterPath panel;
-    panel.addRoundedRect(rect, kCornerRadius, kCornerRadius);
+    panel.addRoundedRect(r, kCornerRadius, kCornerRadius);
 
-    // Base fill is the dimmest; hoverIntensity_ blends in a brighter
-    // gradient on top.
-    QLinearGradient base(rect.topLeft(), rect.bottomLeft());
-    base.setColorAt(0.0, QColor(38, 41, 48, int(255 * panelAlpha)));
-    base.setColorAt(1.0, QColor(30, 32, 38, int(255 * panelAlpha)));
+    const QColor card   = ui::bgCard();
+    const QColor raised = ui::bgRaised();
+    const QColor base(lerp(card.red(),   raised.red(),   hoverIntensity_),
+                      lerp(card.green(), raised.green(), hoverIntensity_),
+                      lerp(card.blue(),  raised.blue(),  hoverIntensity_),
+                      int(255 * panelAlpha));
     p.fillPath(panel, base);
 
-    if (hoverIntensity_ > 0.001) {
-        QLinearGradient hover(rect.topLeft(), rect.bottomLeft());
-        hover.setColorAt(0.0,
-            QColor(74, 131, 224, int(38 * hoverIntensity_ * panelAlpha)));
-        hover.setColorAt(1.0,
-            QColor(50, 96, 189, int(22 * hoverIntensity_ * panelAlpha)));
-        p.fillPath(panel, hover);
-    }
-
-    // Yellow ring indicator drawn last (on top of hover/entrance): a bright
-    // rounded-rect outline that flashes in/out. Chooses a hue that cannot be
-    // confused with the blue hover tint or the base palette.
-    if (highlight_ > 0.001) {
-        QRectF hr = rect;
-        // Ring sits just outside the panel border.
-        const qreal out = 2.0 * highlight_;
-        hr.adjust(-1.0, -1.0, 1.0, 1.0);
-        QColor hl(248, 194, 52, int(255 * highlight_));
-        QPen hp(hl, 2.0);
-        hp.setCapStyle(Qt::RoundCap);
-        hp.setJoinStyle(Qt::RoundJoin);
-        p.setPen(hp);
-        p.setBrush(Qt::NoBrush);
-        p.drawRoundedRect(hr, kCornerRadius + 1, kCornerRadius + 1);
-    }
-
-    // Outline that brightens with hover.
-    QPen border(QColor(255, 255, 255,
-        int((22 + 36 * hoverIntensity_) * panelAlpha)), 1);
-    p.setPen(border);
+    const int borderAlpha = int((10 + 16 * hoverIntensity_) * panelAlpha);
+    p.setPen(QPen(QColor(255, 255, 255, borderAlpha), 1));
     p.setBrush(Qt::NoBrush);
     p.drawPath(panel);
+
+    if (highlight_ > 0.001) {
+        QColor ring = ui::success();
+        ring.setAlpha(int(210 * highlight_));
+        p.setPen(QPen(ring, 1.5));
+        p.setBrush(Qt::NoBrush);
+        p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5),
+                          kCornerRadius, kCornerRadius);
+    }
 }
 
 } // namespace loader

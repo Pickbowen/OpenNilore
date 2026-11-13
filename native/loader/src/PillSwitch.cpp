@@ -1,5 +1,8 @@
 #include "PillSwitch.h"
 
+#include "UiTheme.h"
+
+#include <QEasingCurve>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPropertyAnimation>
@@ -7,10 +10,16 @@
 namespace loader {
 
 namespace {
-constexpr int kTrackW = 44;
-constexpr int kTrackH = 24;
-constexpr int kKnob   = 20;      // knob diameter, 2px inset on each side
-constexpr int kPadX   = 2;       // track padding to the knob
+constexpr int kTrackW = 40;
+constexpr int kTrackH = 22;
+constexpr int kKnob   = 16;
+constexpr int kPadX   = 2;
+
+QColor blend(const QColor& a, const QColor& b, qreal t) {
+    return QColor(int(a.red()   + (b.red()   - a.red())   * t),
+                  int(a.green() + (b.green() - a.green()) * t),
+                  int(a.blue()  + (b.blue()  - a.blue())  * t));
+}
 } // namespace
 
 PillSwitch::PillSwitch(QWidget* parent)
@@ -33,9 +42,10 @@ void PillSwitch::setKnobPos(qreal v) {
 
 void PillSwitch::animateTo(qreal target) {
     auto* anim = new QPropertyAnimation(this, "knobPos", this);
-    anim->setDuration(180);
+    anim->setDuration(160);
     anim->setStartValue(knobPos_);
     anim->setEndValue(target);
+    anim->setEasingCurve(QEasingCurve::OutCubic);
     anim->start(QAbstractAnimation::DeleteWhenStopped);
 }
 
@@ -53,21 +63,24 @@ void PillSwitch::paintEvent(QPaintEvent*) {
     p.setRenderHint(QPainter::Antialiasing);
 
     const QRectF track(0.5, 0.5, kTrackW - 1, kTrackH - 1);
+    const qreal t = knobPos_;
+    const QColor trackColor = blend(ui::bgControl(), ui::accent(), t);
+
     p.setPen(Qt::NoPen);
-    p.setBrush(checked_ ? QColor("#3d6fd1") : QColor("#272a31"));
+    p.setBrush(trackColor);
     p.drawRoundedRect(track, kTrackH / 2.0, kTrackH / 2.0);
 
-    // Sliding knob with a soft highlight.
-    const qreal x = kPadX + knobPos_ * (kTrackW - 2 * kPadX - kKnob);
-    const QRectF knob(x, (kTrackH - kKnob) / 2.0, kKnob, kKnob);
-    p.setBrush(QColor("#ffffff"));
-    p.drawEllipse(knob);
+    const int borderAlpha = int(12 * (1.0 - t));
+    if (borderAlpha > 0) {
+        p.setPen(QPen(QColor(255, 255, 255, borderAlpha), 1));
+        p.setBrush(Qt::NoBrush);
+        p.drawRoundedRect(track, kTrackH / 2.0, kTrackH / 2.0);
+    }
 
-    // Tiny inner shadow for depth.
-    QLinearGradient g(knob.topLeft(), knob.bottomLeft());
-    g.setColorAt(0.0, QColor(255, 255, 255, 255));
-    g.setColorAt(1.0, QColor(220, 224, 232, 255));
-    p.setBrush(g);
+    const qreal x = kPadX + t * (kTrackW - 2 * kPadX - kKnob);
+    const QRectF knob(x, (kTrackH - kKnob) / 2.0, kKnob, kKnob);
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(0xFF, 0xFF, 0xFF));
     p.drawEllipse(knob);
 }
 

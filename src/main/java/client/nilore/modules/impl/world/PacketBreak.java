@@ -2,15 +2,22 @@ package client.nilore.modules.impl.world;
 
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
+import java.util.Random;
 import net.minecraft.client.gui.Font;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
 import net.minecraft.network.protocol.game.ServerboundSwingPacket;
+import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.projectile.ProjectileUtil;
+import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.EntityHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import client.nilore.event.EventTarget;
 import client.nilore.event.impl.PacketEvent;
@@ -27,22 +34,25 @@ import client.nilore.utils.game.RotationUtil;
 import client.nilore.utils.misc.PacketUtil;
 import client.nilore.utils.render.RenderUtil;
 import client.nilore.utils.rotation.Rotation;
+import client.nilore.utils.rotation.RotationHandler;
+import client.nilore.utils.rotation.RotationSmoother;
 
 /**
  * PacketBreak —— 点一下方块，之后由客户端替你把它挖完。
  * <p>
- * 选取只用玩家真实视角, 模块<b>不发任何旋转包、也不接管 RotationHandler</b>:
- * 点击那一刻原版 pick 命中该方块(或真实视线射线打到它的碰撞箱)才接受为新目标。
- * 因为视角始终是玩家自己的, 点别的方块必定产生一次新的 START, 目标就跟着真实视角换;
- * 之前版本把视角静默压到正在挖的方块上, 于是每次点击的 pick 又被拉回那个位置, 换不了目标。
+ * 挖掘期间把静默旋转压在目标方块上(Rotate)，只为满足 Grim PositionBreakA 的朝向判定，
+ * 顺便让原版 continueDestroyBlock 一直认为视线还在方块上(不然每 tick 都会补 ABORT)。
+ * 但<b>选取永远按客户端真实视角</b>：原版 pick 走的是静默旋转，点别的方块时 START 会被拉回旧目标，
+ * 因此 MinecraftPatch 在 startAttack 入口用 {@link #clientViewBlockHit()} 把 hitResult 换成
+ * 真实准星选中的方块，换目标靠的就是这一次点击产生的 START。
  * <p>
- * 选中之后不要求视线持续对着方块, 想换目标必须重新点一下另一个方块。
+ * 选中之后不要求视线持续对着方块，想换目标必须重新点一下另一个方块。
  * <p>
  * 进度按 tick 累加 {@code getDestroyProgress} 的实时值: 中途落地、换工具、踩水都会立刻反映到
  * 剩余时间上。1.20.1 {@code Player.getDestroySpeed} 末尾是 {@code if (!onGround) f /= 5},
  * 所以"本次挖掘只要到过地面"之后就用 {@code 当前值 * 5} 当地面速度继续累加, 之后即使再跳起来也不回退。
  * <p>
- * 发包时序仍是原版节奏: 服务端 {@code ServerPlayerGameMode.m_214168_} 里 START 只记
+ * 发包时序仍是原版节奏: 服务端 {@code ServerPlayerGameMode.handleBlockBreakAction} 里 START 只记
  * {@code destroyProgressStart}, 结算在 STOP
  * ({@code progress = getDestroyProgress * (gameTicks - startTick + 1)}, {@code >= 0.7} 立刻摧毁)。
  * 累计满 1.0 后再等 1 tick 才发 STOP, 给 Grim FastBreak 留余量(迟到只让 buffer 衰减)。
@@ -50,10 +60,17 @@ import client.nilore.utils.rotation.Rotation;
  */
 public class PacketBreak
 extends Module {
+    public static PacketBreak INSTANCE;
+
+    private static final double FACE_INSET = 0.06;
+    private static final double[] FACE_FRACTIONS = {0.5, 0.22, 0.78};
     private static final Direction[] DIRECTIONS = Direction.values();
     private static final double MAX_SERVER_BLOCK_DISTANCE = 5.5;
 
     private final NumberSetting range = new NumberSetting("Range", 4.5, 1.0, 6.0, 0.1);
+    private final BooleanSetting rotate = new BooleanSetting("Rotate", true);
+    private final NumberSetting rotationSpeed = new NumberSetting("Rotation Speed", 45, 1, 180, 1,
+            () -> this.rotate.getValue());
     private final BooleanSetting swingSetting = new BooleanSetting("Swing", true);
     private final BooleanSetting hold = new BooleanSetting("Hold", true);
     /**
@@ -82,8 +99,15 @@ extends Module {
     /** 本次挖掘是否已经到过地面; 一旦为 true 就一直按地面速度算。 */
     private boolean landed;
 
+    public Rotation targetRotation;
+    private Vec3 aimPoint;
+    private Direction aimFace;
+    private BlockPos aimPos;
+    private final RotationSmoother smoother = new RotationSmoother(new Random());
+
     public PacketBreak() {
         super("PacketBreak", Category.WORLD);
+        INSTANCE = this;
     }
 
     @Override
@@ -116,6 +140,7 @@ extends Module {
             this.elapsedTicks = 0;
             this.progress = 0.0f;
             this.landed = false;
+            this.resetAim();
             if (mc.player.onGround()) {
                 this.landed = true;
             }
@@ -139,9 +164,22 @@ extends Module {
             this.clearTarget();
             return;
         }
+        if (this.rotate.getValue()) {
+            if (!this.updateAim(pos)) {
+                this.clearTarget();
+                return;
+            }
+        } else if (this.targetRotation != null) {
+            this.resetAim();
+        }
         // 本次挖掘只要落过地, 之后一直按地面速度算(再跳起来也不回退)。
         if (mc.player.onGround()) {
             this.landed = true;
+        }
+        // 旋转被别人抢走(KillAura 等)时视线可能已经不在方块上, 此时累加进度只会让
+        // 服务端的 destroyProgressStart 与会话对不上, 先空转等旋转回来。
+        if (this.rotate.getValue() && !this.hitsBlock(pos, mc.player.getEyePosition(1.0f), this.wireRotation())) {
+            return;
         }
         float damage = this.tickDamage(pos, this.landed);
         if (damage <= 0.0f) {
@@ -167,7 +205,7 @@ extends Module {
             // face 按当前眼睛位置重算, 保证 PositionBreakA 的朝向判定成立。
             Direction face = this.resolveFace(pos);
             PacketUtil.sendPredictiveDirect(sequence -> {
-                // 原版挖穿时 (continueDestroyBlock → 预测 lambda m_233736_) 也是先本地
+                // 原版挖穿时 (continueDestroyBlock → 预测 lambda) 也是先本地
                 // destroyBlock(pos) 再发 STOP, 两者在同一个预测窗口里, 服务端 ack 能回滚误判。
                 // 不做这一步的话, 方块在服务端已经没了、客户端还当它存在, 玩家会继续上报
                 // onGround=true —— 站在被挖方块上时正好被 Grim 的 NoFall 判成"悬空却声称在地面"。
@@ -177,6 +215,160 @@ extends Module {
             });
             this.clearTarget();
         }
+    }
+
+    /**
+     * 点击那一刻客户端真实视角(鼠标)选中的方块, 供 MinecraftPatch 在 startAttack 入口替换 hitResult。
+     * 只在模块确实在静默旋转(即存在挖掘会话)时返回值; 真实准星上挡着实体时返回 null,
+     * 那种情况点击该是打人而不是挖方块。
+     */
+    public BlockHitResult clientViewBlockHit() {
+        if (mc.player == null || mc.level == null || mc.gameMode == null) {
+            return null;
+        }
+        if (!this.rotate.getValue() || this.targetPos == null) {
+            return null;
+        }
+        Vec3 eye = mc.player.getEyePosition(1.0f);
+        Vec3 look = RotationUtil.directionFromRotation(this.realRotation());
+        double blockReach = mc.gameMode.getPickRange();
+        double entityReach = mc.player.getEntityReach();
+        Vec3 end = eye.add(look.scale(Math.max(blockReach, entityReach)));
+        BlockHitResult blockHit = mc.level.clip(new ClipContext(eye, end,
+                ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, mc.player));
+        if (blockHit.getType() != HitResult.Type.BLOCK) {
+            return null;
+        }
+        double blockDistanceSq = blockHit.getLocation().distanceToSqr(eye);
+        if (blockDistanceSq > blockReach * blockReach) {
+            return null;
+        }
+        AABB searchBox = mc.player.getBoundingBox()
+                .expandTowards(look.scale(Math.max(blockReach, entityReach)))
+                .inflate(1.0);
+        EntityHitResult entityHit = ProjectileUtil.getEntityHitResult(mc.player, eye, end, searchBox,
+                entity -> !entity.isSpectator() && entity.isPickable(), blockDistanceSq);
+        if (entityHit != null) {
+            double entityDistanceSq = entityHit.getLocation().distanceToSqr(eye);
+            if (entityDistanceSq < blockDistanceSq && entityDistanceSq <= entityReach * entityReach) {
+                return null;
+            }
+        }
+        return blockHit;
+    }
+
+    private boolean updateAim(BlockPos pos) {
+        Vec3 eye = mc.player.getEyePosition(1.0f);
+        boolean stale = this.aimPoint == null
+                || !pos.equals(this.aimPos)
+                || !this.hitsBlock(pos, eye, RotationUtil.rotationToPoint(eye, this.aimPoint));
+        if (stale) {
+            Vec3 found = this.findAimPoint(pos, eye);
+            if (found == null) {
+                return false;
+            }
+            this.aimPoint = found;
+            this.aimPos = pos.immutable();
+            this.smoother.reset();
+        }
+        Rotation aim = RotationUtil.rotationToPoint(eye, this.aimPoint);
+        Rotation from = RotationHandler.prevRotation != null
+                ? RotationHandler.prevRotation
+                : new Rotation(mc.player.getYRot(), mc.player.getXRot());
+        Rotation smoothed = this.smoother.tick(from, aim, this.rotationSpeed.getValue().doubleValue());
+        this.targetRotation = RotationSmoother.patchConstantRotation(smoothed, from);
+        return true;
+    }
+
+    private Vec3 findAimPoint(BlockPos pos, Vec3 eye) {
+        AABB box = BlockUtil.getBoundingBox(pos);
+        Vec3 center = box.getCenter();
+        double reach = this.range.getValue().doubleValue();
+        Rotation current = this.realRotation();
+        Vec3 best = null;
+        Direction bestFace = null;
+        double bestScore = Double.MAX_VALUE;
+        for (Direction face : DIRECTIONS) {
+            double toward = face.getStepX() * (eye.x - center.x)
+                    + face.getStepY() * (eye.y - center.y)
+                    + face.getStepZ() * (eye.z - center.z);
+            if (toward <= 0.0) {
+                continue;
+            }
+            for (double u : FACE_FRACTIONS) {
+                for (double v : FACE_FRACTIONS) {
+                    Vec3 point = facePoint(box, face, u, v);
+                    if (point.distanceTo(eye) > reach) {
+                        continue;
+                    }
+                    Rotation candidate = RotationUtil.rotationToPoint(eye, point);
+                    BlockHitResult hit = this.traceBlock(pos, eye, candidate);
+                    if (hit == null) {
+                        continue;
+                    }
+                    if (hit.getDirection() != face) {
+                        continue;
+                    }
+                    double score = Math.abs(Mth.wrapDegrees(candidate.getYaw() - current.getYaw()))
+                            + Math.abs(candidate.getPitch() - current.getPitch()) * 1.5;
+                    if (score < bestScore) {
+                        bestScore = score;
+                        best = point;
+                        bestFace = face;
+                    }
+                }
+            }
+        }
+        this.aimFace = bestFace;
+        return best;
+    }
+
+    private static Vec3 facePoint(AABB box, Direction face, double u, double v) {
+        double minX = box.minX + FACE_INSET;
+        double maxX = box.maxX - FACE_INSET;
+        double minY = box.minY + FACE_INSET;
+        double maxY = box.maxY - FACE_INSET;
+        double minZ = box.minZ + FACE_INSET;
+        double maxZ = box.maxZ - FACE_INSET;
+        return switch (face) {
+            case DOWN -> new Vec3(lerp(minX, maxX, u), box.minY, lerp(minZ, maxZ, v));
+            case UP -> new Vec3(lerp(minX, maxX, u), box.maxY, lerp(minZ, maxZ, v));
+            case NORTH -> new Vec3(lerp(minX, maxX, u), lerp(minY, maxY, v), box.minZ);
+            case SOUTH -> new Vec3(lerp(minX, maxX, u), lerp(minY, maxY, v), box.maxZ);
+            case WEST -> new Vec3(box.minX, lerp(minY, maxY, u), lerp(minZ, maxZ, v));
+            case EAST -> new Vec3(box.maxX, lerp(minY, maxY, u), lerp(minZ, maxZ, v));
+        };
+    }
+
+    private static double lerp(double from, double to, double t) {
+        return from + (to - from) * t;
+    }
+
+    private BlockHitResult traceBlock(BlockPos pos, Vec3 eye, Rotation rotation) {
+        Vec3 direction = RotationUtil.directionFromRotation(rotation);
+        Vec3 end = eye.add(direction.scale(this.range.getValue().doubleValue() + 0.5));
+        BlockHitResult hit = mc.level.clip(new ClipContext(eye, end,
+                ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, mc.player));
+        return hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(pos) ? hit : null;
+    }
+
+    private boolean hitsBlock(BlockPos pos, Vec3 eye, Rotation rotation) {
+        return this.traceBlock(pos, eye, rotation) != null;
+    }
+
+    private Rotation wireRotation() {
+        if (RotationHandler.sentRotation != null) {
+            return RotationHandler.sentRotation;
+        }
+        return new Rotation(mc.player.getYRot(), mc.player.getXRot());
+    }
+
+    private void resetAim() {
+        this.aimPoint = null;
+        this.aimFace = null;
+        this.aimPos = null;
+        this.targetRotation = null;
+        this.smoother.reset();
     }
 
     /**
@@ -214,6 +406,9 @@ extends Module {
      * Grim 的 PositionBreakA 逐面判定: 例如 EAST 要求眼睛 maxX 不在方块 X 区间内。
      */
     private Direction resolveFace(BlockPos pos) {
+        if (this.aimFace != null && pos.equals(this.aimPos)) {
+            return this.aimFace;
+        }
         Vec3 eye = mc.player.getEyePosition(1.0f);
         Vec3 center = Vec3.atCenterOf(pos);
         double dx = eye.x - center.x;
@@ -313,5 +508,6 @@ extends Module {
         this.elapsedTicks = 0;
         this.progress = 0.0f;
         this.landed = false;
+        this.resetAim();
     }
 }

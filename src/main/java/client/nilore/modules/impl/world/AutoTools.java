@@ -18,6 +18,7 @@ import client.nilore.event.impl.UpdateHeldItemEvent;
 import client.nilore.modules.Category;
 import client.nilore.modules.Module;
 import client.nilore.settings.impl.BooleanSetting;
+import client.nilore.settings.impl.NumberSetting;
 import client.nilore.utils.game.ItemUtil;
 import client.nilore.event.EventTarget;
 
@@ -26,8 +27,11 @@ extends Module {
     private final BooleanSetting checkSword = new BooleanSetting("Check Sword", false);
     private final BooleanSetting switchBack = new BooleanSetting("Switch Back", true);
     private final BooleanSetting silent = new BooleanSetting("Silent", true);
+    private final NumberSetting delay = new NumberSetting("Delay", 0, 0, 3, 1);
     public static String[] toolNames;
     private int previousSlot = -1;
+    private int switchTicks;
+    private BlockPos lastTarget;
 
     public AutoTools() {
         super("AutoTools", Category.WORLD);
@@ -57,17 +61,32 @@ extends Module {
             return;
         }
         if (motionEvent.isPost()) {
-            if (mc.gameMode.isDestroying()) {
-                int bestSlot;
-                ItemStack heldStack;
-                if (this.checkSword.getValue() && (heldStack = mc.player.getMainHandItem()).getItem() instanceof SwordItem) {
-                    return;
-                }
-                BlockHitResult blockHit;
-                if (mc.hitResult != null && mc.hitResult.getType() == HitResult.Type.BLOCK && (bestSlot = this.getBestTool((blockHit = (BlockHitResult)mc.hitResult).getBlockPos())) != -1 && bestSlot != mc.player.getInventory().selected) {
-                    this.previousSlot = mc.player.getInventory().selected;
-                    mc.player.getInventory().selected = bestSlot;
-                }
+            if (!mc.gameMode.isDestroying()) {
+                this.switchTicks = 0;
+                this.lastTarget = null;
+                return;
+            }
+            int bestSlot;
+            BlockHitResult blockHit;
+            if (this.checkSword.getValue() && mc.player.getMainHandItem().getItem() instanceof SwordItem) {
+                return;
+            }
+            if (mc.hitResult == null || mc.hitResult.getType() != HitResult.Type.BLOCK || (bestSlot = this.getBestTool((blockHit = (BlockHitResult)mc.hitResult).getBlockPos())) == -1 || bestSlot == mc.player.getInventory().selected) {
+                this.switchTicks = 0;
+                this.lastTarget = null;
+                return;
+            }
+            if (blockHit.getBlockPos().equals(this.lastTarget)) {
+                ++this.switchTicks;
+            } else {
+                this.lastTarget = blockHit.getBlockPos();
+                this.switchTicks = 0;
+            }
+            if (this.switchTicks >= this.delay.getValue().intValue()) {
+                this.previousSlot = mc.player.getInventory().selected;
+                mc.player.getInventory().selected = bestSlot;
+                this.switchTicks = 0;
+                this.lastTarget = null;
             }
         } else if (!mc.gameMode.isDestroying() && this.switchBack.getValue() && this.previousSlot != -1) {
             mc.player.getInventory().selected = this.previousSlot;

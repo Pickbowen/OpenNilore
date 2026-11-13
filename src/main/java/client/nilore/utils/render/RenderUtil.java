@@ -1,7 +1,11 @@
 package client.nilore.utils.render;
 
+import com.google.common.base.Supplier;
+import com.google.common.base.Suppliers;
 import com.mojang.blaze3d.pipeline.RenderTarget;
+import com.mojang.blaze3d.pipeline.TextureTarget;
 import com.mojang.blaze3d.platform.GlStateManager;
+import com.mojang.blaze3d.platform.NativeImage;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.BufferBuilder;
 import com.mojang.blaze3d.vertex.BufferUploader;
@@ -10,23 +14,35 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.Tesselator;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import java.awt.Color;
+import java.awt.Graphics;
 import java.awt.image.BufferedImage;
+import java.awt.image.RenderedImage;
+import java.io.ByteArrayOutputStream;
+import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Stack;
+import javax.imageio.ImageIO;
 import lombok.Generated;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.GameRenderer;
+import net.minecraft.client.renderer.texture.AbstractTexture;
+import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 import org.joml.Vector4f;
+import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
 import client.nilore.ClientBase;
 import client.nilore.render.Batch2D;
+import client.nilore.render.GaussianBlur;
+import client.nilore.render.ResourceLocationWrapper;
 import client.nilore.render.BlurFbo;
 import client.nilore.render.BlurShader;
 import client.nilore.render.shader.ShaderFormats;
@@ -35,17 +51,35 @@ import client.nilore.utils.animation.Timer;
 import client.nilore.utils.game.EntityUtil;
 import client.nilore.utils.render.ColorUtil;
 import client.nilore.utils.render.RenderHelper;
+import client.nilore.utils.render.RenderUtil.ShadowTexture;
 
 public final class RenderUtil
 extends ClientBase {
 
+    public static class ShadowTexture {
+        public client.nilore.render.ResourceLocationWrapper resourceLocation =
+                new client.nilore.render.ResourceLocationWrapper("texture/remote/"
+                        + org.apache.commons.lang3.RandomStringUtils.randomAlphanumeric(16));
+
+        public ShadowTexture(java.awt.image.BufferedImage image) {
+            RenderUtil.registerTexture(this.resourceLocation, image);
+        }
+
+        public void bind() {
+            com.mojang.blaze3d.systems.RenderSystem.setShaderTexture(0, this.resourceLocation.get());
+        }
+    }
+
     private static final Stack<int[]> scissorStack = new Stack<>();
+    private static final Map<Integer, RenderUtil.ShadowTexture> shadowCache = new HashMap<>();
     private static ShaderProgram blurShader;
+    private static final Supplier<TextureTarget> textureTargetSupplier;
     private static RenderTarget mainRenderTarget;
     private static ShaderProgram roundedRectShader;
     private static boolean blurFailed;
     private static BlurShader gaussianBlur;
     private static final BlurFbo blurFboA = new BlurFbo();
+    private static final BlurFbo blurFboB = new BlurFbo();
     /** 每帧只抓一次的 1/4 分辨率「未模糊」副本，本帧所有模糊调用共用。 */
     private static final BlurFbo blurFboSrc = new BlurFbo();
     private static final BlurFbo blurFboC = new BlurFbo();
@@ -57,10 +91,9 @@ extends ClientBase {
 
     /**
      * 帧边界：每帧在渲染前半段调一次（{@code LevelRendererPatch} 的 renderLevel 尾部）。
-     * 本帧第一个 {@link #drawBlurredRect} 会重新抓屏，其余调用直接复用同一份降采样结果。
+     * 本帧第一个 {@link #drawBlurredRect} 负责重新抓屏，其余调用复用同一份降采样结果。
      *
-     * <p>这条改动是把「每个面板各抓一次全屏」变成「每帧抓一次」：1080p 下一次全屏拷贝约 8 MB，
-     * Tab 列表 20 个玩家就是 20 份拷贝 + 20 趟全屏高斯，单这一项每帧就能吃掉 20~60 ms。</p>
+     * <p>只改「谁抓屏、抓几次」，合成着色器与参数没动，观感与原来一致。</p>
      */
     public static void beginFrame() {
         blurFrameDirty = true;
@@ -211,6 +244,7 @@ extends ClientBase {
 
     public static void drawBlurredRect(PoseStack poseStack, float x, float y, float width, float height, float radius, float blurRadius, float opacity, int color) {
         try {
+            PoseStack blitPoseStack;
             if (blurFailed) {
                 return;
             }
@@ -246,9 +280,9 @@ extends ClientBase {
             RenderHelper.resetShaderColor();
 
             // Capture is FRAME-SCOPED: the first caller downsamples the main target straight into
-            // blurFboSrc, and every later caller (tab list, nametags, toasts, ...) reuses it.
-            // Previously every call copied the whole framebuffer and ran two full-screen Gaussian
-            // passes, so the cost was O(number of blurred elements) per frame.
+            // blurFboSrc, and every later caller (tab list, nametags, toasts, click GUI panels)
+            // reuses it. Previously every call copied the whole framebuffer and ran two full-screen
+            // Gaussian passes, so the cost was O(number of blurred elements) per frame.
             if (gaussianBlur == null) {
                 gaussianBlur = new BlurShader();
                 gaussianBlur.init();
@@ -277,8 +311,8 @@ extends ClientBase {
             if (scissorWasEnabled) {
                 RenderSystem.enableScissor(scissorBox[0], scissorBox[1], scissorBox[2], scissorBox[3]);
             }
-            // Two separable Gaussian passes on the quarter-res capture. Callers that ask for the
-            // same strength (the common case — most panels use 15) reuse the previous result.
+            // Two separable Gaussian passes on the quarter-res capture. Callers asking for the same
+            // strength (most panels use 15) reuse the previous result.
             float sigma = Math.max(1.0f, blurRadius * 0.25f);
             if (Float.isNaN(blurredSigma) || Math.abs(sigma - blurredSigma) > 1.0e-3f) {
                 blurFboC.resize(blurWidth, blurHeight);
@@ -743,26 +777,47 @@ extends ClientBase {
         RenderHelper.resetShaderColor();
     }
 
-    /**
-     * 面板外发光（阴影）。
-     *
-     * <p>旧实现按「宽 × 高 × 半径」缓存一张 AWT 高斯模糊图：cache miss 时要
-     * {@code BufferedImage} → 两趟纯 Java 卷积 → PNG 编码 → {@code NativeImage.read} → 纹理上传
-     * （约 2~6 ms），而且缓存键只由尺寸决定 —— 调用方只要传动画中的浮点尺寸就会**每帧 miss**，
-     * 同时这个缓存只增不减（纹理永不释放）。改为直接用 {@link client.nilore.render.RoundedRectShader}
-     * 的 glow 分支：一次 quad，无对象分配、无纹理、无 CPU 卷积。</p>
-     */
     public static void drawShadow(PoseStack poseStack, float x, float y, float width, float height, int blurRadius, int color) {
-        if (blurRadius <= 0 || ((color >>> 24) & 0xFF) == 0 || width <= 0.0f || height <= 0.0f) {
+        int cacheKey;
+        x -= (float)blurRadius;
+        y -= (float)blurRadius;
+        if (!shadowCache.containsKey(cacheKey = (int)((width += (float)(blurRadius * 2)) * (height += (float)(blurRadius * 2)) + width * (float)blurRadius))) {
+            BufferedImage bufferedImage = new BufferedImage((int)width, (int)height, 2);
+            Graphics graphics = bufferedImage.getGraphics();
+            graphics.setColor(new Color(-1));
+            graphics.fillRect(blurRadius, blurRadius, (int)(width - (float)(blurRadius * 2)), (int)(height - (float)(blurRadius * 2)));
+            graphics.dispose();
+            GaussianBlur gaussianBlur = new GaussianBlur(blurRadius);
+            BufferedImage blurredImage = gaussianBlur.filter(bufferedImage, null);
+            shadowCache.put(cacheKey, new RenderUtil.ShadowTexture(blurredImage));
             return;
         }
-        float spread = blurRadius;
-        float corner = spread * 0.5f;
-        client.nilore.render.DrawContext.getRoundedRectShader().drawGlow(
-                poseStack.last().pose(),
-                x - spread, y - spread, x + width + spread, y + height + spread,
-                corner, corner, corner, corner,
-                spread, color);
+        shadowCache.get(cacheKey).bind();
+        RenderUtil.enableBlend();
+        RenderUtil.drawTexture(-1, poseStack, x, y, width, height, (float)ColorUtil.getAlpha(color) / 255.0f, color);
+        RenderUtil.disableBlend();
+    }
+
+    public static void registerTexture(ResourceLocationWrapper resourceLocationWrapper, BufferedImage bufferedImage) {
+        try {
+            ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+            ImageIO.write((RenderedImage)bufferedImage, (String)"png", (OutputStream)byteArrayOutputStream);
+            byte[] pngBytes = byteArrayOutputStream.toByteArray();
+            RenderUtil.registerTextureBytes(resourceLocationWrapper, pngBytes);
+        } catch (Exception exception) {
+            // empty catch block
+        }
+    }
+
+    private static void registerTextureBytes(ResourceLocationWrapper resourceLocationWrapper, byte[] pngBytes) {
+        try {
+            ByteBuffer byteBuffer = BufferUtils.createByteBuffer(pngBytes.length).put(pngBytes);
+            byteBuffer.flip();
+            DynamicTexture dynamicTexture = new DynamicTexture(NativeImage.read(byteBuffer));
+            mc.execute(() -> mc.getTextureManager().register(resourceLocationWrapper.get(), dynamicTexture));
+        } catch (Exception exception) {
+            // empty catch block
+        }
     }
 
     public static int lerpColorHSB(int colorA, int colorB, float progress) {
@@ -788,6 +843,7 @@ extends ClientBase {
     }
 
     static {
+        textureTargetSupplier = Suppliers.memoize(() -> new TextureTarget(1920, 1024, false, Minecraft.ON_OSX));
         mainRenderTarget = mc.getMainRenderTarget();
         new Timer();
         blurFailed = false;

@@ -19,7 +19,6 @@ import client.nilore.modules.impl.combat.AutoOffHand;
 import client.nilore.modules.impl.combat.AutoSoup;
 import client.nilore.modules.impl.combat.AutoThrow;
 import client.nilore.modules.impl.combat.Backtrack;
-import client.nilore.modules.impl.combat.Critical;
 import client.nilore.modules.impl.combat.CrystalAura;
 import client.nilore.modules.impl.combat.KillAura;
 import client.nilore.modules.impl.exploit.Disabler;
@@ -86,7 +85,6 @@ public class ModuleManager extends ClientBase {
         this.register(new AutoSoup());
         this.register(new AutoThrow());
         this.register(new Backtrack());
-        this.register(new Critical());
         this.register(new CrystalAura());
         this.register(new KillAura());
 

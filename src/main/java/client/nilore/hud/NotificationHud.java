@@ -3,17 +3,10 @@ package client.nilore.hud;
 import client.nilore.NiloreClient;
 import client.nilore.settings.impl.BooleanSetting;
 import client.nilore.settings.impl.ModeSetting;
-import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.blaze3d.vertex.BufferBuilder;
-import com.mojang.blaze3d.vertex.BufferUploader;
-import com.mojang.blaze3d.vertex.DefaultVertexFormat;
-import com.mojang.blaze3d.vertex.Tesselator;
-import com.mojang.blaze3d.vertex.VertexFormat;
-import net.minecraft.client.renderer.GameRenderer;
-import org.joml.Matrix4f;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import com.mojang.blaze3d.platform.NativeImage;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.util.Mth;
 import net.minecraft.sounds.SoundEvents;
@@ -30,6 +23,7 @@ import client.nilore.render.Paint;
 import client.nilore.render.Rectangle;
 import client.nilore.render.Renderer;
 import client.nilore.render.RoundedRectangle;
+import client.nilore.render.Texture;
 import client.nilore.settings.impl.NumberSetting;
 import client.nilore.utils.misc.SoundUtil;
 import client.nilore.utils.render.ColorUtil;
@@ -84,6 +78,8 @@ public class NotificationHud extends HudElement {
 
     private DynamicTexture enabledIcon;
     private DynamicTexture disabledIcon;
+    private Texture enabledTexture;
+    private Texture disabledTexture;
 
     public NotificationHud() {
         super("Notification");
@@ -324,23 +320,16 @@ public class NotificationHud extends HudElement {
     }
 
     private void drawIcon(DrawContext drawContext, boolean enabled, float x, float y, float size, float alpha) {
-        DynamicTexture icon = enabled ? enabledIcon : disabledIcon;
-        if (icon == null) {
+        Texture texture = enabled ? enabledTexture : disabledTexture;
+        if (texture == null) {
             return;
         }
-        int iconAlpha = Math.round(alpha * 255.0f);
-        RenderSystem.setShader(GameRenderer::getPositionTexColorShader);
-        RenderSystem.setShaderTexture(0, icon.getId());
-        RenderSystem.enableBlend();
-        RenderSystem.defaultBlendFunc();
-        Matrix4f pose = drawContext.getPoseStack().last().pose();
-        BufferBuilder bufferBuilder = Tesselator.getInstance().getBuilder();
-        bufferBuilder.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_TEX_COLOR);
-        bufferBuilder.vertex(pose, x, y, 0.0f).uv(0.0f, 0.0f).color(255, 255, 255, iconAlpha).endVertex();
-        bufferBuilder.vertex(pose, x, y + size, 0.0f).uv(0.0f, 1.0f).color(255, 255, 255, iconAlpha).endVertex();
-        bufferBuilder.vertex(pose, x + size, y + size, 0.0f).uv(1.0f, 1.0f).color(255, 255, 255, iconAlpha).endVertex();
-        bufferBuilder.vertex(pose, x + size, y, 0.0f).uv(1.0f, 0.0f).color(255, 255, 255, iconAlpha).endVertex();
-        BufferUploader.drawWithShader(bufferBuilder.end());
+        try (Paint paint = new Paint()) {
+            paint.setColor(ColorUtil.withAlpha(0xFFFFFFFF, alpha));
+            drawContext.drawTexture(texture,
+                    Rectangle.ofXYWH(0.0f, 0.0f, texture.getWidth(), texture.getHeight()),
+                    Rectangle.ofXYWH(x, y, size, size), paint);
+        }
     }
 
     @Override
@@ -383,6 +372,16 @@ public class NotificationHud extends HudElement {
         }
         enabledIcon = TextureUtil.loadResourceTexture("/assets/nilore/notifications/Enabled.png");
         disabledIcon = TextureUtil.loadResourceTexture("/assets/nilore/notifications/Disabled.png");
+        enabledTexture = wrapIcon(enabledIcon);
+        disabledTexture = wrapIcon(disabledIcon);
+    }
+
+    private static Texture wrapIcon(DynamicTexture icon) {
+        NativeImage pixels = icon == null ? null : icon.getPixels();
+        if (pixels == null) {
+            return null;
+        }
+        return new Texture(icon.getId(), pixels.getWidth(), pixels.getHeight());
     }
 
     private static class NotificationEntry {

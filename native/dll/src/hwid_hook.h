@@ -11,8 +11,8 @@
 //
 //   HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid
 //   HKLM\Software\Microsoft\Windows NT\CurrentVersion\ProductId
-//   HKLM\SYSTEM\CurrentControlSet\Control\SystemInformation\BIOS\... (future)
-//   VolumeSerialNumber (via GetVolumeInformationW is NOT covered - registry only)
+//   HKLM\SYSTEM\CurrentControlSet\Control\ComputerName\ComputerName
+//   VolumeSerialNumber (the API side lives in hwid_disk.cpp)
 //
 // Implementation notes (all deliberate for low detectability):
 //  * We patch only the *target's own* IAT slots (the modules that actually
@@ -33,9 +33,9 @@ namespace hwid {
 // Number of IAT slots patched (for logging / verification).
 extern std::atomic<LONG> g_patch_count;
 
-// Install the spoof. Returns true if at least one IAT slot was patched and
-// is active. Never throws / logs - silent failure = disabled.
-bool install();
+// Install the spoof. >0 = modules patched, 0 = armed for late-loading
+// importers, -1 = nothing could be armed. Never throws / logs.
+int install();
 
 // True if install() succeeded and the hook is currently live.
 bool active();

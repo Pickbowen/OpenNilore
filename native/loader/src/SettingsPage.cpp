@@ -1,6 +1,7 @@
 #include "SettingsPage.h"
 
 #include "PillSwitch.h"
+#include "UiTheme.h"
 #include "loader_settings.h"
 
 #include <QFrame>
@@ -13,18 +14,18 @@ namespace loader {
 namespace {
 const char* kSettingsQss = R"qss(
     QFrame#toggleRow {
-        background: rgba(38, 40, 46, 0.85);
-        border: 1px solid #2c2e35;
+        background: #1D2024;
+        border: 1px solid rgba(255, 255, 255, 10);
         border-radius: 8px;
     }
     QLabel#toggleName {
-        color: #dfe3ea;
-        font-size: 13px;
+        color: #D2D6DC;
+        font-size: 12px;
         font-weight: 600;
     }
     QLabel#toggleDesc {
-        color: #868c98;
-        font-size: 12px;
+        color: #666C76;
+        font-size: 11px;
     }
 )qss";
 } // namespace
@@ -43,12 +44,14 @@ QWidget* SettingsPage::makeToggleRow(const QString& name, const QString& desc,
                                      PillSwitch* sw, QWidget* parent) {
     auto* row = new QFrame(parent);
     row->setObjectName("toggleRow");
-    row->setMinimumHeight(58);
+    row->setMinimumHeight(56);
     auto* rowLayout = new QHBoxLayout(row);
-    rowLayout->setContentsMargins(14, 10, 14, 10);
-    rowLayout->setSpacing(10);
+    rowLayout->setContentsMargins(ui::kCardPadX, 12, ui::kCardPadX, 12);
+    rowLayout->setSpacing(12);
 
     auto* names = new QVBoxLayout();
+    names->setContentsMargins(0, 0, 0, 0);
+    names->setSpacing(2);
     auto* nameLabel = new QLabel(name, row);
     nameLabel->setObjectName("toggleName");
     auto* descLabel = new QLabel(desc, row);
@@ -64,16 +67,15 @@ QWidget* SettingsPage::makeToggleRow(const QString& name, const QString& desc,
 
 void SettingsPage::buildUi() {
     auto* col = new QVBoxLayout(this);
-    col->setContentsMargins(18, 18, 18, 18);
-    col->setSpacing(10);
+    col->setContentsMargins(ui::kGutter, 24, ui::kGutterRight, 24);
+    col->setSpacing(0);
 
     auto* title = new QLabel(QStringLiteral("Settings"), this);
     title->setObjectName("title");
     title->setAlignment(Qt::AlignLeft);
-    title->setStyleSheet(QStringLiteral("font-size:18px;font-weight:600;color:#ffffff;"));
     col->addWidget(title);
+    col->addSpacing(18);
 
-    // ---- HWID Spoof (default OFF) ----
     hwidSwitch_ = new PillSwitch(this);
     hwidSwitch_->setChecked(loader_settings::is_hwid_spoof_enabled());
     connect(hwidSwitch_, &PillSwitch::toggled, this, [](bool on) {
@@ -84,11 +86,8 @@ void SettingsPage::buildUi() {
         QStringLiteral("Spoofs machine fingerprint surfaces (MachineGuid, volume "
                        "serial, MAC, computer name). Default OFF."),
         hwidSwitch_, this));
+    col->addSpacing(8);
 
-    // Native Bypass: instead of attaching to the running instance, restart it from
-    // its own command line with CREATE_SUSPENDED, map the DLL in while the main
-    // thread is still frozen, then resume. Nothing the game loads afterwards
-    // (an anti-cheat's loader included) can run before the DLL is resident.
     nativeBypassSwitch_ = new PillSwitch(this);
     nativeBypassSwitch_->setChecked(loader_settings::is_native_bypass_enabled());
     connect(nativeBypassSwitch_, &PillSwitch::toggled, this, [](bool on) {

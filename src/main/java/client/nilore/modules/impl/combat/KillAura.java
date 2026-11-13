@@ -91,6 +91,7 @@ public class KillAura extends Module {
     public static List<Entity> targetList = new ArrayList<>();
 
     private static final double MAX_REACH = 3.0;
+    private static final int MIN_NOSPRINT_TICKS = 3;
 
     private static final ResourceLocation NURIK_CAPTURE_TEXTURE = ResourceLocation.tryParse("nilore:nurik/capture");
     private static final String NURIK_CAPTURE_ASSET = "/assets/nilore/nurik/capture.png";
@@ -107,6 +108,7 @@ public class KillAura extends Module {
     public final BooleanSetting morePart        = new BooleanSetting("More Particles", false);
 
     public final BooleanSetting keepSprint = new BooleanSetting("Keep Sprint", true);
+    public final BooleanSetting fallOnly = new BooleanSetting("Only Falling Attack", true);
     public final BooleanSetting throughWalls    = new BooleanSetting("Through Walls", false);
     public final NumberSetting throughWallsRange = new NumberSetting("Through Walls Range", 3.0, 1.0, 6.0, 0.1,
             () -> (Boolean) this.throughWalls.getValue());
@@ -149,6 +151,8 @@ public class KillAura extends Module {
         target = null;
         aimingTarget = null;
         targetList.clear();
+        this.critDropped = false;
+        this.critDroppedTick = -1L;
         super.onEnable();
     }
 
@@ -160,6 +164,10 @@ public class KillAura extends Module {
         this.sprintTickCounter = 0;
         this.attackTimes = 0;
         this.rotation = null;
+        if (this.critDropped) {
+            this.critDropped = false;
+            this.restoreSprint();
+        }
         super.onDisable();
     }
 
@@ -169,6 +177,18 @@ public class KillAura extends Module {
     public void onTick(TickEvent event) {
         if (!NiloreClient.isReady()) {
             return;
+        }
+        if (this.critDropped) {
+            long held = mc.level != null ? mc.level.getGameTime() - this.critDroppedTick : 0L;
+            if (held >= MIN_NOSPRINT_TICKS
+                    && (this.willLandNextTick() || !this.isFallingForCrit() || !this.keepSprint.getValue())) {
+                this.critDropped = false;
+                this.restoreSprint();
+            }
+        } else if (this.canCritUnderVelocity()) {
+            this.critDropped = true;
+            this.critDroppedTick = mc.level != null ? mc.level.getGameTime() : 0L;
+            this.dropSprint();
         }
         double reach = Mth.clamp(this.reach.getValue().doubleValue(),
                 this.reach.getMin().doubleValue(),
@@ -260,11 +280,12 @@ public class KillAura extends Module {
         // Naven onClick 闸门: 用物品为空 + 无界面 + 无 lag + 1.9 冷却; 外加 NoXZ 互斥。
         if (mc.player.getUseItem().isEmpty()
                 && mc.screen == null
-                && (this.ignoreSkipTicks.getValue() || ClientBase.delayPackets.isEmpty()
-                        || (Critical.INSTANCE != null && Critical.INSTANCE.isEnabled()))
-                && !NoXZMode.isCountering()
-                && !(NoXZMode.isInDelayWindow() && shouldKeepSprintInDelayWindow())) {
+                && (this.ignoreSkipTicks.getValue() || ClientBase.delayPackets.isEmpty())
+                && !NoXZMode.isCountering()) {
             if (this.delayMode.is("1.9") && mc.player.getAttackStrengthScale(0.0f) < 0.95f) {
+                return;
+            }
+            if (this.holdAttackForFall()) {
                 return;
             }
             while (this.attacks >= 1.0f) {
@@ -528,9 +549,9 @@ public class KillAura extends Module {
         return AutoWebPlace.INSTANCE != null && AutoWebPlace.INSTANCE.isEnabled() && AutoWebPlace.targetRotation != null;
     }
 
-    // ===== 外部 API (NoXZMode / Critical / Sprint / RotationHandler 依赖) =====
+    // ===== 外部 API (NoXZMode / Sprint / RotationHandler 依赖) =====
 
-    /** One attack per client tick, shared by the aura, NoXZMode's counter and Critical. */
+    /** One attack per client tick, shared by the aura and NoXZMode's counter. */
     public static boolean attackAndLock() {
         long tick = mc.level != null ? mc.level.getGameTime()
                 : (mc.player != null ? mc.player.tickCount : 0);
@@ -542,6 +563,9 @@ public class KillAura extends Module {
     }
 
     private static long attackLockTick = -1L;
+
+    private boolean critDropped;
+    private long critDroppedTick = -1L;
 
     public static boolean shouldKeepSprintInDelayWindow() {
         if (mc.player == null || mc.level == null) return false;
@@ -572,10 +596,10 @@ public class KillAura extends Module {
             return false;
         }
         if (AntiKB.INSTANCE != null && AntiKB.INSTANCE.isEnabled()) {
-            if (NoXZMode.isInDelayWindow() && shouldKeepSprintInDelayWindow()) {
+            if (NoXZMode.isCountering()) {
                 return false;
             }
-            if (NoXZMode.isCountering()) {
+            if (NoXZMode.isInDelayWindow() && mc.player.onGround()) {
                 return false;
             }
             if (AntiKB.mode.is("Jump Reset") && JumpResetMode.isJumping) {
@@ -588,7 +612,62 @@ public class KillAura extends Module {
         if (mc.player.isDeadOrDying() || !this.keepSprint.getValue()) {
             return false;
         }
-        return !mc.player.isUsingItem() || !mc.options.keyUse.isDown();
+        return this.isFallingForCrit();
+    }
+
+    public boolean isCritDropArmed() {
+        return this.critDropped;
+    }
+
+    private boolean isFallingForCrit() {
+        if (mc.player == null) {
+            return false;
+        }
+        if (mc.player.onGround() || mc.player.onClimbable() || mc.player.isInWater()
+                || mc.player.isInLava() || mc.player.isPassenger()) {
+            return false;
+        }
+        return mc.player.fallDistance > 0.0f && mc.player.getDeltaMovement().y < 0.0;
+    }
+
+    private boolean holdAttackForFall() {
+        if (mc.player == null) {
+            return false;
+        }
+        if (this.critDropped) {
+            return mc.level != null && mc.level.getGameTime() <= this.critDroppedTick;
+        }
+        if (!this.fallOnly.getValue() || mc.player.onGround() || this.target == null) {
+            return false;
+        }
+        return !this.isFallingForCrit();
+    }
+
+    private void dropSprint() {
+        if (mc.player == null) {
+            return;
+        }
+        mc.options.keySprint.setDown(false);
+        if (mc.player.isSprinting()) {
+            mc.player.setSprinting(false);
+        }
+    }
+
+    private boolean willLandNextTick() {
+        if (mc.player == null) {
+            return false;
+        }
+        return new MotionSimulator(mc.player).findLandingBlock(1) != null;
+    }
+
+    private void restoreSprint() {
+        if (mc.player == null) {
+            return;
+        }
+        mc.options.keySprint.setDown(true);
+        if (!mc.player.isUsingItem() && mc.player.input.forwardImpulse > 0.0f) {
+            mc.player.setSprinting(true);
+        }
     }
 
     /**
@@ -598,12 +677,8 @@ public class KillAura extends Module {
      */
     @EventTarget
     public void onSprint(SprintEvent sprintEvent) {
-        if (!this.canCritUnderVelocity()) {
-            return;
-        }
-        mc.options.keySprint.setDown(false);
-        if (mc.player != null && mc.player.isSprinting()) {
-            mc.player.setSprinting(false);
+        if (this.critDropped) {
+            this.dropSprint();
         }
     }
 

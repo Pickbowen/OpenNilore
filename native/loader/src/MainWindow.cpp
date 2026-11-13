@@ -5,6 +5,7 @@
 #include "SettingsPage.h"
 #include "Sidebar.h"
 #include "TitleBar.h"
+#include "UiTheme.h"
 #include "loader.h"
 #include "loader_settings.h"
 
@@ -18,7 +19,6 @@
 #include <QEasingCurve>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QLinearGradient>
 #include <QPainter>
 #include <QPainterPath>
 #include <QParallelAnimationGroup>
@@ -40,7 +40,6 @@
 namespace loader {
 
 namespace {
-constexpr int kCornerRadius = 12;
 constexpr int kBaseWidth    = 760;
 constexpr int kBaseHeight   = 500;
 constexpr int kSizeJitter   = 10;   // ± px of random size jitter applied per launch
@@ -169,11 +168,13 @@ void MainWindow::buildUi() {
     root->addWidget(body, 1);
 
     auto* statusRow = new QWidget(central);
+    statusRow->setFixedHeight(ui::kStatusHeight);
     auto* statusRowLayout = new QHBoxLayout(statusRow);
-    statusRowLayout->setContentsMargins(10, 0, 10, 10);
+    statusRowLayout->setContentsMargins(14, 0, ui::kGutterRight, 0);
+    statusRowLayout->setSpacing(0);
     status_ = new QLabel(statusRow);
     status_->setObjectName("status");
-    statusRowLayout->addWidget(status_);
+    statusRowLayout->addWidget(status_, 0, Qt::AlignVCenter);
     statusRowLayout->addStretch(1);
     root->addWidget(statusRow);
 
@@ -187,27 +188,26 @@ void MainWindow::styleApp() {
     static const char* kQss = R"qss(
         QWidget#body {
             background: transparent;
-            color: #e3e5ea;
-            font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
-            font-size: 13px;
-        }
-        QLabel#title {
-            font-size: 18px;
-            font-weight: 600;
-            color: #ffffff;
-            padding: 2px 0 0 2px;
-        }
-        QLabel#hint {
-            color: #8a8e98;
-            font-size: 12px;
-            padding-left: 2px;
+            color: #D2D6DC;
         }
         QLabel#status {
-            color: #c2c6cf;
-            padding: 7px 11px;
-            border: 1px solid #2c2e35;
-            border-radius: 7px;
-            background: rgba(35, 37, 43, 200);
+            color: #858B95;
+            font-size: 11px;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                        stop:0 rgba(255, 255, 255, 17),
+                                        stop:1 rgba(255, 255, 255, 6));
+            border: none;
+            border-radius: 5px;
+            padding: 3px 9px;
+        }
+        QLabel#title {
+            font-size: 17px;
+            font-weight: 600;
+            color: #FFFFFF;
+        }
+        QLabel#hint {
+            color: #666C76;
+            font-size: 11px;
         }
     )qss";
     qApp->setStyleSheet(QString::fromUtf8(kQss));
@@ -215,14 +215,24 @@ void MainWindow::styleApp() {
 
 void MainWindow::enableWin11RoundedCorners() {
 #ifdef Q_OS_WIN
-    // DWMWA_WINDOW_CORNER_PREFERENCE is Windows 11+. The call is harmless
-    // (returns an HRESULT we ignore) on Windows 10 — DwmSetWindowAttribute
-    // just rejects the unknown attribute, no crash.
-    enum { DWMWA_WINDOW_CORNER_PREFERENCE_LOCAL = 33 };
-    enum { DWMWCP_ROUND_LOCAL = 2 };
     HWND hwnd = reinterpret_cast<HWND>(winId());
     if (!hwnd) return;
-    int pref = DWMWCP_ROUND_LOCAL;
+
+    // Windows 11 paints a 1px system border around frameless windows. Setting
+    // DWMWA_BORDER_COLOR to DWMWA_COLOR_NONE removes it, leaving only the
+    // rounded panel we draw ourselves in paintEvent.
+    enum { DWMWA_BORDER_COLOR_LOCAL = 34 };
+    const DWORD borderNone = 0xFFFFFFFE;   // DWMWA_COLOR_NONE
+    DwmSetWindowAttribute(hwnd,
+                          DWMWA_BORDER_COLOR_LOCAL,
+                          &borderNone,
+                          sizeof(borderNone));
+
+    // The 14px rounding is drawn by paintEvent; DWM's own rounding would show
+    // a second, tighter contour just inside it.
+    enum { DWMWA_WINDOW_CORNER_PREFERENCE_LOCAL = 33 };
+    enum { DWMWCP_DONOTROUND_LOCAL = 1 };
+    int pref = DWMWCP_DONOTROUND_LOCAL;
     DwmSetWindowAttribute(hwnd,
                           DWMWA_WINDOW_CORNER_PREFERENCE_LOCAL,
                           &pref,
@@ -234,18 +244,11 @@ void MainWindow::paintEvent(QPaintEvent*) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
 
-    QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+    const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
     QPainterPath panel;
-    panel.addRoundedRect(r, kCornerRadius, kCornerRadius);
+    panel.addRoundedRect(r, ui::kRadiusWindow, ui::kRadiusWindow);
 
-    QLinearGradient bg(r.topLeft(), r.bottomLeft());
-    bg.setColorAt(0.0, QColor("#1f2127"));
-    bg.setColorAt(1.0, QColor("#15171c"));
-    p.fillPath(panel, bg);
-
-    p.setPen(QPen(QColor(255, 255, 255, 26), 1));
-    p.setBrush(Qt::NoBrush);
-    p.drawPath(panel);
+    p.fillPath(panel, ui::bgWindow());
 }
 
 void MainWindow::showEvent(QShowEvent* e) {

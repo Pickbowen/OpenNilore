@@ -1,8 +1,10 @@
 #include "MainWindow.h"
 #include "SplashScreen.h"
+#include "UiTheme.h"
 #include "autoquit.h"
 
 #include <QApplication>
+#include <QFont>
 #include <QStyleFactory>
 
 int main(int argc, char** argv) {
@@ -19,6 +21,12 @@ int main(int argc, char** argv) {
         loader::dbg::installAutoQuit(&app);
     }
     QApplication::setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
+
+    QFont appFont(loader::ui::uiFontFamily());
+    appFont.setPixelSize(12);
+    appFont.setStyleStrategy(QFont::PreferAntialias);
+    QApplication::setFont(appFont);
+
     QApplication::setApplicationName(QStringLiteral("OpenNilore Loader"));
     QApplication::setOrganizationName(QStringLiteral("OpenNilore"));
 

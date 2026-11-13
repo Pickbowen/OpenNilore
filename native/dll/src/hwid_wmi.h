@@ -29,8 +29,8 @@
 
 namespace hwid {
 
-// Install the WMI COM spoof. Returns true if the CoCreateInstance IAT hook is
-// live. Silent failure = disabled (default OFF).
-bool install_wmi();
+// Install the WMI COM spoof. >0 = modules patched, 0 = armed for modules that
+// load later, -1 = nothing could be armed.
+int install_wmi();
 
 } // namespace hwid
