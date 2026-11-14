@@ -84,7 +84,6 @@ public class LyricsModule extends Module {
     private double worldY;
     private double worldZ;
     private float worldSpreadYaw;
-    private float worldSpreadPitch;
     private long worldLastNanos;
     /** 逐词状态(字符区间 + 出现时刻), 每帧复用, 不做每帧分配。 */
     private int[] wordStart = new int[32];
@@ -94,6 +93,17 @@ public class LyricsModule extends Module {
 
     private final FontRenderer currentFont = FontPresets.pingfang(21);
     private final FontRenderer nearFont = FontPresets.pingfang(18);
+    /**
+     * 3D 歌词的可选字号。距离越近, 屏幕上每个字占的像素越多, 21px 的图集被放大就发糊;
+     * 按距离换到更大的图集、再把世界缩放除以字号倍数, 世界尺寸不变而栅格分辨率翻倍。
+     */
+    private static final float[] WORLD_FONT_SIZES = {21.0f, 32.0f, 48.0f};
+    private final FontRenderer[] worldFonts = {
+            FontPresets.pingfang(WORLD_FONT_SIZES[0]),
+            FontPresets.pingfang(WORLD_FONT_SIZES[1]),
+            FontPresets.pingfang(WORLD_FONT_SIZES[2])
+    };
+    private FontRenderer worldFont = this.worldFonts[0];
 
     public LyricsModule() {
         super("Lyrics", Category.RENDER);
@@ -248,14 +258,19 @@ public class LyricsModule extends Module {
             this.worldLineIndex = index;
             this.worldLineAlpha = 0.0f;
             this.worldPlaced = false;
-            this.worldSpreadYaw = (this.worldRandom.nextFloat() * 2.0f - 1.0f) * WORLD_SPREAD;
-            this.worldSpreadPitch = (this.worldRandom.nextFloat() * 2.0f - 1.0f) * WORLD_SPREAD * 0.35f;
+            // 每换一行, 整行随机甩到左边或右边 20 度, 不是连续随机。
+            this.worldSpreadYaw = (this.worldRandom.nextBoolean() ? 1.0f : -1.0f) * WORLD_SPREAD;
         }
         this.worldLineAlpha = Math.min(1.0f, this.worldLineAlpha + deltaMs / WORLD_FADE_MS);
 
         Camera camera = mc.gameRenderer.getMainCamera();
         Vec3 eye = camera.getPosition();
-        this.followCamera(camera.getLookVector(), eye, deltaMs);
+        // 只在这一行出现的那一帧投放一次, 之后位置就钉死在世界里 —— 这就是"停留"。
+        // 之前每帧都朝视线前方拉, 位置跟着视角漂, 观感上像一块贴在镜头上的 HUD 而不是
+        // 摆在场景里的一行字。
+        if (!this.worldPlaced) {
+            this.placeWorldLine(camera.getLookVector(), eye);
+        }
 
         float alpha = Mth.clamp(this.worldLineAlpha * this.alpha, 0.0f, 1.0f);
         if (alpha <= 0.01f) {
@@ -263,8 +278,17 @@ public class LyricsModule extends Module {
         }
         long lineEnd = index + 1 < snapshot.size()
                 ? snapshot.get(index + 1).timeMs() : line.timeMs() + 4000L;
+        // 实际观看距离(相机到这一行), 用它挑字号: 越近屏幕上越大, 越需要高分辨率图集。
+        double viewDistance = Math.sqrt(
+                (this.worldX - eye.x) * (this.worldX - eye.x)
+                        + (this.worldY - eye.y) * (this.worldY - eye.y)
+                        + (this.worldZ - eye.z) * (this.worldZ - eye.z));
+        int fontIdx = viewDistance <= 6.0 ? 2 : viewDistance <= 10.0 ? 1 : 0;
+        this.worldFont = this.worldFonts[fontIdx];
+        // 字号放大 k 倍, 世界缩放就除以 k: 字在屏幕上占的方块尺寸不变, 只是采样更细。
+        float rasterBoost = WORLD_FONT_SIZES[fontIdx] / WORLD_FONT_SIZES[0];
         float pixels = WORLD_BASE_SCALE * this.worldScale.getValue().floatValue()
-                * (this.worldDistance.getValue().floatValue() / 12.0f);
+                * (this.worldDistance.getValue().floatValue() / 12.0f) / rasterBoost;
         PoseStack poseStack = event.poseStack();
         poseStack.pushPose();
         poseStack.translate(this.worldX - eye.x, this.worldY - eye.y, this.worldZ - eye.z);
@@ -286,7 +310,13 @@ public class LyricsModule extends Module {
         }
     }
 
-    private void followCamera(Vector3f look, Vec3 eye, float deltaMs) {
+    /**
+     * 把这一行摆到"视线前方 distance 格、按 {@link #worldSpreadYaw} 偏一下"的位置, 只调一次。
+     *
+     * <p>偏航是左右二选一的整 20 度 (不是连续随机), 对应参考实现里那一行随机甩向左侧或右侧的
+     * 观感; 俯仰不再参与, 免得同一行一会儿上一会儿下。
+     */
+    private void placeWorldLine(Vector3f look, Vec3 eye) {
         double distance = this.worldDistance.getValue().floatValue();
         double yawOffset = Math.toRadians(this.worldSpreadYaw);
         double cos = Math.cos(yawOffset);
@@ -294,53 +324,40 @@ public class LyricsModule extends Module {
         double dx = look.x() * cos + look.z() * sin;
         double dz = -look.x() * sin + look.z() * cos;
         double horizontal = Math.sqrt(dx * dx + dz * dz);
-        double elevation = Math.atan2(look.y(), horizontal) + Math.toRadians(this.worldSpreadPitch);
-        double cosPitch = Math.cos(elevation);
-        double sinPitch = Math.sin(elevation);
         double hx = horizontal > 1.0E-6 ? dx / horizontal : 0.0;
         double hz = horizontal > 1.0E-6 ? dz / horizontal : 1.0;
-        // 相机"上"方向(与 look 垂直且指向上方), 参考实现用它把整行抬一点
+        // 相机"上"方向(与 look 垂直且指向上方), 用它把整行抬一点, 免得压在准星上
         double lookHorizontal = Math.sqrt(look.x() * look.x() + look.z() * look.z());
         double upX = -look.y() * look.x() / Math.max(1.0E-6, lookHorizontal);
         double upZ = -look.y() * look.z() / Math.max(1.0E-6, lookHorizontal);
-        double targetX = eye.x + hx * cosPitch * distance + upX * WORLD_OFFSET_Y;
-        double targetY = Math.max(eye.y + sinPitch * distance + lookHorizontal * WORLD_OFFSET_Y,
+        this.worldX = eye.x + hx * distance + upX * WORLD_OFFSET_Y;
+        this.worldY = Math.max(eye.y + look.y() * distance + lookHorizontal * WORLD_OFFSET_Y,
                 eye.y - WORLD_GROUND_MARGIN);
-        double targetZ = eye.z + hz * cosPitch * distance + upZ * WORLD_OFFSET_Y;
-        if (!this.worldPlaced) {
-            this.worldX = targetX;
-            this.worldY = targetY;
-            this.worldZ = targetZ;
-            this.worldPlaced = true;
-            return;
-        }
-        float k = 1.0f - (float) Math.exp(-deltaMs / 90.0f);
-        this.worldX += (targetX - this.worldX) * k;
-        this.worldY += (targetY - this.worldY) * k;
-        this.worldZ += (targetZ - this.worldZ) * k;
+        this.worldZ = eye.z + hz * distance + upZ * WORLD_OFFSET_Y;
+        this.worldPlaced = true;
     }
 
     private void drawWorldText(PoseStack poseStack, LyricLine line, String text, long position, float alpha,
                                long lineEnd) {
-        CustomFont font = this.currentFont.getFont();
+        CustomFont font = this.worldFont.getFont();
         if (font == null) {
             return;
         }
-        float width = GlHelper.getStringWidth(text, this.currentFont);
+        float width = GlHelper.getStringWidth(text, this.worldFont);
         if (width > WORLD_MAX_WIDTH) {
             float fit = WORLD_MAX_WIDTH / width;
             poseStack.scale(fit, fit, 1.0f);
         }
         this.fillWordState(line, text, position, lineEnd);
-        float baseline = GlHelper.getFontAscent(this.currentFont) * 0.5f;
+        float baseline = GlHelper.getFontAscent(this.worldFont) * 0.5f;
         float left = -width / 2.0f;
         long elapsed = position - line.timeMs();
         for (int w = 0; w < this.wordCount; ++w) {
             int start = this.wordStart[w];
             int end = this.wordEnd[w];
             String word = text.substring(start, end);
-            float wordX = left + GlHelper.getStringWidth(text.substring(0, start), this.currentFont);
-            float wordWidth = GlHelper.getStringWidth(word, this.currentFont);
+            float wordX = left + GlHelper.getStringWidth(text.substring(0, start), this.worldFont);
+            float wordWidth = GlHelper.getStringWidth(word, this.worldFont);
             float appear = 1.0f;
             long appearAt = this.wordAppear[w];
             if (appearAt > 0L) {
@@ -356,8 +373,6 @@ public class LyricsModule extends Module {
             poseStack.translate(centerX, -(1.0f - appear) * POP_LIFT, 0.0f);
             poseStack.scale(pop, pop, 1.0f);
             poseStack.translate(-centerX, 0.0f, 0.0f);
-            font.drawString(poseStack, word, wordX + 1.5f, baseline + 1.5f,
-                    ColorUtil.withAlpha(0x000000, alpha * appear * 0.45f));
             if (alpha > 0.02f) {
                 poseStack.pushPose();
                 poseStack.translate(centerX, 0.0f, 0.0f);

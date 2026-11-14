@@ -20,10 +20,12 @@ add_library(OpenZen SHARED
     src/hwid_hook.cpp
     src/hwid_wmi.cpp
     src/hwid_wmi_vtbl.cpp
+    src/hwid_config.cpp
     src/hwid_firmware.cpp
     src/hwid_disk.cpp
     src/hwid_net.cpp
     src/iat_patch.cpp
+    src/inline_hook.cpp
     src/spoof_values.cpp
     res/openzen.rc
 )

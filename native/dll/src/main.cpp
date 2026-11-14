@@ -1,4 +1,5 @@
 #include "openzen.h"
+#include "hwid_config.h"
 #include "hwid_hook.h"
 #include "hwid_wmi.h"
 #include "hwid_wmi_vtbl.h"
@@ -19,87 +20,63 @@ namespace {
 std::atomic<bool> g_already_attached{false};
 
 void report_install(const char* what, int code) {
-    if (code > 0) openzen::log::info("%s active", what);
-    else if (code == 0) openzen::log::info("%s armed, no importer yet", what);
-    else openzen::log::info("%s unavailable", what);
+    if (code > 0) openzen::log::info("  %-32s active", what);
+    else if (code == 0) openzen::log::info("  %-32s armed, no importer yet", what);
+    else openzen::log::info("  %-32s unavailable", what);
 }
 
-// Which spoof surfaces to arm.
-//
-// The default is *only* WMI, and that is a deliberate result of reading the
-// anticheat's string pool: it queries Win32_ComputerSystemProduct.UUID,
-// Win32_Processor.ProcessorId, Win32_DiskDrive.SerialNumber,
-// Win32_BaseBoard.{Manufacturer,Product,SerialNumber,Version} and the registry
-// value HARDWARE\DESCRIPTION\System\CentralProcessor\0\ProcessorNameString.
-// Everything else it could read is not read, so hooking it only adds import
-// slots for a self-check to find.
-//
-//   wmi     - UUID / DiskDrive.SerialNumber / BaseBoard.SerialNumber, via the
-//             wbemcomn vtable patch (no IAT touched)
-//   wmipx   - the old IAT + COM proxy path; off, it is the visible one
-//   reg     - MachineGuid / ProductId / ComputerName. The anticheat does not
-//             read these, so this is off by default; enable it only if a
-//             different detection layer turns out to use them.
-//   smbios  - raw SMBIOS table; not read by this anticheat
-//   disk    - ATA IDENTIFY / storage descriptor; not read by this anticheat
-//   net     - adapter MACs; not read by this anticheat, and it touches
-//             iphlpapi which the anticheat imports
-//
-// Note what is NOT spoofed anywhere: Win32_Processor.ProcessorId and
-// ProcessorNameString. Both derive from CPUID, which the scanner can execute
-// itself, so faking them manufactures a contradiction instead of hiding one.
-//
-// Override with OPENZEN_HWID_SURFACES="wmi" (or "all", "none", ...) to A/B
-// which surface a given server reacts to.
-bool surface_enabled(const char* name) {
-    char buf[256] = {0};
-    DWORD n = GetEnvironmentVariableA("OPENZEN_HWID_SURFACES", buf, sizeof buf - 1);
-    if (n == 0 || n >= sizeof buf) {
-        return _stricmp(name, "wmi") == 0;
-    }
-    if (_stricmp(buf, "all") == 0) return true;
-    if (_stricmp(buf, "none") == 0) return false;
-
-    const char* p = buf;
-    while (*p) {
-        while (*p == ' ' || *p == ',') ++p;
-        const char* start = p;
-        while (*p && *p != ',' && *p != ' ') ++p;
-        const size_t len = static_cast<size_t>(p - start);
-        if (len && len == std::strlen(name) && _strnicmp(start, name, len) == 0) return true;
-    }
-    return false;
+// Log the exact values this process will now report, once, at startup. This is
+// the fastest way to answer "is the spoof doing anything" without a debugger.
+void log_profile() {
+    const hwid::SpoofValues& v = hwid::values();
+    openzen::log::info("HWID profile (what this process now reports):");
+    openzen::log::info("  product_uuid      = %s", hwid::narrow_ascii(v.product_uuid).c_str());
+    openzen::log::info("  system_serial     = %s", hwid::narrow_ascii(v.system_serial).c_str());
+    openzen::log::info("  baseboard_serial  = %s", hwid::narrow_ascii(v.baseboard_serial).c_str());
+    openzen::log::info("  disk_serial       = %s", hwid::narrow_ascii(v.disk_serial).c_str());
+    openzen::log::info("  machine_guid      = %s", hwid::narrow_ascii(v.machine_guid).c_str());
+    openzen::log::info("  processor_id      = %s (verbatim: CPUID)",
+                       hwid::narrow_ascii(v.processor_id).c_str());
 }
 
 void install_hwid_surfaces() {
-    // Read the real fingerprints BEFORE any hook exists. The fake set is
-    // derived from them deterministically, and once hwid_hook / hwid_firmware
-    // are armed these same calls would report the fake.
+    const hwid::Config& cfg = hwid::config();
+    if (!cfg.enabled) {
+        openzen::log::info("HWID spoof disabled by configuration");
+        return;
+    }
+
+    // Read the real fingerprints BEFORE any hook exists: the fake set is
+    // derived from them deterministically, and once the hooks are armed these
+    // same calls would report the fake.
     hwid::real();
     openzen::log::info("HWID real fingerprint collected (smbios=%d disk=%d)",
                        hwid::real().smbios_ok ? 1 : 0, hwid::real().disk_ok ? 1 : 0);
 
-    if (surface_enabled("wmi")) {
+    static std::atomic<bool> profile_logged{false};
+    if (!profile_logged.exchange(true)) log_profile();
+
+    if (hwid::surface_on("wmi")) {
         // vtable patch first: no import table is touched, so an anticheat that
         // diffs its own IAT sees nothing.
-        report_install("HWID WMI spoof (vtable)", hwid::install_wmi_vtbl());
-        if (!hwid::wmi_vtbl_active()) {
-            // Fallback only. This path patches IAT slots and hands out proxy
+        report_install("WMI vtable (UUID/disk/board)", hwid::install_wmi_vtbl());
+        if (!hwid::wmi_vtbl_active() && hwid::surface_on("wmipx")) {
+            // Only on request: this path patches IAT slots and hands out proxy
             // objects, which is exactly what the vtable patch exists to avoid.
-            report_install("HWID WMI spoof (com proxy fallback)", hwid::install_wmi());
+            report_install("WMI COM proxy (legacy)", hwid::install_wmi());
         }
     }
-    if (surface_enabled("reg")) {
-        report_install("HWID registry spoof", hwid::install());
+    if (hwid::surface_on("net")) {
+        report_install("MAC (GetAdaptersAddresses)", hwid::install_net());
     }
-    if (surface_enabled("smbios")) {
-        report_install("HWID SMBIOS spoof", hwid::install_firmware());
+    if (hwid::surface_on("reg")) {
+        report_install("registry (legacy)", hwid::install());
     }
-    if (surface_enabled("disk")) {
-        report_install("HWID disk spoof", hwid::install_disk());
+    if (hwid::surface_on("smbios")) {
+        report_install("SMBIOS table (legacy)", hwid::install_firmware());
     }
-    if (surface_enabled("net")) {
-        report_install("HWID MAC spoof", hwid::install_net());
+    if (hwid::surface_on("disk")) {
+        report_install("disk IOCTL (legacy)", hwid::install_disk());
     }
 }
 
