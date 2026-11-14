@@ -21,6 +21,8 @@ import net.minecraft.client.Camera;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
+import net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
@@ -201,6 +203,34 @@ public class KillAura extends Module {
     public final BooleanSetting swingFirst = new BooleanSetting("Swing First", true,
             () -> this.rage.getValue());
 
+    /**
+     * 暴击模式。
+     *
+     * <p>暴击是<b>服务端</b>用它自己的 {@code fallDistance} / {@code onGround} /
+     * {@code isSprinting} 三个状态判的, 改客户端的字段只会让本地预测变, 服务端照旧
+     * 算普通伤害。所以要让每一刀都暴击, 唯一的办法是真的发位置包把它骗成"正在下落"。</p>
+     *
+     * <ul>
+     *   <li>{@code Off} —— 不干预, 与上游一致</li>
+     *   <li>{@code Packet} —— 出刀前抬落各 1/16 格, 让服务端 fallDistance 变成 0.0625</li>
+     * </ul>
+     */
+    public final ModeSetting critMode = new ModeSetting("Crit Mode", "Off", "Packet").withDefault("Off");
+
+    /** 有多大比例的攻击去伪造暴击 (0-100)。每拍最多伪造一次, 包量不会随目标数翻倍。 */
+    public final NumberSetting critRate = new NumberSetting("Crit Rate", 60.0, 0.0, 100.0, 5.0,
+            () -> this.rage.getValue() && this.critMode.is("Packet"));
+
+    /** 疾跑中伪造暴击前先发 STOP_SPRINTING, 打完立刻 START_SPRINTING。 */
+    public final BooleanSetting critSprintOff = new BooleanSetting("Crit Sprint Off", true,
+            () -> this.rage.getValue() && this.critMode.is("Packet"));
+
+    /** 上一次伪造暴击的拍号, 保证每拍最多一次。 */
+    private static long lastCritTick = -1L;
+
+    /** 本次伪造是否临时关掉过疾跑, 用于还原。 */
+    private boolean critSprintPending;
+
     /** 启用后经过的拍数, 供 APS 爬坡使用 (onEnable 归零)。 */
     private int rampTicks;
 
@@ -243,6 +273,7 @@ public class KillAura extends Module {
         this.bypassKS = true;
         clearPause();
         setAttackBudget(1);
+        this.critSprintPending = false;
         super.onDisable();
     }
 
@@ -541,6 +572,85 @@ public class KillAura extends Module {
                 last.getPitch() + (deltaPitch - deltaPitch % gcd));
     }
 
+    // ===== SmartCrit (Packet Crit) =====
+
+    /**
+     * 出刀前伪造一次"正在下落", 让服务端把这一刀判成暴击。
+     *
+     * <pre>
+     *   C04 (y + 0.0625, onGround=false)   抬 1/16 格, 服务端记为离地
+     *   C04 (y + 0.005,  onGround=false)   只落到地面上方 5mm, 全程不接触地面
+     *   C02 ATTACK                          服务端 fallDistance = 0.0575 &gt; 0, 判暴击
+     *   C04 (y,          onGround=true)     还原, fallDistance 归零
+     * </pre>
+     *
+     * <p>第二包<b>不能</b>直接落回真实 y: 那样下落位移会撞到地面, {@code Entity.move}
+     * 里碰撞处理会把 {@code onGround} 置回 true, 并顺手把 {@code fallDistance} 清零,
+     * 白跑一趟。停在离地 5mm 处, 既产生了下坠距离, 又完全不接触地面。</p>
+     *
+     * <p>幅度远低于摔落伤害的 3 格门槛, 也不会被位移检查当成瞬移。</p>
+     *
+     * <p>返回 true 表示真的发了伪造包, 调用方必须在 finally 里配对调用
+     * {@link #finishCritSetup()}。</p>
+     */
+    private boolean startCritSetup(Entity target) {
+        if (!this.rage.getValue() || !this.critMode.is("Packet")) {
+            return false;
+        }
+        if (mc.player == null || mc.getConnection() == null) {
+            return false;
+        }
+        // 服务端暴击判定的前置条件, 客户端先对一遍, 不满足就不浪费包。
+        if (!(target instanceof LivingEntity) || !mc.player.onGround()
+                || mc.player.onClimbable() || mc.player.isInWater() || mc.player.isPassenger()) {
+            return false;
+        }
+        // 每拍最多一次: 多目标点名时不叠加包量。
+        if (currentAttackTick() == lastCritTick) {
+            return false;
+        }
+        if (MathUtil.randomDouble(0.0, 100.0) > this.critRate.getValue().doubleValue()) {
+            return false;
+        }
+        boolean sprinting = mc.player.isSprinting();
+        if (sprinting) {
+            if (!this.critSprintOff.getValue()) {
+                return false;
+            }
+            // 服务端认的是它自己那份 sprinting: 必须真的发命令包, 只改本地没用。
+            mc.player.setSprinting(false);
+            mc.getConnection().send(new ServerboundPlayerCommandPacket(mc.player,
+                    ServerboundPlayerCommandPacket.Action.STOP_SPRINTING));
+            this.critSprintPending = true;
+        }
+        lastCritTick = currentAttackTick();
+        double x = mc.player.getX();
+        double y = mc.player.getY();
+        double z = mc.player.getZ();
+        mc.getConnection().send(new ServerboundMovePlayerPacket.Pos(x, y + 0.0625, z, false));
+        // 停在离地 5mm: 有下坠距离, 又不接触地面 (接触就会被碰撞处理清掉 fallDistance)。
+        mc.getConnection().send(new ServerboundMovePlayerPacket.Pos(x, y + 0.005, z, false));
+        return true;
+    }
+
+    /** 还原位置与疾跑状态。落在 finally 里, 出刀抛异常也不会把服务端留在半空。 */
+    private void finishCritSetup() {
+        if (mc.getConnection() != null && mc.player != null) {
+            mc.getConnection().send(new ServerboundMovePlayerPacket.Pos(
+                    mc.player.getX(), mc.player.getY(), mc.player.getZ(), true));
+        }
+        if (this.critSprintPending) {
+            this.critSprintPending = false;
+            if (mc.player != null) {
+                mc.player.setSprinting(true);
+            }
+            if (mc.getConnection() != null) {
+                mc.getConnection().send(new ServerboundPlayerCommandPacket(mc.player,
+                        ServerboundPlayerCommandPacket.Action.START_SPRINTING));
+            }
+        }
+    }
+
     /** Naven attackEntity: 出刀瞬间临时面向瞄准方向, gameMode.attack + 挥手 + 粒子。 */
     public boolean attackEntity(Entity entity) {
         if (mc.player == null || mc.getConnection() == null || mc.gameMode == null) {
@@ -565,6 +675,8 @@ public class KillAura extends Module {
         Rotation aim = this.rotation != null ? this.rotation : this.attackRotation();
         mc.player.setYRot(aim.getYaw());
         mc.player.setXRot(aim.getPitch());
+        // 必须在 gameMode.attack 之前: ATTACK 包是那个方法发出的第一个动作。
+        boolean crit = this.startCritSetup(entity);
         try {
             if (this.rage.getValue() && this.swingFirst.getValue()) {
                 // 包序反转: SWING 先于 ATTACK。原版是 ATTACK → SWING, 统计型 check 会看到
@@ -580,6 +692,9 @@ public class KillAura extends Module {
                 mc.player.crit(entity);
             }
         } finally {
+            if (crit) {
+                this.finishCritSetup();
+            }
             mc.player.setYRot(currentYaw);
             mc.player.setXRot(currentPitch);
         }
