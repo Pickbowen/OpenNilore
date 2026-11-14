@@ -182,6 +182,7 @@ public class KillAura extends Module {
         this.rotation = null;
         this.bypassKS = true;
         clearPause();
+        setAttackBudget(1);
         super.onDisable();
     }
 
@@ -288,6 +289,11 @@ public class KillAura extends Module {
         if (isPaused()) {
             return;
         }
+        // 出刀预算: 普通模式每拍一刀 (与上游一致); Rage 模式每拍最多 Rage Targets 刀,
+        // 多出来的额度给 doAttack 的多目标点名用。
+        setAttackBudget(this.rage.getValue()
+                ? Math.max(1, this.rageTargets.getValue().intValue())
+                : 1);
         // Naven onClick 闸门: 用物品为空 + 无界面 + 无 lag + 1.9 冷却; 外加 NoXZ 互斥。
         if (mc.player.getUseItem().isEmpty()
                 && mc.screen == null
@@ -352,8 +358,9 @@ public class KillAura extends Module {
                         > this.reach.getValue().doubleValue()) {
                     continue;
                 }
-                this.attackEntity(entity);
-                ++attacked;
+                if (this.attackEntity(entity)) {
+                    ++attacked;
+                }
             }
             return;
         }
@@ -616,17 +623,38 @@ public class KillAura extends Module {
 
     // ===== 外部 API (NoXZMode / Sprint / RotationHandler 依赖) =====
 
-    /** One attack per client tick, shared by the aura and NoXZMode's counter. */
-    public static boolean attackAndLock() {
-        long tick = currentAttackTick();
-        if (tick == attackLockTick) {
-            return false;
-        }
-        attackLockTick = tick;
-        return true;
+    /**
+     * 每拍出刀预算, 由 aura 每 tick 按模式写入: 普通模式 1, Rage 模式 = Rage Targets。
+     *
+     * <p>原来的实现是"每拍只放一次"的布尔锁, 于是 Rage 的多目标点名只有第一个目标能
+     * 真正发出 ATTACK 包, 后面全被这把锁吞掉 —— 白扣 APS 却一个都不打, 用户看到的就是
+     * "开了 Rage 反而不如单目标"。改成计数器后, 预算内每次出刀各扣一格。</p>
+     *
+     * <p>预算只在 tick 边界重置, 所以即使 {@code attackTick} 的 {@code while} 循环一拍
+     * 跑了两轮, 总出刀数也不会超过预算 —— 这正是"每拍最多打几个人"的位置。</p>
+     */
+    private static long attackLockTick = -1L;
+    private static int attackLockCount = 0;
+    private static int attackLockBudget = 1;
+
+    /** 设置每拍出刀预算; 1 表示恢复原版"每拍一刀"。 */
+    public static void setAttackBudget(int budget) {
+        attackLockBudget = Math.max(1, budget);
     }
 
-    private static long attackLockTick = -1L;
+    /** One attack per client tick by default, shared by the aura and NoXZMode's counter. */
+    public static boolean attackAndLock() {
+        long tick = currentAttackTick();
+        if (tick != attackLockTick) {
+            attackLockTick = tick;
+            attackLockCount = 0;
+        }
+        if (attackLockCount >= attackLockBudget) {
+            return false;
+        }
+        ++attackLockCount;
+        return true;
+    }
 
     // ===== 投掷瞬间停摆 (MidPearl 联动) =====
 
@@ -676,16 +704,23 @@ public class KillAura extends Module {
      * 点击", 只能一律拒, 会把 aura 自己的出刀也吞掉。
      */
     private static long automatedAttackTick = -1L;
+    /** 本拍还剩几张自动化通行证; Rage 一拍出多刀时按刀数发放。 */
+    private static int automatedAttackMarks = 0;
 
     /** 自动化出刀前调用: 登记这一次 {@code Player.attack} 是自己发起的。 */
     public static void markAutomatedAttack() {
-        automatedAttackTick = currentAttackTick();
+        long tick = currentAttackTick();
+        if (tick != automatedAttackTick) {
+            automatedAttackTick = tick;
+            automatedAttackMarks = 0;
+        }
+        ++automatedAttackMarks;
     }
 
-    /** 只消费一次; true 表示这次 {@code Player.attack} 来自自动化, 应当放行。 */
+    /** 每张只消费一次; true 表示这次 {@code Player.attack} 来自自动化, 应当放行。 */
     public static boolean consumeAutomatedAttackMark() {
-        if (automatedAttackTick == currentAttackTick()) {
-            automatedAttackTick = -1L;
+        if (automatedAttackTick == currentAttackTick() && automatedAttackMarks > 0) {
+            --automatedAttackMarks;
             return true;
         }
         return false;
@@ -783,6 +818,7 @@ public class KillAura extends Module {
         this.attacks = 0.0f;
         // gameTime 换世界会归零, 不清掉时间戳可能让光环在新世界永久停摆。
         clearPause();
+        setAttackBudget(1);
         this.setEnabled(false);
     }
 
