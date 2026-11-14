@@ -47,6 +47,8 @@ import net.minecraft.network.protocol.game.ServerboundKeepAlivePacket;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.entity.projectile.AbstractHurtingProjectile;
+import net.minecraft.world.entity.projectile.Fireball;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.AABB;
@@ -117,6 +119,13 @@ extends AntiKBMode {
     /** 反打阶段已经等了多少拍; 冷却/瞄准迟迟不满足时用它兜底收尾。 */
     private int counterTicks;
     private static final int COUNTER_TIMEOUT_TICKS = 20;
+    /** 反打结束后每拍放回的包数。 */
+    private static final int RELEASE_PER_TICK = 3;
+    /** 反打完成、正在按拍排空队列。 */
+    private boolean releasing;
+    /** 最近一次被火球类投射物命中的拍; 窗口在它之后若干拍内不参与。 */
+    private int lastFireballHitTick = Integer.MIN_VALUE / 2;
+    private static final int FIREBALL_IGNORE_TICKS = 8;
     private int jumpTicks;
     private boolean jumpKeyForced;
     private float barProgress;
@@ -216,6 +225,12 @@ extends AntiKBMode {
         if (attacker == null) {
             attacker = event.damageSource().getEntity();
         }
+        // 忽略火球: 火球的击退是投射物自己的冲量, 不是近战结算, 压住它只会让火球命中
+        // 那一下的位移和服务端对不上。记下拍数, 之后若干拍不进窗口。
+        if (attacker instanceof Fireball || attacker instanceof AbstractHurtingProjectile) {
+            this.lastFireballHitTick = mc.player.tickCount;
+            return;
+        }
         if (attacker != null && attacker != mc.player && attacker.isAlive()) {
             // 记下受击来源：onTick 每拍会把 target 改成 KillAura.target，可能为 null，
             // 这条记录是"被打了却没索敌目标"时唯一还能进 delay window 的依据。
@@ -288,7 +303,7 @@ extends AntiKBMode {
         if (packet instanceof ClientboundSetEntityMotionPacket motion
                 && motion.getId() == mc.player.getId()) {
             if (!inDelayWindow) {
-                if (this.shouldNotEngage()) {
+                if (this.shouldNotEngage() || this.justHitByFireball()) {
                     return;
                 }
                 double horizontal = Math.hypot(motion.getXa(), motion.getZa()) / 8000.0;
@@ -394,6 +409,14 @@ extends AntiKBMode {
             return;
         }
 
+        // 缓慢释放: 反打结束之后, 队列按拍放回, 不再一次性倒给主线程。
+        if (this.releasing) {
+            this.drainQueue(RELEASE_PER_TICK);
+            if (this.packetQueue.isEmpty()) {
+                this.releasing = false;
+            }
+        }
+
         if (inDelayWindow && counterRemaining <= 0) {
             compensating = true;
             if (this.delayTicks > AntiKB.INSTANCE.maxDelayTicks.getValue().intValue()) {
@@ -401,6 +424,10 @@ extends AntiKBMode {
                 return;
             }
             if (this.canRelease()) {
+                // 击退包必须在这一拍就放出去。压到反打之后才放, 客户端要等好几拍才吃到
+                // 击退, 那几拍里位置又被服务端按原轨迹结算, 释放时两段位移叠在一起,
+                // 表现就是"释放之后 KB 异常大"。先放到本拍边界, 再进反打; 反打那一刀会
+                // 用更小的击退覆盖掉服务端这次的计算。
                 this.releaseUntilKb();
                 counterRemaining = Math.max(1, AntiKB.INSTANCE.attackAmount.getValue().intValue());
                 this.noAimTicks = 0;
@@ -443,20 +470,67 @@ extends AntiKBMode {
                 return;
             }
             if (--counterRemaining <= 0) {
-                this.finishWindow();
+                // 打完再放: 反打这一拍已经出手, 队列从这里开始按拍排空。
+                inDelayWindow = false;
+                handlingVelocity = false;
+                this.delayTicks = 0;
+                this.releasing = true;
+                this.drainQueue(RELEASE_PER_TICK);
             }
         } else if (compensating) {
             this.compensateUntilMs = System.currentTimeMillis() + 10L;
         }
     }
 
-    /** 收窗: 把压住的包按序放回, 状态复位。 */
+    /** 收窗: 手动让位时调用, 同样走按拍排空而不是一次性倒出去。 */
     private void finishWindow() {
-        this.flushQueue();
         inDelayWindow = false;
         handlingVelocity = false;
         counterRemaining = 0;
         this.delayTicks = 0;
+        this.releasing = true;
+        this.drainQueue(RELEASE_PER_TICK);
+    }
+
+    /**
+     * 按拍把队列放回, 每拍最多 {@code budget} 个包。
+     *
+     * <p>一次性 {@code flushQueue} 会在同一拍往主线程塞几十个 handle, 服务端那边看到的
+     * 是一段"瞬间位移 + 瞬时补齐", 比慢慢补更容易被当成瞬移。这里按拍摊开, 也让 marker
+     * 边界继续保持"本拍之前"的语义。
+     */
+    private void drainQueue(int budget) {
+        if (mc.getConnection() == null) {
+            this.packetQueue.clear();
+            return;
+        }
+        mc.execute(() -> {
+            if (mc.getConnection() == null) {
+                this.packetQueue.clear();
+                return;
+            }
+            for (int i = 0; i < budget; i++) {
+                Packet<?> packet = this.packetQueue.poll();
+                if (packet == null) {
+                    break;
+                }
+                if (packet == TICK_MARKER) {
+                    continue;
+                }
+                // 反打已经出手, 服务端会按那一刀重算击退另发一包; 队列里这条旧击退再 apply
+                // 只会和新击退叠在一起 —— 就是"释放之后 KB 异常大"。
+                if (packet instanceof ClientboundSetEntityMotionPacket motion
+                        && motion.getId() == mc.player.getId()) {
+                    continue;
+                }
+                try {
+                    this.handleDelayed(packet);
+                } catch (Exception exception) {
+                    this.packetQueue.clear();
+                    break;
+                }
+            }
+        });
     }
 
     @Override
@@ -667,6 +741,12 @@ extends AntiKBMode {
         Vec3 eye = mc.player.getEyePosition();
         double limit = AntiKB.INSTANCE.releaseDistance.getValue().doubleValue();
         return RotationUtil.closestPoint(eye, this.target.getBoundingBox()).distanceTo(eye) <= limit;
+    }
+
+    /** 刚刚吃过火球: 这段期间的击退包不参与 antikb。 */
+    private boolean justHitByFireball() {
+        return mc.player != null
+                && mc.player.tickCount - this.lastFireballHitTick <= FIREBALL_IGNORE_TICKS;
     }
 
     private boolean shouldNotEngage() {
@@ -883,6 +963,7 @@ extends AntiKBMode {
         this.noAimTicks = 0;
         this.noSprintTicks = 0;
         this.counterTicks = 0;
+        this.releasing = false;
         this.compensateUntilMs = -1L;
         this.jumpTicks = 0;
         this.restoreJumpKey();

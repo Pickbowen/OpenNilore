@@ -43,7 +43,7 @@ import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 import client.nilore.ClientBase;
 import client.nilore.NiloreClient;
-import client.nilore.event.impl.EventAttackSlowdown;
+import client.nilore.event.impl.SprintEvent;
 import client.nilore.event.impl.PreMotionEvent;
 import client.nilore.event.impl.RenderEvent;
 import client.nilore.event.impl.TickEvent;
@@ -104,7 +104,6 @@ public class KillAura extends Module {
     public final BooleanSetting infSwitch       = new BooleanSetting("Infinity Switch", false);
     public final BooleanSetting preferBaby      = new BooleanSetting("Prefer Baby", false);
     public final BooleanSetting morePart        = new BooleanSetting("More Particles", false);
-    public final BooleanSetting circle         = new BooleanSetting("Circle", false);
 
     public final BooleanSetting keepSprint = new BooleanSetting("Keep Sprint", true);
     public final BooleanSetting fallOnly = new BooleanSetting("Only Falling Attack", true);
@@ -268,6 +267,11 @@ public class KillAura extends Module {
                 && mc.screen == null
                 && (this.ignoreSkipTicks.getValue() || ClientBase.delayPackets.isEmpty())
                 && !NoXZMode.isCountering()) {
+            // 基线的 keepSprint 门: 疾跑时 aura 不出手, 由 Sprint 模块先掉疾跑, 下一拍再打暴击。
+            if (this.keepSprintGate()) {
+                this.attacks = 0.0f;
+                return;
+            }
             if (this.delayMode.is("1.9") && mc.player.getAttackStrengthScale(0.0f) < 0.95f) {
                 return;
             }
@@ -275,14 +279,28 @@ public class KillAura extends Module {
                 return;
             }
             while (this.attacks >= 1.0f) {
-                if (this.shouldDropSprintForCrit()) {
-                    this.stopSprint();
-                    return;
-                }
                 this.doAttack();
                 this.attacks -= 1.0f;
             }
         }
+    }
+
+    /**
+     * 基线 {@code canAttackNow()} 里的 keepSprint 三道门: 命中任何一条, aura 这一拍就不出手。
+     *
+     * <p>{@code isInDelayWindow() && shouldKeepSprintInDelayWindow()} 是 keepsprint 与 antikb 的
+     * 契约: 窗口还攥着输入时 aura 让开, 窗口自己的 {@code isSprinting()} 才不会被打破。
+     * 最后一条是"疾跑时先不打" —— Sprint 模块每拍问一次 {@code canCritUnderVelocity()},
+     * 成立就掉疾跑, 下一拍这里自然放行, 于是那一刀是暴击。
+     */
+    private boolean keepSprintGate() {
+        if (NoXZMode.isInDelayWindow() && shouldKeepSprintInDelayWindow()) {
+            return true;
+        }
+        return this.keepSprint.getValue()
+                && mc.player != null
+                && mc.player.isSprinting()
+                && !NoXZMode.handlingVelocity;
     }
 
     /** Naven doAttack: 瞄准射线打到谁就打谁; 多目标时射线打得到的都打 (上限 2)。 */
@@ -596,30 +614,50 @@ public class KillAura extends Module {
                 && (this.throughWalls.getValue() || mc.player.hasLineOfSight(target));
     }
 
-    private boolean shouldDropSprintForCrit() {
-        if (!this.keepSprint.getValue() || this.bypassKS || mc.player == null || !mc.player.isSprinting()) {
+    /**
+     * 基线的暴击门: 成立时由 {@link #onSprint} 在这一拍把疾跑按掉, 下一拍 aura 才出刀。
+     *
+     * <p>之所以叫 "under velocity": antikb 正在处理击退(窗口/反打)时它一律不成立 ——
+     * 那段时间是 NoXZ 在控制疾跑状态, 这里再动就会两个模块互相拆台。
+     */
+    public boolean canCritUnderVelocity() {
+        if (mc.player == null || mc.level == null || target == null) {
             return false;
         }
-        if (NoXZMode.isInDelayWindow()) {
+        if (AntiKB.INSTANCE != null && AntiKB.INSTANCE.isEnabled()) {
+            if (NoXZMode.isInDelayWindow() && shouldKeepSprintInDelayWindow()) {
+                return false;
+            }
+            if (NoXZMode.isCountering()) {
+                return false;
+            }
+            if (AntiKB.mode.is("Jump Reset") && JumpResetMode.isJumping) {
+                return false;
+            }
+        }
+        if (target.distanceToSqr(mc.player) > 12.25) {
             return false;
         }
-        if (AntiKB.INSTANCE != null && AntiKB.INSTANCE.isEnabled()
-                && AntiKB.mode.is("Jump Reset") && JumpResetMode.isJumping) {
+        if (mc.player.isDeadOrDying() || !this.keepSprint.getValue()) {
             return false;
         }
-        if (mc.player.onGround() && mc.options.keyJump.isDown()) {
-            return false;
-        }
-        Rotation aim = this.rotation != null ? this.rotation : this.attackRotation();
-        return this.aimRayTarget(aim) != null;
+        return !mc.player.isUsingItem() || !mc.options.keyUse.isDown();
     }
 
-    private void stopSprint() {
-        if (mc.player == null) {
+    /**
+     * SprintEvent 紧挨在 {@code LocalPlayer.tick()} 调用 {@code super.tick()} 之前, 是唯一
+     * 还能让 STOP_SPRINTING 排在攻击包前面的窗口。再晚一拍, 客户端已经用 +30% 的疾跑属性
+     * 走完这一 tick 了。
+     */
+    @EventTarget
+    public void onSprint(SprintEvent sprintEvent) {
+        if (!this.canCritUnderVelocity()) {
             return;
         }
-        mc.player.setSprinting(false);
         mc.options.keySprint.setDown(false);
+        if (mc.player != null && mc.player.isSprinting()) {
+            mc.player.setSprinting(false);
+        }
     }
 
     private boolean isFallingForCrit() {
@@ -641,13 +679,6 @@ public class KillAura extends Module {
             return false;
         }
         return !this.isFallingForCrit();
-    }
-
-    @EventTarget
-    public void onAttackSlowdown(EventAttackSlowdown event) {
-        if (this.keepSprint.getValue()) {
-            event.setCancelled(true);
-        }
     }
 
     @EventTarget
