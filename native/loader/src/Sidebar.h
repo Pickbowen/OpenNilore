@@ -25,6 +25,7 @@ public:
 signals:
     void injectClicked();
     void settingsClicked();
+    void themeClicked();
 
 private:
     void buildUi();

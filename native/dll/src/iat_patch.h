@@ -5,7 +5,10 @@
 namespace hwid {
 
 // Rewrite the IAT slot of `func` imported from `dll` inside `mod`.
-bool patch_import(HMODULE mod, const char* dll, const char* func, void* hook);
+// `log_hit` is forced off inside the DLL-load callback: that runs under the
+// loader lock, and file I/O or any module load there can stall or deadlock it.
+bool patch_import(HMODULE mod, const char* dll, const char* func, void* hook,
+                  bool log_hit = true);
 
 // Patch every module currently loaded in this process.
 int patch_import_all(const char* dll, const char* func, void* hook);

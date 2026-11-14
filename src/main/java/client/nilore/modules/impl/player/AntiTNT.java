@@ -117,12 +117,13 @@ extends Module {
                 String fuseLabel = String.format("%.1fs", new Object[]{fuseSeconds});
                 BlockPos tntPos = this.targetTnt.blockPosition();
                 poseStack.pushPose();
-                poseStack.translate((double)tntPos.getX() + 0.5 - vec3.x, (double)tntPos.getY() + 1.1 - vec3.y, (double)tntPos.getZ() + 0.5 - vec3.z);
+                poseStack.translate((double)tntPos.getX() + 0.5, (double)tntPos.getY() + 1.1, (double)tntPos.getZ() + 0.5);
                 poseStack.mulPose(mc.gameRenderer.getMainCamera().rotation());
                 poseStack.scale(-0.025f, -0.025f, 0.025f);
                 float textWidth = mc.font.width(fuseLabel);
                 mc.font.drawInBatch(fuseLabel, -textWidth / 2.0f, 0.0f, -1, false, poseStack.last().pose(), mc.renderBuffers().bufferSource(), Font.DisplayMode.NORMAL, 0, 0xF000F0);
                 poseStack.popPose();
+                mc.renderBuffers().bufferSource().endBatch();
             }
         }
         RenderSystem.setShaderColor(1.0f, 1.0f, 1.0f, 1.0f);

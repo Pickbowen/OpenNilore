@@ -74,6 +74,7 @@ extends AntiKBMode {
     private boolean positionCorrection;
     private int coolDownTicks;
     private int delayTicks;
+    private Packet<ClientGamePacketListener> kbPacket;
     private long lastFireballTick = Long.MIN_VALUE;
     private int noAimTicks;
     private int noSprintTicks;
@@ -241,7 +242,10 @@ extends AntiKBMode {
                 inDelayWindow = true;
                 this.delayTicks = 0;
                 handlingVelocity = true;
+            } else if (counterRemaining > 0) {
+                counterRemaining = 0;
             }
+            this.kbPacket = packet;
             receivePacketEvent.setCancelled(true);
             this.packetQueue.add(packet);
             return;
@@ -317,16 +321,14 @@ extends AntiKBMode {
             return;
         }
 
-        if (inDelayWindow) {
+        if (inDelayWindow && counterRemaining <= 0) {
             compensating = true;
             if (this.delayTicks >= AntiKB.INSTANCE.maxDelayTicks.getValue().intValue()) {
                 this.resetAll();
                 return;
             }
             if (this.ready() && this.isWithinReleaseDistance() && this.isAimingAtTarget()) {
-                this.flushQueue();
-                inDelayWindow = false;
-                handlingVelocity = false;
+                this.releaseUntilKb();
                 counterRemaining = Math.max(1, AntiKB.INSTANCE.attackAmount.getValue().intValue());
                 this.noAimTicks = 0;
                 this.noSprintTicks = 0;
@@ -344,6 +346,7 @@ extends AntiKBMode {
                 this.debug("Failed (RayCast)");
                 return;
             }
+            this.noAimTicks = 0;
             if (!mc.player.isSprinting()) {
                 ++this.noSprintTicks;
                 this.debug("Failed (Sprint)");
@@ -354,7 +357,13 @@ extends AntiKBMode {
             }
             this.noSprintTicks = 0;
             this.attackReduce(this.target);
-            --counterRemaining;
+            if (--counterRemaining <= 0) {
+                this.flushQueue();
+                inDelayWindow = false;
+                handlingVelocity = false;
+                this.kbPacket = null;
+                this.delayTicks = 0;
+            }
         } else if (compensating) {
             this.compensateUntilMs = System.currentTimeMillis() + 10L;
         }
@@ -507,7 +516,7 @@ extends AntiKBMode {
             return mc.hitResult instanceof EntityHitResult hit && hit.getEntity() == this.target;
         }
         double range = Math.max(3.0, AntiKB.INSTANCE.releaseDistance.getValue().doubleValue() + 1.0);
-        return RotationUtil.isLookingAt(this.target, range, 0.1f);
+        return RotationUtil.isLookingAt(this.target, range, 0.3f);
     }
 
     private boolean isWithinReleaseDistance() {
@@ -571,8 +580,28 @@ extends AntiKBMode {
     private boolean ready() {
         return mc.player != null
                 && !mc.player.isUsingItem()
-                && mc.player.isSprinting()
-                && mc.player.onGround();
+                && mc.player.isSprinting();
+    }
+
+    private void releaseUntilKb() {
+        Packet<ClientGamePacketListener> marker = this.kbPacket;
+        this.kbPacket = null;
+        if (marker == null || mc.getConnection() == null) {
+            this.flushQueue();
+            return;
+        }
+        Packet<ClientGamePacketListener> packet;
+        while ((packet = this.packetQueue.poll()) != null) {
+            try {
+                packet.handle(mc.getConnection());
+            } catch (Exception exception) {
+                this.packetQueue.clear();
+                break;
+            }
+            if (packet == marker) {
+                break;
+            }
+        }
     }
 
     private void flushQueue() {
@@ -610,6 +639,7 @@ extends AntiKBMode {
         inDelayWindow = false;
         compensating = false;
         this.positionCorrection = false;
+        this.kbPacket = null;
         this.delayTicks = 0;
         counterRemaining = 0;
         this.noAimTicks = 0;

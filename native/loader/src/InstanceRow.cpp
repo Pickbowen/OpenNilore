@@ -4,6 +4,7 @@
 
 #include <QEasingCurve>
 #include <QEnterEvent>
+#include <QFontMetricsF>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPainter>
@@ -35,7 +36,7 @@ const char* kInjectBtnQss = R"qss(
     }
     QPushButton:disabled {
         background: #2A2F35;
-        color: #666C76;
+        color: #5E656F;
     }
 )qss";
 
@@ -59,7 +60,7 @@ InstanceRow::InstanceRow(unsigned long pid, const QString& title,
     pidLabel_->setFixedWidth(64);
     pidLabel_->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
     pidLabel_->setStyleSheet(QStringLiteral(
-        "color: #666C76;"
+        "color: #5E656F;"
         "font-family: 'Consolas';"
         "font-size: 11px;"));
     layout->addWidget(pidLabel_);
@@ -67,20 +68,19 @@ InstanceRow::InstanceRow(unsigned long pid, const QString& title,
     titleLabel_ = new QLabel(title_, this);
     titleLabel_->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
     titleLabel_->setStyleSheet(QStringLiteral(
-        "color: #D2D6DC;"
+        "color: #E6EAF0;"
         "font-size: 13px;"
         "font-family: 'Segoe UI', 'Microsoft YaHei UI', sans-serif;"));
     titleLabel_->setTextInteractionFlags(Qt::NoTextInteraction);
     layout->addWidget(titleLabel_, 1);
 
     nativeBadge_ = new QLabel(QStringLiteral("Native Bypass"), this);
-    nativeBadge_->setAlignment(Qt::AlignCenter);
-    nativeBadge_->setFixedHeight(20);
+    nativeBadge_->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
     nativeBadge_->setStyleSheet(QStringLiteral(
         "color: #4ADE80;"
-        "background: rgba(74, 222, 128, 30);"
+        "background: rgba(74, 222, 128, 26);"
         "border-radius: 5px;"
-        "padding: 0 8px;"
+        "padding: 2px 7px;"
         "font-size: 11px;"));
     nativeBadge_->setVisible(false);
     layout->addWidget(nativeBadge_, 0, Qt::AlignVCenter);

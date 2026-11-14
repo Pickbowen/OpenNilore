@@ -22,7 +22,7 @@ const char* kCommonBtnQss = R"qss(
     QToolButton {
         background: transparent;
         border: none;
-        color: #666C76;
+        color: #5E656F;
         font-size: 13px;
     }
     QToolButton:hover {
@@ -51,7 +51,7 @@ TitleBar::TitleBar(QWidget* parent)
 
     titleLabel_ = new QLabel(QStringLiteral("OpenNilore Loader"), this);
     titleLabel_->setStyleSheet(QStringLiteral(
-        "color: #949AA4; font-size: 12px; font-weight: 600;"));
+        "color: #939AA5; font-size: 12px; font-weight: 600;"));
     layout->addWidget(titleLabel_);
 
     layout->addStretch(1);

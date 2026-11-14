@@ -54,6 +54,19 @@ public class PlayerPatch {
         original.call();
     }
 
+    @WrapInvoke(method = "attack", desc = "(Lnet/minecraft/world/entity/Entity;)V",
+            target = "net/minecraft/world/entity/Entity/setDeltaMovement", targetDesc = "(Lnet/minecraft/world/phys/Vec3;)V")
+    public static void onAttackSetDeltaMovement(Player player, Entity target, Invocation<Player, Void> original) throws Exception {
+        if (NiloreClient.isReady()) {
+            EventAttackSlowdown event = new EventAttackSlowdown(false);
+            NiloreClient.getInstance().getEventBus().call(event);
+            if (event.isCancelled()) {
+                return;
+            }
+        }
+        original.call();
+    }
+
     @Inject(method = "attack", desc = "(Lnet/minecraft/world/entity/Entity;)V", at = @At(At.Type.HEAD))
     public static void onAttackPre(Player player, Entity target, CallbackInfo callbackInfo) {
         if (NiloreClient.isReady()) {

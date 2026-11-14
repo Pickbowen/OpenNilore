@@ -17,6 +17,7 @@ class TitleBar;
 class InstanceList;
 class Sidebar;
 class SettingsPage;
+class ThemePage;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -45,6 +46,7 @@ private:
     void buildUi();
     void styleApp();
     void enableWin11RoundedCorners();
+    void setTranslucentMode(bool on);
 
     // Native Bypass auto-injection: fires for a Minecraft java process the loader
     // has not handled yet. Deliberately driven off the raw java process list and
@@ -63,6 +65,7 @@ private:
     InstanceList*    list_     = nullptr;
     Sidebar*         sidebar_  = nullptr;
     SettingsPage*    settingsPage_ = nullptr;
+    ThemePage*       themePage_ = nullptr;
     QTimer*          timer_    = nullptr;
     QLabel*          status_   = nullptr;
     QLabel*          hint_     = nullptr;
@@ -70,6 +73,7 @@ private:
     bool entrancePlayed_    = false;
     bool injectionInFlight_ = false;
     bool exiting_           = false;
+    bool translucent_       = false;
     QSet<unsigned long> earlyHandled_;
     QSystemTrayIcon* tray_ = nullptr;
 };

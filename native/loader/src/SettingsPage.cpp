@@ -19,12 +19,12 @@ const char* kSettingsQss = R"qss(
         border-radius: 8px;
     }
     QLabel#toggleName {
-        color: #D2D6DC;
+        color: #E6EAF0;
         font-size: 12px;
         font-weight: 600;
     }
     QLabel#toggleDesc {
-        color: #666C76;
+        color: #5E656F;
         font-size: 11px;
     }
 )qss";

@@ -31,14 +31,17 @@ extends Config {
                 continue;
             }
             String moduleName = parts[0];
-            int keyCode = Integer.parseInt(parts[1]);
-            boolean enabled = Boolean.parseBoolean(parts[2]);
             try {
                 Module module = moduleManager.getModule(moduleName);
-                module.setKey(keyCode);
-                module.setEnabled(enabled);
+                module.setKey(Integer.parseInt(parts[1]));
+                module.setEnabled(Boolean.parseBoolean(parts[2]));
             } catch (ModuleNotFoundException ex) {
                 LOGGER.error("Failed to find module {}!", moduleName);
+            } catch (RuntimeException ex) {
+                // Per-line isolation: a malformed key code used to throw NumberFormatException out
+                // of this method, dropping the rest of the file and aborting ConfigManager.loadAll
+                // before ValuesConfig ever ran.
+                LOGGER.error("Failed to read line {}!", line, ex);
             }
         }
     }

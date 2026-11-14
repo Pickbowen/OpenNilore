@@ -93,6 +93,73 @@ const std::wstring* pick_fake(HKEY key, LPCWSTR name) {
 
 RegQueryValueExW_t real_reg_query();
 
+// MaxHook reads MachineGuid through RegGetValueW, whose implementation never
+// calls RegQueryValueExW across the IAT, so the registry hook has to cover
+// both entry points.
+using RegGetValueW_t = LSTATUS (WINAPI*)(HKEY, LPCWSTR, LPCWSTR, DWORD,
+                                         LPDWORD, PVOID, LPDWORD);
+RegGetValueW_t g_real_reg_get = nullptr;
+
+RegGetValueW_t real_reg_get() {
+    if (g_real_reg_get) return g_real_reg_get;
+    HMODULE advapi = GetModuleHandleA("advapi32.dll");
+    if (!advapi) return nullptr;
+    g_real_reg_get = reinterpret_cast<RegGetValueW_t>(
+        GetProcAddress(advapi, "RegGetValueW"));
+    return g_real_reg_get;
+}
+
+bool subkey_ends_with(const wchar_t* subkey, const wchar_t* suffix) {
+    if (!subkey || !suffix) return false;
+    size_t a = wcslen(subkey);
+    size_t b = wcslen(suffix);
+    if (a < b) return false;
+    return _wcsicmp(subkey + (a - b), suffix) == 0;
+}
+
+const std::wstring* pick_fake_subkey(const wchar_t* subkey, LPCWSTR name) {
+    const SpoofValues& v = values();
+    if (_wcsicmp(name, L"MachineGuid") == 0) {
+        return subkey_ends_with(subkey, L"SOFTWARE\\MICROSOFT\\CRYPTOGRAPHY")
+                   ? &v.machine_guid : nullptr;
+    }
+    if (_wcsicmp(name, L"ProductId") == 0) {
+        return subkey_ends_with(subkey, L"SOFTWARE\\MICROSOFT\\WINDOWS NT\\CURRENTVERSION")
+                   ? &v.product_id : nullptr;
+    }
+    if (_wcsicmp(name, L"ComputerName") == 0) {
+        return subkey_ends_with(subkey, L"COMPUTERNAME\\COMPUTERNAME")
+                   ? &v.computer_name : nullptr;
+    }
+    return nullptr;
+}
+
+LSTATUS WINAPI HookRegGetValueW(HKEY key, LPCWSTR subkey, LPCWSTR name, DWORD flags,
+                                LPDWORD type, PVOID data, LPDWORD cbData)
+{
+    if (name && subkey) {
+        const std::wstring* fake = pick_fake_subkey(subkey, name);
+        if (fake && !fake->empty()) {
+            DWORD need = static_cast<DWORD>((fake->size() + 1) * sizeof(wchar_t));
+            if (type) *type = REG_SZ;
+            if (!data) {
+                if (cbData) *cbData = need;
+                return ERROR_SUCCESS;
+            }
+            if (cbData && *cbData >= need) {
+                std::memcpy(data, fake->c_str(), need);
+                *cbData = need;
+                return ERROR_SUCCESS;
+            }
+            if (cbData) *cbData = need;
+            return ERROR_MORE_DATA;
+        }
+    }
+    RegGetValueW_t real = real_reg_get();
+    if (!real) return ERROR_PROC_NOT_FOUND;
+    return real(key, subkey, name, flags, type, data, cbData);
+}
+
 // ---- the hook -------------------------------------------------------------
 // Answered entirely from the fake set, without calling the real function: the
 // old order (real call first, replace after) leaked the real length on the
@@ -146,6 +213,8 @@ int install() {
 
     int patched = install_import("ADVAPI32.dll", "RegQueryValueExW",
                                  reinterpret_cast<void*>(&HookRegQueryValueExW));
+    patched += install_import("ADVAPI32.dll", "RegGetValueW",
+                              reinterpret_cast<void*>(&HookRegGetValueW));
     g_patch_count = patched;
     g_active = patched > 0;
     return patched;

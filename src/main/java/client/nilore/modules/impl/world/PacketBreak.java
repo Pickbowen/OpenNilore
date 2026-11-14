@@ -468,7 +468,7 @@ extends Module {
             // 进度文字放在框的正中间(方块几何中心)
             String label = Math.round(this.progress * 100.0f) + "%";
             poseStack.pushPose();
-            poseStack.translate((double)pos.getX() + 0.5 - camera.x, (double)pos.getY() + 0.5 - camera.y, (double)pos.getZ() + 0.5 - camera.z);
+            poseStack.translate((double)pos.getX() + 0.5, (double)pos.getY() + 0.5, (double)pos.getZ() + 0.5);
             poseStack.mulPose(mc.gameRenderer.getMainCamera().rotation());
             poseStack.scale(-0.025f, -0.025f, 0.025f);
             float textWidth = mc.font.width(label);
@@ -476,6 +476,7 @@ extends Module {
                     poseStack.last().pose(), mc.renderBuffers().bufferSource(),
                     Font.DisplayMode.SEE_THROUGH, 0, 0xF000F0);
             poseStack.popPose();
+            mc.renderBuffers().bufferSource().endBatch();
         }
         RenderSystem.setShaderColor(1.0f, 1.0f, 1.0f, 1.0f);
         RenderSystem.disableBlend();

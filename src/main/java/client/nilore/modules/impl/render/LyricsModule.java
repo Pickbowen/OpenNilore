@@ -2,7 +2,6 @@ package client.nilore.modules.impl.render;
 
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Random;
@@ -10,11 +9,9 @@ import net.minecraft.client.Camera;
 import net.minecraft.util.Mth;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Vector3f;
-import client.nilore.NiloreClient;
 import client.nilore.event.EventTarget;
 import client.nilore.event.impl.GlRenderEvent;
 import client.nilore.event.impl.RenderEvent;
-import client.nilore.hud.ModuleListHud;
 import client.nilore.modules.Category;
 import client.nilore.modules.Module;
 import client.nilore.modules.impl.misc.MusicPlayer;
@@ -62,22 +59,22 @@ public class LyricsModule extends Module {
     private static final float PANEL_H = 130;
     private static final float LINE_SPACING = 22;
 
-    /** 每行随机散开的角度(度), 参考实现里 3D 歌词的 spread。 */
-    private static final float WORLD_SPREAD = 12.0f;
+    /** 每行随机散开的角度(度), 对齐参考实现 Lyrics3DSettings.spread 的默认 20。 */
+    private static final float WORLD_SPREAD = 20.0f;
+    /** 沿相机"上"方向的整体抬升(方块), 对齐参考实现 offsetY 默认 0.4, 免得贴着十字线。 */
+    private static final double WORLD_OFFSET_Y = 0.4;
     /** 距离 12 格时每个字体像素对应的方块数, 与距离成正比, 视觉大小才不随距离变。 */
     private static final float WORLD_BASE_SCALE = 0.032f;
     private static final float WORLD_FADE_MS = 260.0f;
     private static final double WORLD_GROUND_MARGIN = 0.75;
     /** 一行最多摆成这么宽(字体像素), 超了就整体缩, 免得长句顶到屏幕外。 */
     private static final float WORLD_MAX_WIDTH = 340.0f;
-    /** 逐字抖动的刷新频率与幅度(字体像素), 参考实现的 wiggle: 让整行不是死板的贴图。 */
-    private static final long WIGGLE_FPS = 8L;
-    private static final float WIGGLE_X = 0.8f;
-    private static final float WIGGLE_Y = 1.6f;
-    /** 每个字刚出现时的弹跳: 从放大 1.45 倍、上浮 5px 收回到正常。 */
+    /** 词刚出现时的弹跳: 从放大 1.45 倍、上浮 5px 收回到正常。 */
     private static final float POP_MS = 160.0f;
     private static final float POP_LIFT = 5.0f;
     private static final float POP_SCALE = 0.45f;
+    /** 泛光: 比正文略大的一圈加色白, 对齐参考实现 glow 那一帧。 */
+    private static final float GLOW_SCALE = 1.05f;
 
     private final Random worldRandom = new Random();
     private int worldLineIndex = -1;
@@ -89,9 +86,11 @@ public class LyricsModule extends Module {
     private float worldSpreadYaw;
     private float worldSpreadPitch;
     private long worldLastNanos;
-    /** 逐字状态, 每帧按行长度复用, 不做每帧分配。 */
-    private float[] glyphProgress = new float[64];
-    private long[] glyphAppear = new long[64];
+    /** 逐词状态(字符区间 + 出现时刻), 每帧复用, 不做每帧分配。 */
+    private int[] wordStart = new int[32];
+    private int[] wordEnd = new int[32];
+    private long[] wordAppear = new long[32];
+    private int wordCount;
 
     private final FontRenderer currentFont = FontPresets.pingfang(21);
     private final FontRenderer nearFont = FontPresets.pingfang(18);
@@ -215,8 +214,8 @@ public class LyricsModule extends Module {
 
     /**
      * 3D 模式: 当前这一行歌词作为面向相机的 billboard 浮在视线前方。
-     * 布局参考 NeoRaven 的 WorldLyrics —— 每行带随机角偏移, 平滑跟随视角, 换行时淡入,
-     * 已唱部分按主题色高亮, 未唱部分纯白。
+     * 布局对齐 NeoRaven 的 WorldLyrics —— 每行带随机角偏移, 平滑跟随视角, 换行时淡入,
+     * 按词弹跳出现, 正文统一白色并带一圈加色泛光。
      */
     @EventTarget
     public void onRender(RenderEvent event) {
@@ -300,9 +299,14 @@ public class LyricsModule extends Module {
         double sinPitch = Math.sin(elevation);
         double hx = horizontal > 1.0E-6 ? dx / horizontal : 0.0;
         double hz = horizontal > 1.0E-6 ? dz / horizontal : 1.0;
-        double targetX = eye.x + hx * cosPitch * distance;
-        double targetY = Math.max(eye.y + sinPitch * distance, eye.y - WORLD_GROUND_MARGIN);
-        double targetZ = eye.z + hz * cosPitch * distance;
+        // 相机"上"方向(与 look 垂直且指向上方), 参考实现用它把整行抬一点
+        double lookHorizontal = Math.sqrt(look.x() * look.x() + look.z() * look.z());
+        double upX = -look.y() * look.x() / Math.max(1.0E-6, lookHorizontal);
+        double upZ = -look.y() * look.z() / Math.max(1.0E-6, lookHorizontal);
+        double targetX = eye.x + hx * cosPitch * distance + upX * WORLD_OFFSET_Y;
+        double targetY = Math.max(eye.y + sinPitch * distance + lookHorizontal * WORLD_OFFSET_Y,
+                eye.y - WORLD_GROUND_MARGIN);
+        double targetZ = eye.z + hz * cosPitch * distance + upZ * WORLD_OFFSET_Y;
         if (!this.worldPlaced) {
             this.worldX = targetX;
             this.worldY = targetY;
@@ -327,122 +331,94 @@ public class LyricsModule extends Module {
             float fit = WORLD_MAX_WIDTH / width;
             poseStack.scale(fit, fit, 1.0f);
         }
-        this.fillGlyphState(line, text, position, lineEnd);
+        this.fillWordState(line, text, position, lineEnd);
         float baseline = GlHelper.getFontAscent(this.currentFont) * 0.5f;
         float left = -width / 2.0f;
         long elapsed = position - line.timeMs();
-        long frame = System.currentTimeMillis() * WIGGLE_FPS / 1000L;
-        int accent = this.accentColor();
-        this.drawGlyphs(poseStack, font, text, left, baseline, accent, alpha, elapsed, frame, true);
-        this.drawGlyphs(poseStack, font, text, left, baseline, accent, alpha, elapsed, frame, false);
-    }
-
-    /**
-     * 逐字画一遍。{@code shadow} 为 true 时整行往右下偏移并涂黑, 给亮天空留对比。
-     * 每个字的颜色由它所属词的演唱进度决定: 白 -> 主题色随着"唱过"连续变化,
-     * 所以高亮是一段一段扫过来, 而不是一条分割线在整行上滑。
-     */
-    private void drawGlyphs(PoseStack poseStack, CustomFont font, String text, float left, float baseline,
-                            int accent, float alpha, long elapsed, long frame, boolean shadow) {
-        float x = left;
-        for (int i = 0; i < text.length(); ++i) {
-            char c = text.charAt(i);
-            String glyph = String.valueOf(c);
-            float advance = GlHelper.getStringWidth(glyph, this.currentFont);
-            if (!Character.isWhitespace(c)) {
-                float appear = 1.0f;
-                long appearAt = this.glyphAppear[i];
-                if (appearAt > 0L) {
-                    appear = Mth.clamp((elapsed - appearAt) / POP_MS, 0.0f, 1.0f);
-                    appear = appear * appear * (3.0f - 2.0f * appear);
-                }
-                if (appear > 0.0f) {
-                    float sung = this.glyphProgress[i];
-                    float centerX = x + advance * 0.5f;
-                    poseStack.pushPose();
-                    if (shadow) {
-                        poseStack.translate(1.5f, 1.5f, 0.0f);
-                    }
-                    poseStack.translate(centerX + hash(i, frame, 2) * WIGGLE_X,
-                            hash(i, frame, 3) * WIGGLE_Y - (1.0f - appear) * POP_LIFT, 0.0f);
-                    poseStack.scale(1.0f + POP_SCALE * (1.0f - appear), 1.0f + POP_SCALE * (1.0f - appear), 1.0f);
-                    poseStack.translate(-centerX, 0.0f, 0.0f);
-                    int color = shadow
-                            ? ColorUtil.withAlpha(0x000000, alpha * appear * 0.45f)
-                            : ColorUtil.withAlpha(mix(0xFFFFFF, accent, sung),
-                                    alpha * appear * (0.82f + 0.18f * sung));
-                    font.drawString(poseStack, glyph, x, baseline, color);
-                    poseStack.popPose();
-                }
+        for (int w = 0; w < this.wordCount; ++w) {
+            int start = this.wordStart[w];
+            int end = this.wordEnd[w];
+            String word = text.substring(start, end);
+            float wordX = left + GlHelper.getStringWidth(text.substring(0, start), this.currentFont);
+            float wordWidth = GlHelper.getStringWidth(word, this.currentFont);
+            float appear = 1.0f;
+            long appearAt = this.wordAppear[w];
+            if (appearAt > 0L) {
+                appear = Mth.clamp((elapsed - appearAt) / POP_MS, 0.0f, 1.0f);
+                appear = appear * appear * (3.0f - 2.0f * appear);
             }
-            x += advance;
+            if (appear <= 0.0f) {
+                continue;
+            }
+            float pop = 1.0f + POP_SCALE * (1.0f - appear);
+            float centerX = wordX + wordWidth * 0.5f;
+            poseStack.pushPose();
+            poseStack.translate(centerX, -(1.0f - appear) * POP_LIFT, 0.0f);
+            poseStack.scale(pop, pop, 1.0f);
+            poseStack.translate(-centerX, 0.0f, 0.0f);
+            font.drawString(poseStack, word, wordX + 1.5f, baseline + 1.5f,
+                    ColorUtil.withAlpha(0x000000, alpha * appear * 0.45f));
+            if (alpha > 0.02f) {
+                poseStack.pushPose();
+                poseStack.translate(centerX, 0.0f, 0.0f);
+                poseStack.scale(GLOW_SCALE, GLOW_SCALE, 1.0f);
+                poseStack.translate(-centerX, 0.0f, 0.0f);
+                font.drawStringAdditive(poseStack, word, wordX, baseline,
+                        ColorUtil.withAlpha(0xFFFFFF, alpha * appear * 0.22f));
+                poseStack.popPose();
+            }
+            font.drawString(poseStack, word, wordX, baseline, ColorUtil.withAlpha(0xFFFFFF, alpha * appear));
+            poseStack.popPose();
         }
     }
 
-    /**
-     * 把演唱进度和出现时刻摊到每个字上。有逐字时间轴就按词, 没有就按本行时长铺开
-     * (进度 = 扫过的比例, 出现时刻 = 逐字展开), 这样纯 LRC 的源也有扫过的效果。
-     */
-    private void fillGlyphState(LyricLine line, String text, long position, long lineEnd) {
+    /** 一行拆成词: 有逐字时间轴就用它, 没有就按空白切, 出现时刻沿本行铺开。 */
+    private void fillWordState(LyricLine line, String text, long position, long lineEnd) {
         int length = text.length();
-        if (this.glyphProgress.length < length) {
-            this.glyphProgress = new float[length];
-            this.glyphAppear = new long[length];
+        if (this.wordStart.length < length) {
+            this.wordStart = new int[length];
+            this.wordEnd = new int[length];
+            this.wordAppear = new long[length];
         }
-        Arrays.fill(this.glyphProgress, 0, length, 0.0f);
-        Arrays.fill(this.glyphAppear, 0, length, 0L);
-        if (!line.hasWordTiming()) {
-            long duration = Math.max(400L, lineEnd - line.timeMs());
-            long reveal = Math.min(Math.max(250L, (long) length * 55L), Math.max(400L, (long) (duration * 0.6)));
-            float progress = Mth.clamp((position - line.timeMs()) / (float) duration, 0.0f, 1.0f);
-            for (int i = 0; i < length; ++i) {
-                this.glyphProgress[i] = Mth.clamp(progress * length - i, 0.0f, 1.0f);
-                this.glyphAppear[i] = length <= 1 ? 0L : (long) (i / (float) (length - 1) * reveal);
+        this.wordCount = 0;
+        if (line.hasWordTiming()) {
+            int cursor = 0;
+            for (LyricLine.Word word : line.words()) {
+                while (cursor < length && Character.isWhitespace(text.charAt(cursor))) {
+                    ++cursor;
+                }
+                if (cursor >= length) {
+                    break;
+                }
+                int wordLength = Math.min(word.text().length(), length - cursor);
+                this.addWord(cursor, cursor + wordLength, word.startMs() - line.timeMs());
+                cursor += wordLength;
             }
             return;
         }
-        int cursor = 0;
-        for (LyricLine.Word word : line.words()) {
-            while (cursor < length && Character.isWhitespace(text.charAt(cursor))) {
-                ++cursor;
+        long duration = Math.max(400L, lineEnd - line.timeMs());
+        long reveal = Math.min(Math.max(250L, (long) length * 55L), Math.max(400L, (long) (duration * 0.6)));
+        int i = 0;
+        while (i < length) {
+            while (i < length && Character.isWhitespace(text.charAt(i))) {
+                ++i;
             }
-            if (cursor >= length) {
+            if (i >= length) {
                 break;
             }
-            int wordLength = Math.min(word.text().length(), length - cursor);
-            long duration = Math.max(1L, word.durationMs());
-            float progress = Mth.clamp((position - word.startMs()) / (float) duration, 0.0f, 1.0f);
-            long appear = word.startMs() - line.timeMs();
-            for (int i = 0; i < wordLength; ++i) {
-                this.glyphProgress[cursor + i] = progress;
-                this.glyphAppear[cursor + i] = appear;
+            int start = i;
+            while (i < length && !Character.isWhitespace(text.charAt(i))) {
+                ++i;
             }
-            cursor += wordLength;
+            this.addWord(start, i, length <= 1 ? 0L : (long) (start / (float) (length - 1) * reveal));
         }
     }
 
-    /** 逐字抖动用的确定性 hash, 取值 [-1, 1]。 */
-    private static float hash(int index, long frame, int salt) {
-        long h = index * 0x9E3779B97F4A7C15L ^ frame * 0xBF58476D1CE4E5B9L ^ salt * 0x94D049BB133111EBL;
-        h ^= h >>> 33;
-        h *= 0xFF51AFD7ED558CCDL;
-        h ^= h >>> 33;
-        return (h & 0xFFFF) / 32768.0f - 1.0f;
-    }
-
-    private static int mix(int from, int to, float t) {
-        float k = Mth.clamp(t, 0.0f, 1.0f);
-        int r = (int) (((from >> 16 & 0xFF) * (1.0f - k)) + ((to >> 16 & 0xFF) * k));
-        int g = (int) (((from >> 8 & 0xFF) * (1.0f - k)) + ((to >> 8 & 0xFF) * k));
-        int b = (int) (((from & 0xFF) * (1.0f - k)) + ((to & 0xFF) * k));
-        return r << 16 | g << 8 | b;
-    }
-
-    private int accentColor() {
-        ModuleListHud moduleList = NiloreClient.getInstance().getHudManager() == null
-                ? null
-                : NiloreClient.getInstance().getHudManager().getHudElement(ModuleListHud.class);
-        return moduleList == null ? 0xFFFFFF : moduleList.getThemeColor(0, 0.0f, 1);
+    private void addWord(int start, int end, long appear) {
+        this.wordStart[this.wordCount] = start;
+        this.wordEnd[this.wordCount] = end;
+        this.wordAppear[this.wordCount] = appear;
+        ++this.wordCount;
     }
 
     private void resetWorldLine() {

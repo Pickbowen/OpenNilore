@@ -74,13 +74,86 @@ bool is_security_module(HMODULE mod) {
     return false;
 }
 
+// A module whose PE section table carries the protector's own sections is not
+// a normal consumer of ole32/advapi32: it is a WinLicense / Code Virtualizer
+// image (the anticheat client is exactly this). Those images keep an inline
+// hook counter and a code-integrity loop, and rewriting one of their IAT slots
+// hands the check a pointer that is not inside the system DLL it expects.
+// Skipping them is cheaper than winning that argument.
+//
+// The section names are the reliable signal; the name check below is only a
+// fallback for a build that renamed its sections.
+bool is_protected_module(HMODULE mod) {
+    if (!mod) return true;
+
+    auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(mod);
+    if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE) return true;
+    auto nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(
+        reinterpret_cast<const BYTE*>(mod) + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return true;
+
+    // Only walk the section table when the header can be trusted. Every module
+    // in a 64-bit process is PE32+ and carries a full optional header; if the
+    // sizes disagree the image is packed, hand-mapped, or mid-teardown, and
+    // reading a section table out of it is an access violation. This runs over
+    // every loaded module, so one bad header would take the game down.
+    if (nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) return true;
+    if (nt->FileHeader.SizeOfOptionalHeader != sizeof(IMAGE_OPTIONAL_HEADER64)) return true;
+
+    const WORD section_count = nt->FileHeader.NumberOfSections;
+    if (section_count == 0 || section_count > 96) return true;
+
+    // Derive the table from sizeof(IMAGE_NT_HEADERS) rather than from the
+    // macro, which trusts SizeOfOptionalHeader - the field we just refused to
+    // rely on.
+    auto sec = reinterpret_cast<const IMAGE_SECTION_HEADER*>(
+        reinterpret_cast<const BYTE*>(nt) + sizeof(IMAGE_NT_HEADERS));
+
+    static const char* const kProtectorSections[] = {
+        ".bugland", ".boot", ".fptable", ".detourc", ".detourd",
+        ".themida", ".vmp0", ".vmp1", ".enigma1", ".enigma2", nullptr,
+    };
+    for (WORD i = 0; i < section_count; ++i, ++sec) {
+        char name[9] = {0};
+        std::memcpy(name, sec->Name, 8);
+        for (int k = 0; kProtectorSections[k]; ++k) {
+            if (_stricmp(name, kProtectorSections[k]) == 0) return true;
+        }
+    }
+
+    // Fallback: the anticheat client's own module names.
+    static const wchar_t* const kAcFragments[] = {
+        L"maxhook", L"heypixel", L"anticheat", L"anti-cheat", L"bugland", nullptr,
+    };
+    wchar_t base[MAX_PATH] = {0};
+    if (GetModuleBaseNameW(GetCurrentProcess(), mod, base, MAX_PATH)) {
+        CharLowerBuffW(base, static_cast<DWORD>(wcslen(base)));
+        for (int i = 0; kAcFragments[i]; ++i) {
+            if (wcsstr(base, kAcFragments[i])) return true;
+        }
+    }
+    return false;
+}
+
 VOID CALLBACK on_dll_notification(ULONG reason, const void* data, PVOID) {
     if (reason != kDllNotificationLoaded || !data) return;
     auto* info = static_cast<const NotificationData*>(data);
     HMODULE mod = static_cast<HMODULE>(info->loaded.base);
-    if (!mod || is_security_module(mod)) return;
-
+    if (!mod) return;
     // Reached under the loader lock: no allocation, no module enumeration.
+    // is_protected_module() only walks the PE header of `mod`, which is mapped
+    // and immutable at this point, so it is safe here.
+    if (is_protected_module(mod)) return;
+    if (is_security_module(mod)) {
+        wchar_t base[MAX_PATH] = {0};
+        if (GetModuleBaseNameW(GetCurrentProcess(), mod, base, MAX_PATH)) {
+            char narrow[MAX_PATH] = {0};
+            WideCharToMultiByte(CP_ACP, 0, base, -1, narrow, MAX_PATH, nullptr, nullptr);
+            openzen::log::info("IAT skip %s (security module)", narrow);
+        }
+        return;
+    }
+
     for (int i = 0; i < kMaxTargets; ++i) {
         const Target& t = g_targets[i];
         if (!t.hook) break;
@@ -111,7 +184,7 @@ void register_target(const char* dll, const char* func, void* hook) {
 
 } // namespace
 
-bool patch_import(HMODULE mod, const char* dll, const char* func, void* hook) {
+bool patch_import(HMODULE mod, const char* dll, const char* func, void* hook, bool log_hit) {
     if (!mod || !dll || !func || !hook) return false;
 
     auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(mod);
@@ -148,6 +221,7 @@ bool patch_import(HMODULE mod, const char* dll, const char* func, void* hook) {
             slots->u1.Function = reinterpret_cast<ULONGLONG>(hook);
             VirtualProtect(slots, sizeof(IMAGE_THUNK_DATA), old_protect, &old_protect);
             FlushInstructionCache(GetCurrentProcess(), slots, sizeof(IMAGE_THUNK_DATA));
+            if (!log_hit) return true;
             wchar_t base[MAX_PATH] = {0};
             if (GetModuleBaseNameW(GetCurrentProcess(), mod, base, MAX_PATH)) {
                 char narrow[MAX_PATH] = {0};
@@ -168,6 +242,16 @@ int patch_import_all(const char* dll, const char* func, void* hook) {
     if (count > 1024) count = 1024;
     int patched = 0;
     for (DWORD i = 0; i < count; ++i) {
+        if (is_protected_module(mods[i])) {
+            wchar_t base[MAX_PATH] = {0};
+            if (GetModuleBaseNameW(GetCurrentProcess(), mods[i], base, MAX_PATH)) {
+                char narrow[MAX_PATH] = {0};
+                WideCharToMultiByte(CP_ACP, 0, base, -1, narrow, MAX_PATH, nullptr, nullptr);
+                openzen::log::info("IAT skip %s (protected image; left %s!%s intact)",
+                                   narrow, dll, func);
+            }
+            continue;
+        }
         if (is_security_module(mods[i])) continue;
         if (patch_import(mods[i], dll, func, hook)) ++patched;
     }

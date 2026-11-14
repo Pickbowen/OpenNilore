@@ -1139,7 +1139,11 @@ public final class NiloreClickGui extends Screen {
         Rect track = draggingSlider.control;
         float fraction = clamp((mouseX - track.x() - SLIDER_KNOB / 2f) / (track.width() - SLIDER_KNOB), 0, 1);
         double min = setting.getMin().doubleValue(), max = setting.getMax().doubleValue();
-        applyValue(setting, min + fraction * (max - min));
+        double step = setting.getStep().doubleValue();
+        double raw = min + fraction * (max - min);
+        double snapped = step > 0.0 ? Math.round((raw - min) / step) * step + min : raw;
+        double clamped = Math.max(min, Math.min(max, snapped));
+        applyValue(setting, Math.round(clamped * 1000.0) / 1000.0);
     }
 
     /** Preserves the numeric type of the setting so downstream code keeps its casts valid. */

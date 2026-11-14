@@ -14,25 +14,6 @@ namespace loader {
 namespace {
 const char* kScrollQss = R"qss(
     QScrollArea { background: transparent; border: none; }
-    QScrollBar:vertical {
-        background: transparent;
-        width: 8px;
-        margin: 0;
-    }
-    QScrollBar::handle:vertical {
-        background: rgba(255, 255, 255, 26);
-        border-radius: 4px;
-        min-height: 28px;
-    }
-    QScrollBar::handle:vertical:hover {
-        background: rgba(255, 255, 255, 45);
-    }
-    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-        height: 0;
-    }
-    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
-        background: transparent;
-    }
 )qss";
 } // namespace
 
@@ -58,7 +39,7 @@ InstanceList::InstanceList(QWidget* parent)
         header);
     note_->setAlignment(Qt::AlignLeft);
     note_->setStyleSheet(QStringLiteral(
-        "color: #666C76; font-size: 11px;"));
+        "color: #5E656F; font-size: 11px;"));
     headerLayout->addWidget(note_);
     root->addWidget(header);
 
@@ -66,7 +47,7 @@ InstanceList::InstanceList(QWidget* parent)
     scroll_->setFrameShape(QFrame::NoFrame);
     scroll_->setWidgetResizable(true);
     scroll_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    scroll_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+    scroll_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     scroll_->setStyleSheet(QString::fromUtf8(kScrollQss));
 
     container_ = new QWidget(scroll_);
@@ -84,7 +65,7 @@ InstanceList::InstanceList(QWidget* parent)
         container_);
     emptyLabel_->setAlignment(Qt::AlignCenter);
     emptyLabel_->setStyleSheet(QStringLiteral(
-        "color: #666C76; font-size: 11px; padding: 40px 12px;"));
+        "color: #5E656F; font-size: 11px; padding: 40px 12px;"));
     containerLayout_->addWidget(emptyLabel_);
 
     containerLayout_->addStretch(1);

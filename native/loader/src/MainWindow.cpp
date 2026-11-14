@@ -4,6 +4,7 @@
 #include "InstanceList.h"
 #include "SettingsPage.h"
 #include "Sidebar.h"
+#include "ThemePage.h"
 #include "TitleBar.h"
 #include "UiTheme.h"
 #include "loader.h"
@@ -88,6 +89,9 @@ MainWindow::MainWindow(QWidget* parent)
     // shape the window however we like. The custom TitleBar covers move/
     // minimize/close.
     setWindowFlags(Qt::FramelessWindowHint | Qt::Window);
+    // Layered so the desktop behind the frame stays visible: the capture
+    // pipeline only ever sees the composited screen, and an opaque window
+    // would simply hide the very thing we want to blur.
     setAttribute(Qt::WA_TranslucentBackground);
     setAttribute(Qt::WA_NoSystemBackground);
     // Base size with a small random jitter (±kSizeJitter px) on each axis so the
@@ -156,29 +160,51 @@ void MainWindow::buildUi() {
     settingsPage_->setVisible(false);
     bodyLayout->addWidget(settingsPage_, 1);
 
+    themePage_ = new ThemePage(body);
+    themePage_->setVisible(false);
+    bodyLayout->addWidget(themePage_, 1);
+
     connect(sidebar_, &Sidebar::injectClicked, this, [this] {
         list_->setVisible(true);
         settingsPage_->setVisible(false);
+        themePage_->setVisible(false);
     });
     connect(sidebar_, &Sidebar::settingsClicked, this, [this] {
         list_->setVisible(false);
         settingsPage_->setVisible(true);
+        themePage_->setVisible(false);
     });
+    connect(sidebar_, &Sidebar::themeClicked, this, [this] {
+        list_->setVisible(false);
+        settingsPage_->setVisible(false);
+        themePage_->setVisible(true);
+    });
+
+    connect(themePage_, &ThemePage::translucentChanged,
+            this, &MainWindow::setTranslucentMode);
+    themePage_->setTranslucent(translucent_);
 
     root->addWidget(body, 1);
 
     auto* statusRow = new QWidget(central);
     statusRow->setFixedHeight(ui::kStatusHeight);
     auto* statusRowLayout = new QHBoxLayout(statusRow);
-    statusRowLayout->setContentsMargins(14, 0, ui::kGutterRight, 0);
+    statusRowLayout->setContentsMargins(ui::kGutter, 0, ui::kGutterRight, ui::kGutter);
     statusRowLayout->setSpacing(0);
     status_ = new QLabel(statusRow);
     status_->setObjectName("status");
-    statusRowLayout->addWidget(status_, 0, Qt::AlignVCenter);
+    statusRowLayout->addWidget(status_, 0, Qt::AlignBottom);
     statusRowLayout->addStretch(1);
     root->addWidget(statusRow);
 
     setCentralWidget(central);
+
+    // The viewport must not paint the palette background either, otherwise it
+    // covers the DWM backdrop the window sits on.
+    if (QWidget* viewport = central->parentWidget()) {
+        viewport->setAttribute(Qt::WA_TranslucentBackground);
+        viewport->setAutoFillBackground(false);
+    }
 }
 
 void MainWindow::styleApp() {
@@ -188,17 +214,17 @@ void MainWindow::styleApp() {
     static const char* kQss = R"qss(
         QWidget#body {
             background: transparent;
-            color: #D2D6DC;
+            color: #E6EAF0;
         }
         QLabel#status {
-            color: #858B95;
+            color: #7C838E;
             font-size: 11px;
             background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                                         stop:0 rgba(255, 255, 255, 17),
                                         stop:1 rgba(255, 255, 255, 6));
             border: none;
-            border-radius: 5px;
-            padding: 3px 9px;
+            border-radius: 8px;
+            padding: 8px;
         }
         QLabel#title {
             font-size: 17px;
@@ -206,7 +232,7 @@ void MainWindow::styleApp() {
             color: #FFFFFF;
         }
         QLabel#hint {
-            color: #666C76;
+            color: #5E656F;
             font-size: 11px;
         }
     )qss";
@@ -228,16 +254,23 @@ void MainWindow::enableWin11RoundedCorners() {
                           &borderNone,
                           sizeof(borderNone));
 
-    // The 14px rounding is drawn by paintEvent; DWM's own rounding would show
-    // a second, tighter contour just inside it.
+    // The window is rounded by DWM itself (8px, same radius we paint), so the
+    // acrylic backdrop is clipped to the rounded shape as well.
     enum { DWMWA_WINDOW_CORNER_PREFERENCE_LOCAL = 33 };
-    enum { DWMWCP_DONOTROUND_LOCAL = 1 };
-    int pref = DWMWCP_DONOTROUND_LOCAL;
+    enum { DWMWCP_ROUND_LOCAL = 2 };
+    int pref = DWMWCP_ROUND_LOCAL;
     DwmSetWindowAttribute(hwnd,
                           DWMWA_WINDOW_CORNER_PREFERENCE_LOCAL,
                           &pref,
                           sizeof(pref));
 #endif
+}
+
+void MainWindow::setTranslucentMode(bool on) {
+    if (translucent_ == on) return;
+    translucent_ = on;
+    if (themePage_) themePage_->setTranslucent(on);
+    update();
 }
 
 void MainWindow::paintEvent(QPaintEvent*) {
@@ -246,9 +279,11 @@ void MainWindow::paintEvent(QPaintEvent*) {
 
     const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
     QPainterPath panel;
-    panel.addRoundedRect(r, ui::kRadiusWindow, ui::kRadiusWindow);
+    panel.addRoundedRect(r, ui::kWindowRadius, ui::kWindowRadius);
 
-    p.fillPath(panel, ui::bgWindow());
+    QColor base = ui::bgWindow();
+    base.setAlpha(translucent_ ? 230 : 255);
+    p.fillPath(panel, base);
 }
 
 void MainWindow::showEvent(QShowEvent* e) {
@@ -261,6 +296,10 @@ void MainWindow::showEvent(QShowEvent* e) {
 
 void MainWindow::playEntrance() {
     entrancePlayed_ = true;
+    // The window has to exist (and know where it landed) before the screen
+    // can be sampled, but it must stay invisible while sampling so the grab
+    // sees whatever is behind it instead of the frame itself.
+    setWindowOpacity(0.0);
     show();
     raise();
     activateWindow();

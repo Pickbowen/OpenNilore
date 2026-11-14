@@ -4,6 +4,7 @@
 
 #include <QButtonGroup>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPushButton>
 #include <QVBoxLayout>
 
@@ -26,13 +27,13 @@ const char* kSidebarQss = R"qss(
         text-align: left;
         padding: 0 12px 0 34px;
         border-radius: 6px;
-        color: #949AA4;
+        color: #939AA5;
         font-size: 12px;
         font-weight: 500;
     }
     QPushButton#navBtn:hover {
         background: rgba(255, 255, 255, 9);
-        color: #D2D6DC;
+        color: #E6EAF0;
     }
     QPushButton#navBtn:checked {
         background: rgba(255, 255, 255, 16);
@@ -40,7 +41,7 @@ const char* kSidebarQss = R"qss(
     }
 )qss";
 
-enum class NavIcon { Syringe, Gear };
+enum class NavIcon { Syringe, Gear, Contrast };
 
 void drawSyringe(QPainter& p) {
     p.save();
@@ -70,6 +71,27 @@ void drawGear(QPainter& p) {
     }
 }
 
+// A circle split into a light and a dark half - reads as a contrast/theme mark.
+void drawContrast(QPainter& p) {
+    const QRectF box(1.5, 1.5, 11.0, 11.0);
+    const QPointF c = box.center();
+
+    QPainterPath light;
+    light.moveTo(c.x(), box.top());
+    light.arcTo(box, 90, 180);
+    light.closeSubpath();
+
+    p.save();
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(0xE6, 0xEA, 0xF0));
+    p.drawPath(light);
+    p.restore();
+
+    p.setPen(QPen(QColor(0x94, 0x9A, 0xA4), 1.2));
+    p.setBrush(Qt::NoBrush);
+    p.drawEllipse(c, 5.5, 5.5);
+}
+
 class NavButton : public QPushButton {
 public:
     NavButton(NavIcon icon, const QString& text, QWidget* parent)
@@ -90,7 +112,8 @@ protected:
         p.setBrush(Qt::NoBrush);
 
         if (icon_ == NavIcon::Syringe) drawSyringe(p);
-        else                           drawGear(p);
+        else if (icon_ == NavIcon::Gear) drawGear(p);
+        else                           drawContrast(p);
     }
 
 private:
@@ -118,23 +141,30 @@ void Sidebar::buildUi() {
     auto* settings = new NavButton(NavIcon::Gear, QStringLiteral("Settings"), this);
     settings->setObjectName("navBtn");
     settings->setCheckable(true);
+    auto* theme = new NavButton(NavIcon::Contrast, QStringLiteral("Theme"), this);
+    theme->setObjectName("navBtn");
+    theme->setCheckable(true);
 
-    for (auto* b : {inject, settings}) {
+    for (auto* b : {inject, settings, theme}) {
         b->setCursor(Qt::PointingHandCursor);
         b->setFixedHeight(kNavHeight);
     }
     col->addWidget(inject);
     col->addSpacing(2);
     col->addWidget(settings);
+    col->addSpacing(2);
+    col->addWidget(theme);
     col->addStretch(1);
 
     group_ = new QButtonGroup(this);
     group_->setExclusive(true);
     group_->addButton(inject, 0);
     group_->addButton(settings, 1);
+    group_->addButton(theme, 2);
 
     connect(inject,   &QPushButton::clicked, this, &Sidebar::injectClicked);
     connect(settings, &QPushButton::clicked, this, &Sidebar::settingsClicked);
+    connect(theme,    &QPushButton::clicked, this, &Sidebar::themeClicked);
 }
 
 } // namespace loader
