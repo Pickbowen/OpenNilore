@@ -108,12 +108,12 @@ public class KillAura extends Module {
     public final BooleanSetting keepSprint = new BooleanSetting("Keep Sprint", true);
     public final BooleanSetting fallOnly = new BooleanSetting("Only Falling Attack", true);
     public final BooleanSetting throughWalls    = new BooleanSetting("Through Walls", false);
-    public final NumberSetting throughWallsRange = new NumberSetting("Through Walls Range", 3.0, 1.0, 6.0, 0.1,
+    public final NumberSetting throughWallsRange = new NumberSetting("Through Walls Range", 3.0, 1.0, 8.0, 0.1,
             () -> (Boolean) this.throughWalls.getValue());
     public final BooleanSetting ignoreSkipTicks = new BooleanSetting("Ignore skip ticks", false);
     public final BooleanSetting fakeAutoBlock   = new BooleanSetting("Fake AutoBlock", false);
 
-    public final NumberSetting reach       = new NumberSetting("Reach", 3.0, 1.0, 4.0, 0.1);
+    public final NumberSetting reach       = new NumberSetting("Reach", 3.0, 1.0, 6.0, 0.1);
     public final NumberSetting rotationSpeed = new NumberSetting("Rotation Speed", 180.0, 1.0, 180.0, 1.0);
     public final NumberSetting maxAps      = new NumberSetting("Max APS", 9, 1.0, 20.0, 1.0);
     public final NumberSetting minAps      = new NumberSetting("Min APS", 8, 1.0, 20.0, 1.0);
@@ -127,6 +127,23 @@ public class KillAura extends Module {
     public final ModeSetting targetMode   = new ModeSetting("Target Mode", "Single", "Switch", "Multiple").withDefault("Single");
     public final ModeSetting priorityMode = new ModeSetting("Priority", "Distance", "FoV", "Health", "LivingTime", "Armor", "None").withDefault("FoV");
     public final ModeSetting targetEsp    = new ModeSetting("Target ESP", "None", "Spiral", "Box", "Tab", "NurikZapen").withDefault("Spiral");
+
+    /**
+     * 暴力模式。开启后四处"会让光环等待"的门一起放开:
+     * <ul>
+     *   <li>keepSprint 门 —— 疾跑时照打, 不再等 Sprint 模块先掉疾跑换暴击</li>
+     *   <li>1.9 蓄力门 —— 不等 getAttackStrengthScale 到 0.95</li>
+     *   <li>fallOnly 门 —— 空中不必处于下落段</li>
+     *   <li>目标数上限 —— 锁住 reach 内全部目标, 同拍逐个点名</li>
+     * </ul>
+     * <p>代价是反作弊面直接放大: 疾跑中的高 APS 命中是公开的 KS/aim 特征,
+     * 同拍多目标在服务端看是"一秒内打了好几个人"。只在自己服或明确不查的环境开。</p>
+     */
+    public final BooleanSetting rage = new BooleanSetting("Rage Mode", false);
+
+    /** Rage 模式下每拍最多打几个目标 (每个目标有独立的 hurtTime, 不会互相吞伤害)。 */
+    public final NumberSetting rageTargets = new NumberSetting("Rage Targets", 3.0, 1.0, 8.0, 1.0,
+            () -> this.rage.getValue());
 
     private int attackTimes;
     private float attacks;
@@ -277,14 +294,15 @@ public class KillAura extends Module {
                 && (this.ignoreSkipTicks.getValue() || ClientBase.delayPackets.isEmpty())
                 && !NoXZMode.isCountering()) {
             // 基线的 keepSprint 门: 疾跑时 aura 不出手, 由 Sprint 模块先掉疾跑, 下一拍再打暴击。
-            if (this.keepSprintGate()) {
+            if (!this.rage.getValue() && this.keepSprintGate()) {
                 this.attacks = 0.0f;
                 return;
             }
-            if (this.delayMode.is("1.9") && mc.player.getAttackStrengthScale(0.0f) < 0.95f) {
+            if (!this.rage.getValue() && this.delayMode.is("1.9")
+                    && mc.player.getAttackStrengthScale(0.0f) < 0.95f) {
                 return;
             }
-            if (this.holdAttackForFall()) {
+            if (!this.rage.getValue() && this.holdAttackForFall()) {
                 return;
             }
             while (this.attacks >= 1.0f) {
@@ -315,6 +333,28 @@ public class KillAura extends Module {
     /** Naven doAttack: 瞄准射线打到谁就打谁; 多目标时射线打得到的都打 (上限 2)。 */
     public void doAttack() {
         if (targetList.isEmpty() || mc.player == null || mc.level == null) {
+            return;
+        }
+        // Rage: 不做视线判定, reach 内的目标逐个点名, 每拍最多 Rage Targets 个。
+        // 多目标各自有独立的 hurtTime, 同一拍打不同人不会互相吞伤害。
+        if (this.rage.getValue()) {
+            Vec3 eye = mc.player.getEyePosition();
+            int limit = Math.max(1, this.rageTargets.getValue().intValue());
+            int attacked = 0;
+            for (Entity entity : targetList) {
+                if (mc.player == null || attacked >= limit) {
+                    break;
+                }
+                if (AntiBots.isBot(entity)) {
+                    continue;
+                }
+                if (RotationUtil.closestPoint(eye, entity.getBoundingBox()).distanceTo(eye)
+                        > this.reach.getValue().doubleValue()) {
+                    continue;
+                }
+                this.attackEntity(entity);
+                ++attacked;
+            }
             return;
         }
         Rotation aim = this.rotation != null ? this.rotation : this.attackRotation();
@@ -564,7 +604,9 @@ public class KillAura extends Module {
         if (this.infSwitch.getValue() || this.targetMode.is("Multiple")) {
             return possibleTargets;
         }
-        int limit = (int) Math.min(possibleTargets.size(), this.switchSize.getValue().intValue());
+        int limit = this.rage.getValue()
+                ? Math.min(possibleTargets.size(), Math.max(1, this.rageTargets.getValue().intValue()))
+                : (int) Math.min(possibleTargets.size(), this.switchSize.getValue().intValue());
         return new ArrayList<>(possibleTargets.subList(0, limit));
     }
 
