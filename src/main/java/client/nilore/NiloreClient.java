@@ -52,6 +52,7 @@ import client.nilore.patch.MouseHandlerPatch;
 import client.nilore.patch.PacketUtilsPatch;
 import client.nilore.patch.ParticleEnginePatch;
 import client.nilore.patch.PlayerPatch;
+import client.nilore.patch.PlayerRendererPatch;
 import client.nilore.patch.PlayerTabOverlayPatch;
 import client.nilore.asm.Bootstrap;
 import client.nilore.utils.rotation.RotationHandler;
@@ -213,6 +214,9 @@ public class NiloreClient extends ClientBase {
         // PlayerModel.head.visible 影响, 第一人称下必须单独屏蔽, 否则视野被内壁铺满。
         PatchRegistry.register(HumanoidArmorLayerPatch.class);
         PatchRegistry.register(CustomHeadLayerPatch.class);
+        // FirstPersonModel 藏头的真正生效点: setModelProperties 会把 head/hat
+        // 的 visible 重新打开, 必须在它跑完之后再压一次 (见该 patch 的注释)。
+        PatchRegistry.register(PlayerRendererPatch.class);
 
         // Compatibility patch for Embeddium/Sodium's BlockOcclusionCache.
         // Always registered so the transformer can catch the class when it
