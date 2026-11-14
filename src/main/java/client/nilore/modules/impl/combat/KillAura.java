@@ -151,6 +151,7 @@ public class KillAura extends Module {
         aimingTarget = null;
         targetList.clear();
         this.bypassKS = true;
+        clearPause();
         super.onEnable();
     }
 
@@ -163,6 +164,7 @@ public class KillAura extends Module {
         this.attackTimes = 0;
         this.rotation = null;
         this.bypassKS = true;
+        clearPause();
         super.onDisable();
     }
 
@@ -208,7 +210,10 @@ public class KillAura extends Module {
         aimingTarget = this.shouldPreAim();
 
         // Naven: rotationData = getRotationDataToEntity(aimingTarget); rotation = data.getRotation()
-        this.rotation = this.aimingTarget != null ? this.aimRotationTo(this.aimingTarget) : null;
+        // 停摆窗口内不向 RotationHandler 供朝向: 静默转向会把珍珠甩向目标而不是准心方向。
+        this.rotation = this.aimingTarget != null && !isPaused()
+                ? this.aimRotationTo(this.aimingTarget)
+                : null;
 
         if (targetList.isEmpty()) {
             target = null;
@@ -260,6 +265,10 @@ public class KillAura extends Module {
             if (mc.player != null) {
                 this.attacks = 0.0f;
             }
+            return;
+        }
+        // 投掷停摆: 只吞掉这一拍的出刀, 模块保持启用, 蓄力照常累积, 窗口一过立刻继续打。
+        if (isPaused()) {
             return;
         }
         // Naven onClick 闸门: 用物品为空 + 无界面 + 无 lag + 1.9 冷却; 外加 NoXZ 互斥。
@@ -423,6 +432,10 @@ public class KillAura extends Module {
         if (mc.player == null || mc.getConnection() == null || mc.gameMode == null) {
             return false;
         }
+        // 停摆窗口也挡住外部调用者 (NoXZ 反击 / Critical): 它们同样会改朝向+发攻击包。
+        if (isPaused()) {
+            return false;
+        }
         if (NoXZMode.isCountering()) {
             return false;
         }
@@ -573,6 +586,46 @@ public class KillAura extends Module {
 
     private static long attackLockTick = -1L;
 
+    // ===== 投掷瞬间停摆 (MidPearl 联动) =====
+
+    /** 停摆到哪一拍为止 (gameTime 时间戳)。默认值保证未触发时永远返回 false。 */
+    private static long pauseUntilTick = Long.MIN_VALUE;
+
+    /**
+     * 让光环停摆 {@code ticks} 拍。
+     *
+     * <p>MidPearl 原本在选中珍珠槽时直接 {@code setEnabled(false)}: 目标状态、APS 蓄力、
+     * 朝向全部归零, 扔完还得手动开回来, 中间被人贴脸就是白挨一刀。现在只跳过投掷窗口
+     * 的出刀与朝向接管, 模块本身保持启用, 窗口一过立刻继续打; 停摆期间它也不会把
+     * MidPearl 刚选好的珍珠槽抢回方块。</p>
+     *
+     * <p>用 gameTime 打时间戳而不是递减计数器: {@code MidPearl.onTick} 与
+     * {@code RotationHandler.onTickHigh} 跑在同一个 TickEvent 里, 递减法会依赖监听器
+     * 注册顺序 (谁先跑谁的计数就少一次), 时间戳法在整拍内恒定, 顺序无关。</p>
+     */
+    public static void pauseFor(int ticks) {
+        if (ticks <= 0) {
+            return;
+        }
+        pauseUntilTick = Math.max(pauseUntilTick, currentTick() + ticks);
+    }
+
+    public static void clearPause() {
+        pauseUntilTick = Long.MIN_VALUE;
+    }
+
+    /** 当前是否处在投掷停摆窗口。 */
+    public static boolean isPaused() {
+        return currentTick() < pauseUntilTick;
+    }
+
+    private static long currentTick() {
+        if (mc.level != null) {
+            return mc.level.getGameTime();
+        }
+        return mc.player != null ? mc.player.tickCount : 0L;
+    }
+
     /**
      * 本 tick 由自动化(aura / NoXZ 反打)发起的那次 {@code Player.attack}。
      *
@@ -686,6 +739,8 @@ public class KillAura extends Module {
         target = null;
         aimingTarget = null;
         this.attacks = 0.0f;
+        // gameTime 换世界会归零, 不清掉时间戳可能让光环在新世界永久停摆。
+        clearPause();
         this.setEnabled(false);
     }
 

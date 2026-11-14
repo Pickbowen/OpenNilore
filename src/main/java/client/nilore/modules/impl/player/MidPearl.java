@@ -28,6 +28,9 @@ import client.nilore.utils.rotation.Rotation;
 import client.nilore.event.EventTarget;
 
 public class MidPearl extends Module {
+    /** 投掷窗口的光环停摆拍数: 从选槽到出手约 2-3 拍。 */
+    private static final int AURA_PAUSE_TICKS = 3;
+
     public static MidPearl INSTANCE;
     public static Rotation targetRotation;
 
@@ -216,6 +219,8 @@ public class MidPearl extends Module {
     }
 
     private void throwPearl() {
+        // Intercept 路径也走这里: 出刀与朝向都得让这一拍, 否则珍珠会被光环甩偏。
+        KillAura.pauseFor(2);
         if (mc.player.getMainHandItem().getItem() == Items.ENDER_PEARL) {
             PacketUtil.sendPredictive(n -> new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, n));
             mc.player.swing(InteractionHand.MAIN_HAND);
@@ -235,26 +240,30 @@ public class MidPearl extends Module {
                     mc.player.swing(InteractionHand.MAIN_HAND);
                 }
                 this.disableDelay = 2;
+                // 刚出手: 再压 3 拍, 让槽位恢复和光环接管错开。
+                KillAura.pauseFor(AURA_PAUSE_TICKS);
             }
             return;
         }
         boolean pressed = GLFW.glfwGetMouseButton(mc.getWindow().getWindow(),
                 this.getMouseButton(this.mainButtonSetting)) == 1;
         if (pressed) {
+            // 首次实现是直接 {@code KillAura.INSTANCE.setEnabled(false)}: 目标、APS 蓄力、
+            // 朝向全部归零, 扔完还得手动开回来。改成每拍续期的停摆: 模块保持启用,
+            // 只跳过投掷窗口的出刀与朝向接管, 松手出手后 3 拍自动恢复。
+            KillAura.pauseFor(AURA_PAUSE_TICKS);
             if (!this.pearlSlotSelected) {
                 int slot = ItemUtil.getSlot(Items.ENDER_PEARL);
                 if (slot != -1 && slot < 9) {
                     this.pearlSlotSelected = true;
                     this.pearlSavedSlot = mc.player.getInventory().selected;
-                    if (KillAura.INSTANCE != null && KillAura.INSTANCE.isEnabled()) {
-                        KillAura.INSTANCE.setEnabled(false);
-                    }
                     mc.player.getInventory().selected = slot;
                 }
             }
         } else if (this.pearlSlotSelected) {
             this.pearlSlotSelected = false;
             this.throwCountdown = 1;
+            KillAura.pauseFor(AURA_PAUSE_TICKS);
         }
     }
 
