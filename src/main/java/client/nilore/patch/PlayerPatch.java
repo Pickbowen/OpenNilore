@@ -13,6 +13,7 @@ import client.nilore.NiloreClient;
 import client.nilore.asm.Invocation;
 import client.nilore.event.impl.EntityRemoveEvent;
 import client.nilore.event.impl.EventAttackSlowdown;
+import client.nilore.modules.impl.combat.KillAura;
 
 @Patch(Player.class)
 public class PlayerPatch {
@@ -70,6 +71,13 @@ public class PlayerPatch {
     @Inject(method = "attack", desc = "(Lnet/minecraft/world/entity/Entity;)V", at = @At(At.Type.HEAD))
     public static void onAttackPre(Player player, Entity target, CallbackInfo callbackInfo) {
         if (NiloreClient.isReady()) {
+            // 自动化(aura / NoXZ 反打)刚发起的那一次: 放行。
+            // 否则这一拍已经出过刀, 原版这次点击就是重复包 —— 同一 tick 两个 ATTACK 会被
+            // 服务端当成非法攻击, 表现就是"手动打、或手动+aura 一起打的时候被拉回"。
+            if (!KillAura.consumeAutomatedAttackMark() && !KillAura.attackAndLock()) {
+                callbackInfo.cancel();
+                return;
+            }
             NiloreClient.getInstance().getEventBus().call(new EntityRemoveEvent(false, target));
         }
     }

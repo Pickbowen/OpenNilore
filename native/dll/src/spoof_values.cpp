@@ -313,27 +313,54 @@ RealValues collect_real() {
 // code that parses the real one.
 // ---------------------------------------------------------------------------
 
-wchar_t reseed_char(wchar_t c, Rng& rng) {
+wchar_t reseed_char(wchar_t c, Rng& rng, bool hex_only) {
     // Exclude the glyphs vendors avoid printing on a label (I, O, 0, 1) but
     // keep the position's character class, which is what parsers key on.
     static const wchar_t kUpper[] = L"ABCDEFGHJKLMNPQRSTUVWXYZ";
     static const wchar_t kLower[] = L"abcdefghijkmnopqrstuvwxyz";
     static const wchar_t kDigit[] = L"23456789";
+    static const wchar_t kHexU[] = L"ABCDEF";
+    static const wchar_t kHexL[] = L"abcdef";
+
+    // A value that is entirely hexadecimal must stay entirely hexadecimal.
+    // NVMe reports its serial as EUI64 text ("E823_8FA6_BF53_..."); putting a
+    // 'S' or a 'G' in there produces a string no drive can ever emit, and a
+    // single ^[0-9A-F_]+$ check exposes it.
+    if (hex_only) {
+        if (c >= L'0' && c <= L'9') return L'0' + rng.below(10);
+        if (c >= L'A' && c <= L'F') return kHexU[rng.below(6)];
+        if (c >= L'a' && c <= L'f') return kHexL[rng.below(6)];
+        return c;
+    }
     if (c >= L'A' && c <= L'Z') return kUpper[rng.below(24)];
     if (c >= L'a' && c <= L'z') return kLower[rng.below(25)];
     if (c >= L'0' && c <= L'9') return kDigit[rng.below(8)];
     return c;   // separators, spaces and punctuation are structural
 }
 
+bool looks_hex(const std::wstring& s) {
+    bool any = false;
+    for (wchar_t c : s) {
+        if ((c >= L'0' && c <= L'9') || (c >= L'A' && c <= L'F') || (c >= L'a' && c <= L'f')) {
+            any = true;
+            continue;
+        }
+        if (c == L'_' || c == L'-' || c == L' ' || c == L'.') continue;
+        return false;
+    }
+    return any;
+}
+
 // Keep the first `keep` characters (vendor prefix) and the total length;
-// reseed every alphanumeric after that.
+// reseed every alphanumeric after that, inside the original character set.
 std::wstring reshape(const std::wstring& real, size_t keep, Rng& rng, const wchar_t* fallback) {
     std::wstring base = real;
     if (base.empty()) base = fallback ? fallback : L"";
     if (base.empty()) return base;
     if (keep > base.size()) keep = base.size();
+    const bool hex_only = looks_hex(base);
     std::wstring out = base;
-    for (size_t i = keep; i < out.size(); ++i) out[i] = reseed_char(out[i], rng);
+    for (size_t i = keep; i < out.size(); ++i) out[i] = reseed_char(out[i], rng, hex_only);
     return out;
 }
 

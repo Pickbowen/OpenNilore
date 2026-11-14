@@ -411,6 +411,7 @@ public class KillAura extends Module {
         if (!attackAndLock()) {
             return false;
         }
+        markAutomatedAttack();
 
         ++this.attackTimes;
         this.bypassKS = false;
@@ -544,8 +545,7 @@ public class KillAura extends Module {
 
     /** One attack per client tick, shared by the aura and NoXZMode's counter. */
     public static boolean attackAndLock() {
-        long tick = mc.level != null ? mc.level.getGameTime()
-                : (mc.player != null ? mc.player.tickCount : 0);
+        long tick = currentAttackTick();
         if (tick == attackLockTick) {
             return false;
         }
@@ -554,6 +554,34 @@ public class KillAura extends Module {
     }
 
     private static long attackLockTick = -1L;
+
+    /**
+     * 本 tick 由自动化(aura / NoXZ 反打)发起的那次 {@code Player.attack}。
+     *
+     * <p>{@code Player.attack} 是手动点击与 {@code gameMode.attack} 的公共出口, 两边的包
+     * 一模一样 —— 没有这个标记时, patch 在入口无法区分"自动化刚占过锁"和"玩家又补了一次
+     * 点击", 只能一律拒, 会把 aura 自己的出刀也吞掉。
+     */
+    private static long automatedAttackTick = -1L;
+
+    /** 自动化出刀前调用: 登记这一次 {@code Player.attack} 是自己发起的。 */
+    public static void markAutomatedAttack() {
+        automatedAttackTick = currentAttackTick();
+    }
+
+    /** 只消费一次; true 表示这次 {@code Player.attack} 来自自动化, 应当放行。 */
+    public static boolean consumeAutomatedAttackMark() {
+        if (automatedAttackTick == currentAttackTick()) {
+            automatedAttackTick = -1L;
+            return true;
+        }
+        return false;
+    }
+
+    private static long currentAttackTick() {
+        return mc.level != null ? mc.level.getGameTime()
+                : (mc.player != null ? mc.player.tickCount : 0);
+    }
 
     public static boolean shouldKeepSprintInDelayWindow() {
         if (mc.player == null || mc.level == null) return false;
