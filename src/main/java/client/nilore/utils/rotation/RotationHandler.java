@@ -45,6 +45,22 @@ public class RotationHandler
     public static Rotation prevSentRotation;
     public static boolean isRotating;
 
+    /**
+     * 缓动归位: 静默转向结束后, 用一个平滑路径把发出的朝向送回真实视角。
+     *
+     * <p>上游在 {@code !isRotating} 分支直接把包里的朝向换回 vanilla —— 服务端看到的
+     * 是"上一拍还盯着目标, 这一拍瞬间弹回原点", 这正是 Intave / Grim 那类
+     * RotateBack check 要抓的形态。改成若干拍内线性插值回去, 每拍的角速度都落在
+     * 人类鼠标能达到的范围内。</p>
+     */
+    private static int easeTicks = 0;
+
+    /** 归位用几拍; 0 = 关闭缓动, 行为与上游完全一致。 */
+    public static int easeReturnTicks = 4;
+
+    /** 小于这个角度差就直接归位 (小角度本来就看不出"弹回")。 */
+    private static final float EASE_MIN_DELTA = 5.0f;
+
     public static void setTargetRotation(Rotation rotation) {
         targetRotation = rotation;
         float y = rotation.getYaw();
@@ -58,6 +74,7 @@ public class RotationHandler
     public void onWorldChange(WorldChangeEvent worldChangeEvent) {
         prevRotation = null;
         targetRotation = null;
+        easeTicks = 0;
         lastWireYaw = Float.NaN;
         lastWirePitch = Float.NaN;
     }
@@ -97,6 +114,8 @@ public class RotationHandler
             AntiKB antiKB = AntiKB.INSTANCE;
             MidPearl midPearl = MidPearl.INSTANCE;
             isRotating = true;
+            // 重新接管朝向: 半截的归位动画立即作废。
+            easeTicks = 0;
             if (autoMLG != null && autoMLG.isEnabled() && autoMLG.targetRotation != null) {
                 RotationHandler.setTargetRotation(autoMLG.targetRotation);
                 autoMLG.targetRotation = null;
@@ -165,7 +184,31 @@ public class RotationHandler
                 float vanillaYaw = e.getYaw();
                 float vanillaPitch = e.getPitch();
                 if (sentRotation != null) {
-                    vanillaYaw = sentRotation.getYaw() + Mth.wrapDegrees(vanillaYaw - sentRotation.getYaw());
+                    float reference = sentRotation.getYaw();
+                    float targetYaw = reference + Mth.wrapDegrees(vanillaYaw - reference);
+                    float yawDelta = targetYaw - reference;
+                    float pitchDelta = vanillaPitch - sentRotation.getPitch();
+                    // 刚结束静默转向且角度差够大: 起一段 N 拍的线性归位。
+                    if (easeTicks <= 0 && easeReturnTicks > 0
+                            && (Math.abs(yawDelta) > EASE_MIN_DELTA
+                            || Math.abs(pitchDelta) > EASE_MIN_DELTA)) {
+                        easeTicks = easeReturnTicks;
+                    }
+                    if (easeTicks > 0) {
+                        --easeTicks;
+                        if (easeTicks == 0) {
+                            // 最后一拍直接落到真实视角, 不留残差。
+                            vanillaYaw = targetYaw;
+                        } else {
+                            // 每拍吃掉剩余距离的 1/(n+1): 视角不动时是匀速, 动了也自动收敛。
+                            float div = easeTicks + 1.0f;
+                            vanillaYaw = reference + yawDelta / div;
+                            vanillaPitch = Mth.clamp(sentRotation.getPitch() + pitchDelta / div,
+                                    -90.0f, 90.0f);
+                        }
+                    } else {
+                        vanillaYaw = targetYaw;
+                    }
                 }
                 float refYaw = sentRotation != null ? sentRotation.getYaw() : vanillaYaw;
                 float refPitch = sentRotation != null ? sentRotation.getPitch() : vanillaPitch;

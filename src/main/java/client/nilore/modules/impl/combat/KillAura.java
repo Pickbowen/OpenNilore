@@ -89,7 +89,51 @@ public class KillAura extends Module {
     public static Entity aimingTarget;
     public static List<Entity> targetList = new ArrayList<>();
 
+    /** 未开 Rage 时的硬上限, 与上游一致。 */
     private static final double MAX_REACH = 3.0;
+
+    /**
+     * Rage 下允许的最大攻击距离, 与 Reach 滑条上限对齐。
+     *
+     * <p>上游把 {@code MAX_REACH = 3.0} 当硬天花板: {@code onTick} 里
+     * {@code reach = Math.min(reach, MAX_REACH)} 会把滑条拉到 6 也钳回 3 ——
+     * 也就是说 Reach 这个设置项在 3.0 以上的部分从来没生效过。</p>
+     */
+    private static final double MAX_REACH_RAGE = 6.0;
+
+    /** 本模块当前允许的最大攻击距离。 */
+    private double maxReach() {
+        return this.rage.getValue() ? MAX_REACH_RAGE : MAX_REACH;
+    }
+
+    /**
+     * 实际可打距离: Rage + Through Walls 时吃满 Through Walls Range, 否则就是 Reach。
+     *
+     * <p>{@code throughWallsRange} 在上游只声明、从未被读取, 这里把它接上。</p>
+     */
+    private double attackRange() {
+        double range = Mth.clamp(this.reach.getValue().doubleValue(),
+                this.reach.getMin().doubleValue(),
+                this.reach.getMax().doubleValue());
+        if (this.rage.getValue() && this.throughWalls.getValue()) {
+            range = Math.max(range, this.throughWallsRange.getValue().doubleValue());
+        }
+        return Math.min(range, this.maxReach());
+    }
+
+    /**
+     * Rage 的 APS 爬坡系数。
+     *
+     * <p>一开光环就满 APS 是服务端滑动窗口最容易抓的形态。前 {@code Rage Ramp} 拍
+     * 按 55% → 100% 线性放大, 爬完恒为 1.0。</p>
+     */
+    private double apsRampScale() {
+        int ramp = this.apsRampTicks.getValue().intValue();
+        if (ramp <= 0 || this.rampTicks >= ramp) {
+            return 1.0;
+        }
+        return 0.55 + 0.45 * (this.rampTicks / (double) ramp);
+    }
 
     private static final ResourceLocation NURIK_CAPTURE_TEXTURE = ResourceLocation.tryParse("nilore:nurik/capture");
     private static final String NURIK_CAPTURE_ASSET = "/assets/nilore/nurik/capture.png";
@@ -145,6 +189,21 @@ public class KillAura extends Module {
     public final NumberSetting rageTargets = new NumberSetting("Rage Targets", 3.0, 1.0, 8.0, 1.0,
             () -> this.rage.getValue());
 
+    /** 启用后前 N 拍把 APS 从 55% 爬到 100%; 0 = 不爬坡。 */
+    public final NumberSetting apsRampTicks = new NumberSetting("Rage Ramp", 60.0, 0.0, 200.0, 20.0,
+            () -> this.rage.getValue());
+
+    /** Rage 下只打 hurtTime 归零的目标 —— 打无敌帧等于白发一个 ATTACK 包。 */
+    public final BooleanSetting rageHurtSync = new BooleanSetting("Rage Hurt Sync", true,
+            () -> this.rage.getValue());
+
+    /** Rage 下把 SWING 提到 ATTACK 之前 (只换顺序, 不额外加包)。 */
+    public final BooleanSetting swingFirst = new BooleanSetting("Swing First", true,
+            () -> this.rage.getValue());
+
+    /** 启用后经过的拍数, 供 APS 爬坡使用 (onEnable 归零)。 */
+    private int rampTicks;
+
     private int attackTimes;
     private float attacks;
     private int targetIndex;
@@ -169,6 +228,7 @@ public class KillAura extends Module {
         targetList.clear();
         this.bypassKS = true;
         clearPause();
+        this.rampTicks = 0;
         super.onEnable();
     }
 
@@ -193,11 +253,8 @@ public class KillAura extends Module {
         if (!NiloreClient.isReady()) {
             return;
         }
-        double reach = Mth.clamp(this.reach.getValue().doubleValue(),
-                this.reach.getMin().doubleValue(),
-                this.reach.getMax().doubleValue());
-        reach = Math.min(reach, MAX_REACH);
-        RotationUtil.setReachLimit(reach);
+        // Rage + Through Walls 时上限抬到 Through Walls Range, 其余情况与上游一致。
+        RotationUtil.setReachLimit(this.attackRange());
         if (mc.screen instanceof AbstractContainerScreen
                 || ItemUtil.hasServerItem()
                 || (Scaffold.INSTANCE != null && Scaffold.INSTANCE.isEnabled())
@@ -264,8 +321,12 @@ public class KillAura extends Module {
         target = targetList.get(this.targetIndex);
 
         // Naven: attacks += aps / 20 (蓄力)
+        // Rage: 前 Rage Ramp 拍按爬坡系数压低 APS, 避免一开就满速的瞬时峰值。
+        double apsScale = this.rage.getValue() ? this.apsRampScale() : 1.0;
         this.attacks = Math.min(this.attacks + (float) (MathUtil.randomDouble(
-                this.minAps.getValue().doubleValue(), this.maxAps.getValue().doubleValue()) / 20.0), 2.0f);
+                this.minAps.getValue().doubleValue() * apsScale,
+                this.maxAps.getValue().doubleValue() * apsScale) / 20.0), 2.0f);
+        ++this.rampTicks;
     }
 
     // ===== Naven 引擎: 出刀 (onClick) =====
@@ -354,8 +415,14 @@ public class KillAura extends Module {
                 if (AntiBots.isBot(entity)) {
                     continue;
                 }
+                // Hurt Sync: 目标还在无敌帧里, 这一刀发出去也不掉血, 只多一个 ATTACK 包。
+                if (this.rageHurtSync.getValue()
+                        && entity instanceof LivingEntity living
+                        && living.hurtTime > 0) {
+                    continue;
+                }
                 if (RotationUtil.closestPoint(eye, entity.getBoundingBox()).distanceTo(eye)
-                        > this.reach.getValue().doubleValue()) {
+                        > this.attackRange()) {
                     continue;
                 }
                 if (this.attackEntity(entity)) {
@@ -378,7 +445,7 @@ public class KillAura extends Module {
                 if (mc.player == null) {
                     break;
                 }
-                if (!RotationUtil.isLookingAt(entity, MAX_REACH, 0.3f, aim)
+                if (!RotationUtil.isLookingAt(entity, this.maxReach(), 0.3f, aim)
                         && !(this.throughWalls.getValue() && RotationUtil.isWithinReach(entity))) {
                     continue;
                 }
@@ -397,7 +464,7 @@ public class KillAura extends Module {
         if (mc.player == null || mc.level == null) {
             return null;
         }
-        HitResult result = RotationUtil.rayTraceForAim(aim, MAX_REACH);
+        HitResult result = RotationUtil.rayTraceForAim(aim, this.maxReach());
         if (result instanceof EntityHitResult entityHit) {
             Entity hit = entityHit.getEntity();
             return hit != null && this.isValidTarget(hit) ? hit : null;
@@ -442,7 +509,7 @@ public class KillAura extends Module {
 
         for (Vec3 point : points) {
             Rotation brute = RotationUtil.rotationToPoint(eye, point);
-            HitResult hit = RotationUtil.rayTraceForAim(brute, MAX_REACH);
+            HitResult hit = RotationUtil.rayTraceForAim(brute, this.maxReach());
             if (hit instanceof EntityHitResult entityHit && entityHit.getEntity() == target) {
                 return this.fixRotation(brute);
             }
@@ -499,8 +566,15 @@ public class KillAura extends Module {
         mc.player.setYRot(aim.getYaw());
         mc.player.setXRot(aim.getPitch());
         try {
-            mc.gameMode.attack(mc.player, entity);
-            mc.player.swing(InteractionHand.MAIN_HAND);
+            if (this.rage.getValue() && this.swingFirst.getValue()) {
+                // 包序反转: SWING 先于 ATTACK。原版是 ATTACK → SWING, 统计型 check 会看到
+                // "挥动永远落后于命中"。只换顺序, 不额外加包。
+                mc.player.swing(InteractionHand.MAIN_HAND);
+                mc.gameMode.attack(mc.player, entity);
+            } else {
+                mc.gameMode.attack(mc.player, entity);
+                mc.player.swing(InteractionHand.MAIN_HAND);
+            }
             if (this.morePart.getValue()) {
                 mc.player.magicCrit(entity);
                 mc.player.crit(entity);
@@ -573,7 +647,7 @@ public class KillAura extends Module {
         }
         Vec3 eye = mc.player.getEyePosition();
         if (RotationUtil.closestPoint(eye, entity.getBoundingBox()).distanceTo(eye)
-                > this.reach.getValue().doubleValue()) {
+                > this.attackRange()) {
             return false;
         }
         return RotationUtil.isEntityInFov(entity, this.fov.getValue().doubleValue());

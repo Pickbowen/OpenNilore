@@ -12,6 +12,7 @@ import net.minecraft.network.protocol.game.ClientboundAnimatePacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket;
 import net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.GameType;
 import client.nilore.event.impl.MotionEvent;
 import client.nilore.event.impl.PacketEvent;
@@ -33,6 +34,27 @@ extends Module {
     private static final Map<UUID, Long> suspectJoinTimes;
     private static final Set<Integer> confirmedBotIds;
     private static final Map<UUID, Long> playerAddTimes;
+
+    /** 一直查不到 tab 列表条目的实体 id, 由 onMotion 每拍刷新。 */
+    private static final Set<Integer> tabMissingIds = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /** 首次发现某 UUID 不在 tab 列表里的时间戳, 用来做宽限期。 */
+    private static final Map<UUID, Long> unseenInTab;
+
+    /**
+     * tab 列表反查: 真实玩家一定在 tab 里, 只有 NPC/假人插件实体不在。
+     *
+     * <p>这是整套判定里最硬的一条 —— 比"加入时间短"可靠得多, 因为假人通常是服务端
+     * 自己 spawn 的实体, 压根不会进 PlayerInfo。宽限期只是防"实体包比 info 包先到"。</p>
+     */
+    private final BooleanSetting tabCheck = new BooleanSetting("Tab Check", true);
+
+    /** tab 反查的宽限时间 (毫秒)。 */
+    private final NumberSetting tabGrace = new NumberSetting("Tab Grace", 1500.0, 0.0, 5000.0, 100.0,
+            () -> this.tabCheck.getValue());
+
+    /** 名字特征匹配 (NPC / CIT- / 空名等)。 */
+    private final BooleanSetting nameFilter = new BooleanSetting("Name Filter", true);
 
     public AntiBots() {
         super("AntiBots", Category.COMBAT);
@@ -60,7 +82,46 @@ extends Module {
     }
 
     public static boolean isBot(Entity entity) {
-        return confirmedBotIds.contains(entity.getId());
+        if (entity == null) {
+            return false;
+        }
+        if (confirmedBotIds.contains(entity.getId())) {
+            return true;
+        }
+        AntiBots antiBots = INSTANCE;
+        // 模块关掉时保持上游语义: 只有包级确认过的才算假人。
+        if (antiBots == null || !antiBots.isEnabled()) {
+            return false;
+        }
+        if (antiBots.nameFilter.getValue() && nameLooksLikeBot(entity)) {
+            return true;
+        }
+        return antiBots.tabCheck.getValue() && tabMissingIds.contains(entity.getId());
+    }
+
+    /**
+     * 名字特征。只认"真人不可能叫"的形态, 不做子串乱匹配
+     * (否则 RobotKing / Botanist 这类正常 ID 会被误杀)。
+     */
+    private static boolean nameLooksLikeBot(Entity entity) {
+        if (entity.getName() == null) {
+            return true;
+        }
+        String name = entity.getName().getString();
+        if (name == null || name.isBlank()) {
+            return true;
+        }
+        String plain = name.replaceAll("\u00a7.", "").trim();
+        if (plain.isEmpty()) {
+            return true;
+        }
+        String lower = plain.toLowerCase(java.util.Locale.ROOT);
+        return lower.equals("npc")
+                || lower.equals("bot")
+                || lower.equals("citizen")
+                || plain.contains("[NPC]")
+                || plain.contains("CIT-")
+                || plain.startsWith("\u00ab");
     }
 
     @EventTarget
@@ -101,6 +162,10 @@ extends Module {
         confirmedBotNames.clear();
         confirmedBotIds.clear();
         suspectJoinTimes.clear();
+        // 换世界必须清掉: 否则所有人都被当成"刚加入", 宽限期内整队人都被剔出目标列表。
+        playerAddTimes.clear();
+        unseenInTab.clear();
+        tabMissingIds.clear();
     }
 
     @EventTarget
@@ -112,6 +177,42 @@ extends Module {
                     ChatUtil.print("Fake Staff Detected! (" + suspectNames.get(entry.getKey()) + ")");
                 }
                 suspectJoinTimes.remove(entry.getKey());
+            }
+            if (this.tabCheck.getValue()) {
+                this.scanTab();
+            } else {
+                tabMissingIds.clear();
+                unseenInTab.clear();
+            }
+        }
+    }
+
+    /** 每拍扫一遍玩家实体, 把持续不在 tab 列表里的挑出来。 */
+    private void scanTab() {
+        if (mc.level == null || mc.player == null) {
+            return;
+        }
+        if (mc.getConnection() == null || mc.hasSingleplayerServer()) {
+            tabMissingIds.clear();
+            unseenInTab.clear();
+            return;
+        }
+        long now = System.currentTimeMillis();
+        double grace = this.tabGrace.getValue().doubleValue();
+        for (Entity entity : mc.level.entitiesForRendering()) {
+            if (!(entity instanceof Player) || entity == mc.player) {
+                continue;
+            }
+            if (mc.getConnection().getPlayerInfo(entity.getUUID()) != null) {
+                tabMissingIds.remove(entity.getId());
+                unseenInTab.remove(entity.getUUID());
+                continue;
+            }
+            long since = unseenInTab.computeIfAbsent(entity.getUUID(), key -> now);
+            if ((double) (now - since) >= grace) {
+                tabMissingIds.add(entity.getId());
+            } else {
+                tabMissingIds.remove(entity.getId());
             }
         }
     }
@@ -177,5 +278,6 @@ extends Module {
         suspectJoinTimes = new ConcurrentHashMap<>();
         confirmedBotIds = new HashSet<>();
         playerAddTimes = new ConcurrentHashMap<>();
+        unseenInTab = new ConcurrentHashMap<>();
     }
 }
