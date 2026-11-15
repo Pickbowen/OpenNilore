@@ -22,7 +22,6 @@ import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
-import net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
@@ -221,15 +220,8 @@ public class KillAura extends Module {
     public final NumberSetting critRate = new NumberSetting("Crit Rate", 60.0, 0.0, 100.0, 5.0,
             () -> this.rage.getValue() && this.critMode.is("Packet"));
 
-    /** 疾跑中伪造暴击前先发 STOP_SPRINTING, 打完立刻 START_SPRINTING。 */
-    public final BooleanSetting critSprintOff = new BooleanSetting("Crit Sprint Off", true,
-            () -> this.rage.getValue() && this.critMode.is("Packet"));
-
     /** 上一次伪造暴击的拍号, 保证每拍最多一次。 */
     private static long lastCritTick = -1L;
-
-    /** 本次伪造是否临时关掉过疾跑, 用于还原。 */
-    private boolean critSprintPending;
 
     /** 启用后经过的拍数, 供 APS 爬坡使用 (onEnable 归零)。 */
     private int rampTicks;
@@ -273,7 +265,6 @@ public class KillAura extends Module {
         this.bypassKS = true;
         clearPause();
         setAttackBudget(1);
-        this.critSprintPending = false;
         super.onDisable();
     }
 
@@ -612,16 +603,12 @@ public class KillAura extends Module {
         if (MathUtil.randomDouble(0.0, 100.0) > this.critRate.getValue().doubleValue()) {
             return false;
         }
-        boolean sprinting = mc.player.isSprinting();
-        if (sprinting) {
-            if (!this.critSprintOff.getValue()) {
-                return false;
-            }
-            // 服务端认的是它自己那份 sprinting: 必须真的发命令包, 只改本地没用。
-            mc.player.setSprinting(false);
-            mc.getConnection().send(new ServerboundPlayerCommandPacket(mc.player,
-                    ServerboundPlayerCommandPacket.Action.STOP_SPRINTING));
-            this.critSprintPending = true;
+        // 疾跑会直接废掉暴击 —— 服务端暴击判定里也查 isSprinting。
+        // 曾经的做法是发 STOP_SPRINTING 换暴击再 START_SPRINTING, 但那会让服务端真的
+        // 把你从疾跑里摘出去, 走位明显掉速, 还多两个命令包。现在不碰疾跑状态:
+        // 疾跑时干脆不伪造, 只保留位置包, 想要暴击就站桩或起跳打。
+        if (mc.player.isSprinting()) {
+            return false;
         }
         lastCritTick = currentAttackTick();
         double x = mc.player.getX();
@@ -633,21 +620,11 @@ public class KillAura extends Module {
         return true;
     }
 
-    /** 还原位置与疾跑状态。落在 finally 里, 出刀抛异常也不会把服务端留在半空。 */
+    /** 还原位置。落在 finally 里, 出刀抛异常也不会把服务端留在半空。 */
     private void finishCritSetup() {
         if (mc.getConnection() != null && mc.player != null) {
             mc.getConnection().send(new ServerboundMovePlayerPacket.Pos(
                     mc.player.getX(), mc.player.getY(), mc.player.getZ(), true));
-        }
-        if (this.critSprintPending) {
-            this.critSprintPending = false;
-            if (mc.player != null) {
-                mc.player.setSprinting(true);
-            }
-            if (mc.getConnection() != null) {
-                mc.getConnection().send(new ServerboundPlayerCommandPacket(mc.player,
-                        ServerboundPlayerCommandPacket.Action.START_SPRINTING));
-            }
         }
     }
 
