@@ -1,5 +1,7 @@
 package client.nilore.modules.impl.render;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Random;
 import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.network.chat.Component;
@@ -207,8 +209,13 @@ extends Module {
         if (source.getSiblings().isEmpty()) {
             return rebuildLeaf(source, find, replace, color);
         }
+        // Component.copy() 会把 siblings 一并复制进新的组件, 之后再 append 重建好的子节点,
+        // 等于把每个子节点写了两遍 —— 表现就是"含名字的聊天消息整条重复一次"。
+        // 先快照再清空: copy() 若与原组件共享同一个 siblings 列表, 直接边遍历边清会丢子节点。
+        List<Component> childrenSnapshot = new ArrayList<>(source.getSiblings());
         MutableComponent out = source.copy();
-        for (Component child : source.getSiblings()) {
+        out.getSiblings().clear();
+        for (Component child : childrenSnapshot) {
             out.append(rebuild(child, find, replace, color));
         }
         return out;
