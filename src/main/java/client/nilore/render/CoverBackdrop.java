@@ -118,8 +118,8 @@ public final class CoverBackdrop {
 
                 float dist = length(panelUv - 0.5) * 1.42;
                 float core = 1.0 - smoothstep(0.0, 1.05, dist);
-                col *= mix(0.60, 1.0, core);
-                col += col * core * core * 0.08;
+                col *= mix(0.80, 1.0, core);
+                col += col * core * core * 0.16;
 
                 float dither = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
                 col += (dither - 0.5) / 255.0;
@@ -201,9 +201,9 @@ public final class CoverBackdrop {
             g = gray * -2.0f + g * 3.0f;
             b = gray * -2.0f + b * 3.0f;
 
-            rgb[i] = ((r - 128.0f) * 1.7f + 128.0f) * 0.75f;
-            rgb[i + 1] = ((g - 128.0f) * 1.7f + 128.0f) * 0.75f;
-            rgb[i + 2] = ((b - 128.0f) * 1.7f + 128.0f) * 0.75f;
+            rgb[i] = ((r - 128.0f) * 1.7f + 128.0f) * 0.88f;
+            rgb[i + 1] = ((g - 128.0f) * 1.7f + 128.0f) * 0.88f;
+            rgb[i + 2] = ((b - 128.0f) * 1.7f + 128.0f) * 0.88f;
         }
     }
 
@@ -373,6 +373,8 @@ public final class CoverBackdrop {
         int vertexShader = compile(35633, VERTEX_SOURCE);
         int fragmentShader = compile(35632, FRAGMENT_SOURCE);
         if (vertexShader == 0 || fragmentShader == 0) {
+            ClientBase.logger.warn("cover backdrop shader failed to compile: "
+                    + GL20.glGetShaderInfoLog(vertexShader != 0 ? fragmentShader : vertexShader));
             if (vertexShader != 0) GL20.glDeleteShader(vertexShader);
             if (fragmentShader != 0) GL20.glDeleteShader(fragmentShader);
             failed = true;

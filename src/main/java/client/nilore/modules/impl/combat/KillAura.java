@@ -71,6 +71,7 @@ import client.nilore.utils.game.RotationUtil;
 import client.nilore.utils.math.MathUtil;
 import client.nilore.utils.misc.Assets;
 import client.nilore.utils.render.RenderUtil;
+import client.nilore.utils.rotation.OrganicRotationModel;
 import client.nilore.utils.rotation.Rotation;
 import client.nilore.utils.rotation.RotationHandler;
 import client.nilore.event.EventTarget;
@@ -91,10 +92,21 @@ public class KillAura extends Module {
 
     private static final double MAX_REACH = 3.0;
 
+    private static final double JELLO_GRADIENT_HEIGHT = 4.2;
+    private static final float JELLO_END_ALPHA = 0.6f;
+    private static final double JELLO_RING_WIDTH = 0.01;
+
     private static final ResourceLocation NURIK_CAPTURE_TEXTURE = ResourceLocation.tryParse("nilore:nurik/capture");
     private static final String NURIK_CAPTURE_ASSET = "/assets/nilore/nurik/capture.png";
     private static boolean nurikTextureLoaded;
     private static boolean nurikTextureLoadFailed;
+
+    private double jelloDirection = 1.0;
+    private double jelloYPos;
+    private double jelloProgress;
+    private long jelloLastMs = System.currentTimeMillis();
+    private long jelloLastFrameMs;
+    private Entity jelloLastEntity;
 
     public final BooleanSetting attackPlayer    = new BooleanSetting("Attack Player", true);
     public final BooleanSetting attackInvisible = new BooleanSetting("Attack Invisible", true);
@@ -126,7 +138,7 @@ public class KillAura extends Module {
 
     public final ModeSetting targetMode   = new ModeSetting("Target Mode", "Single", "Switch", "Multiple").withDefault("Single");
     public final ModeSetting priorityMode = new ModeSetting("Priority", "Distance", "FoV", "Health", "LivingTime", "Armor", "None").withDefault("FoV");
-    public final ModeSetting targetEsp    = new ModeSetting("Target ESP", "None", "Spiral", "Box", "Tab", "NurikZapen").withDefault("Spiral");
+    public final ModeSetting targetEsp    = new ModeSetting("Target ESP", "None", "Spiral", "Box", "Tab", "NurikZapen", "Jello").withDefault("Spiral");
 
     private int attackTimes;
     private float attacks;
@@ -398,24 +410,18 @@ public class KillAura extends Module {
      * Naven getFixedRotation: snap the delta from the last SENT rotation onto the mouse
      * sensitivity GCD lattice. Real mouse input lands on this grid; that quantisation, not
      * interpolation, is what makes Naven's aim smooth instead of twitchy.
+     *
+     * <p>现在接上 {@link OrganicRotationModel}: 光有 GCD 量化, 每一拍仍然是"精确朝目标
+     * 走固定步长", delta 恒定、无过冲, ACA 的 Perfect Rotation 正是抓这个 —— 真实鼠标
+     * 的 rotation 一定带漂移和抖动。这个模型在量化之前先叠正弦漂移 + 随机抖动, 再把结果
+     * 压回 sensitivity lattice, 既保持像人手, 也不会产生非法步长。
      */
     private Rotation fixRotation(Rotation raw) {
         Rotation last = RotationHandler.sentRotation != null
                 ? RotationHandler.sentRotation
                 : new Rotation(mc.player.getYRot(), mc.player.getXRot());
-        float f = (float) (mc.options.sensitivity().get().doubleValue() * 0.6 + 0.2);
-        float gcd = f * f * f * 1.2f;
-        float deltaYaw = Mth.wrapDegrees(raw.getYaw() - last.getYaw());
-        float deltaPitch = raw.getPitch() - last.getPitch();
-        double maxStep = this.rotationSpeed.getValue().doubleValue();
-        double dist = Math.sqrt(deltaYaw * deltaYaw + deltaPitch * deltaPitch);
-        if (maxStep > 0.0 && dist > maxStep) {
-            float k = (float) (maxStep / dist);
-            deltaYaw *= k;
-            deltaPitch *= k;
-        }
-        return new Rotation(last.getYaw() + (deltaYaw - deltaYaw % gcd),
-                last.getPitch() + (deltaPitch - deltaPitch % gcd));
+        this.organicRotation.setSpeed(this.rotationSpeed.getValue().doubleValue());
+        return this.organicRotation.tick(last, raw, 1.0f);
     }
 
     /** Naven attackEntity: 出刀瞬间临时面向瞄准方向, gameMode.attack + 挥手 + 粒子。 */
@@ -572,6 +578,9 @@ public class KillAura extends Module {
     }
 
     private static long attackLockTick = -1L;
+
+    /** 有机转头模型: 正弦漂移 + 随机抖动, 再压回 sensitivity lattice。 */
+    private final OrganicRotationModel organicRotation = new OrganicRotationModel(180.0, 0.35, 0.12);
 
     /**
      * 本 tick 由自动化(aura / NoXZ 反打)发起的那次 {@code Player.attack}。
@@ -747,6 +756,7 @@ public class KillAura extends Module {
                 RenderUtil.drawFilledColoredBox(band, poseStack, color, color);
             }
             case "NurikZapen" -> this.renderNurikZapen(poseStack, entity, event.partialTick());
+            case "Jello" -> this.renderJello(poseStack, entity, event.partialTick());
             default -> {
             }
         }
@@ -834,8 +844,89 @@ public class KillAura extends Module {
         }
     }
 
-    // ===== 排序器 =====
+    private static double easeInOutCubic(double x) {
+        return x < 0.5 ? 4.0 * x * x * x : 1.0 - Math.pow(-2.0 * x + 2.0, 3.0) / 2.0;
+    }
 
+    private void renderJello(PoseStack poseStack, Entity entity, float partialTick) {
+        long now = System.currentTimeMillis();
+        long frameDelta = now - this.jelloLastFrameMs;
+        this.jelloLastFrameMs = now;
+        if (entity != this.jelloLastEntity || frameDelta > 200L) {
+            this.jelloLastEntity = entity;
+            this.jelloLastMs = now;
+            this.jelloDirection = 1.0;
+            this.jelloProgress = 0.0;
+            this.jelloYPos = 0.0;
+            frameDelta = 0L;
+        } else if (now - this.jelloLastMs >= 1000L) {
+            this.jelloDirection = -this.jelloDirection;
+            this.jelloLastMs = now;
+        }
+        long elapsed = this.jelloDirection > 0 ? now - this.jelloLastMs : 1000L - (now - this.jelloLastMs);
+        this.jelloProgress = Mth.clamp(elapsed / 1000.0, 0.0, 1.0);
+
+        AABB box = EntityUtil.getInterpolatedAABB(entity, partialTick);
+        Vec3 pos = EntityUtil.getInterpolatedPos(entity, partialTick);
+        double radius = Math.max((box.maxX - box.minX) - 0.25, 0.02);
+        double height = box.maxY - box.minY;
+
+        double lastY = this.jelloYPos;
+        this.jelloYPos = easeInOutCubic(this.jelloProgress) * height;
+        double shift = this.jelloDirection > 0 ? this.jelloYPos - lastY : lastY - this.jelloYPos;
+        if (shift < 0.0 || shift > 0.12 || frameDelta > 80L) {
+            shift = 0.0;
+        }
+        double deltaY = shift * -this.jelloDirection * JELLO_GRADIENT_HEIGHT;
+
+        double bottomY = pos.y + this.jelloYPos;
+        double trailTopY = bottomY + deltaY;
+        double innerRadius = radius - JELLO_RING_WIDTH;
+
+        Matrix4f matrix = poseStack.last().pose();
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.disableCull();
+        RenderSystem.disableDepthTest();
+        RenderSystem.depthMask(false);
+        RenderSystem.setShader(GameRenderer::getPositionColorShader);
+
+        BufferBuilder builder = RenderSystem.renderThreadTesselator().getBuilder();
+        builder.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
+        for (int i = 0; i < 360; ++i) {
+            double a1 = Math.toRadians(i);
+            double a2 = Math.toRadians(i + 1);
+            float x1 = (float) (pos.x - Math.sin(a1) * radius);
+            float z1 = (float) (pos.z + Math.cos(a1) * radius);
+            float x2 = (float) (pos.x - Math.sin(a2) * radius);
+            float z2 = (float) (pos.z + Math.cos(a2) * radius);
+            builder.vertex(matrix, x1, (float) trailTopY, z1).color(1.0f, 1.0f, 1.0f, 0.0f).endVertex();
+            builder.vertex(matrix, x1, (float) bottomY, z1).color(1.0f, 1.0f, 1.0f, JELLO_END_ALPHA).endVertex();
+            builder.vertex(matrix, x2, (float) bottomY, z2).color(1.0f, 1.0f, 1.0f, JELLO_END_ALPHA).endVertex();
+            builder.vertex(matrix, x2, (float) trailTopY, z2).color(1.0f, 1.0f, 1.0f, 0.0f).endVertex();
+            float ox1 = (float) (pos.x - Math.sin(a1) * radius);
+            float oz1 = (float) (pos.z + Math.cos(a1) * radius);
+            float ix1 = (float) (pos.x - Math.sin(a1) * innerRadius);
+            float iz1 = (float) (pos.z + Math.cos(a1) * innerRadius);
+            float ox2 = (float) (pos.x - Math.sin(a2) * radius);
+            float oz2 = (float) (pos.z + Math.cos(a2) * radius);
+            float ix2 = (float) (pos.x - Math.sin(a2) * innerRadius);
+            float iz2 = (float) (pos.z + Math.cos(a2) * innerRadius);
+            builder.vertex(matrix, ox1, (float) bottomY, oz1).color(1.0f, 1.0f, 1.0f, 1.0f).endVertex();
+            builder.vertex(matrix, ix1, (float) bottomY, iz1).color(1.0f, 1.0f, 1.0f, 1.0f).endVertex();
+            builder.vertex(matrix, ix2, (float) bottomY, iz2).color(1.0f, 1.0f, 1.0f, 1.0f).endVertex();
+            builder.vertex(matrix, ox2, (float) bottomY, oz2).color(1.0f, 1.0f, 1.0f, 1.0f).endVertex();
+        }
+        BufferUploader.drawWithShader(builder.end());
+
+        RenderSystem.depthMask(true);
+        RenderSystem.enableDepthTest();
+        RenderSystem.enableCull();
+        RenderSystem.disableBlend();
+        RenderSystem.setShaderColor(1.0f, 1.0f, 1.0f, 1.0f);
+    }
+
+    // ===== 排序器 =====
     private static final Comparator<Entity> BY_DISTANCE = Comparator.comparingDouble(KillAura::getDistanceToPlayer);
     private static final Comparator<Entity> BY_ANGLE = Comparator.comparingDouble(KillAura::getAngleDiffToTarget);
     private static final Comparator<Entity> BY_HEALTH = Comparator.comparingDouble(KillAura::getEntityHealth);

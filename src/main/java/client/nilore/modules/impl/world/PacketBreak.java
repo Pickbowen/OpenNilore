@@ -57,6 +57,14 @@ import client.nilore.utils.rotation.RotationSmoother;
  * ({@code progress = getDestroyProgress * (gameTicks - startTick + 1)}, {@code >= 0.7} 立刻摧毁)。
  * 累计满 1.0 后再等 1 tick 才发 STOP, 给 Grim FastBreak 留余量(迟到只让 buffer 衰减)。
  * STOP 的 face 按当前眼睛位置重算, 满足 Grim PositionBreakA 的朝向判定。
+ * <p>
+ * <b>结尾那 2 tick 的 rotation 不能撤</b>: Grim 的 {@code RotationBreak} 除了 break 当下的判定,
+ * 还会在随后到达的 flying 包上再复核一遍(post-flying), 而它只认
+ * {@code (lastYaw, pitch)}、{@code (yaw, pitch)}、{@code (lastYaw, lastPitch)} 这几个组合 ——
+ * 也就是手上只有最近 1 tick 的转角。break 的 sequence 又要晚一到两个包才 ack, 所以一撤静默旋转,
+ * 复核时能拼出来的全是真实视角, 直接按"没看着方块"报 PositionBreak/RotationBreak。
+ * 因此发完 STOP 之后固定再保持 {@code End Hold} 个 tick 的同一条 rotation(不重新寻点、不叠加平滑),
+ * 之后才把视角交还玩家。
  */
 public class PacketBreak
 extends Module {
@@ -80,6 +88,13 @@ extends Module {
      * 这样慢方块(几十 tick)能盖住模型误差, 快方块也不会被固定值拖成龟速。
      */
     private final NumberSetting extraPercent = new NumberSetting("Extra %", 10, 0, 50, 1);
+    /**
+     * 发完 STOP 之后再保持同一条静默旋转多少个 tick。Grim 的 break 复核只回看最近 1 tick 的转角,
+     * 而 break 包本身要晚一到两个 flying 包才被 ack, 所以默认留 2 tick 让复核一定能拼出"看着方块"的 look;
+     * 调到 0 就是老行为(发完立刻交还视角)。
+     */
+    private final NumberSetting endHold = new NumberSetting("End Hold", 2, 0, 4, 1,
+            () -> this.rotate.getValue());
     private final BooleanSetting esp = new BooleanSetting("ESP", true);
     private final BooleanSetting showProgress = new BooleanSetting("Progress", true);
     private final ModeSetting progressMode = new ModeSetting("Mode", "Up", "In", "Out");
@@ -100,6 +115,10 @@ extends Module {
     private boolean landed;
 
     public Rotation targetRotation;
+    /** 发完 STOP 之后要原样保持的 rotation; 非 null 表示正在结尾 hold 阶段。 */
+    private Rotation heldRotation;
+    /** 结尾 hold 还剩下的 tick 数。 */
+    private int holdTicks;
     private Vec3 aimPoint;
     private Direction aimFace;
     private BlockPos aimPos;
@@ -140,6 +159,8 @@ extends Module {
             this.elapsedTicks = 0;
             this.progress = 0.0f;
             this.landed = false;
+            // 新会话立刻接管: 上一次挖穿的结尾 hold 不能再压着新的目标。
+            this.cancelHold();
             this.resetAim();
             if (mc.player.onGround()) {
                 this.landed = true;
@@ -155,8 +176,20 @@ extends Module {
 
     @EventTarget
     public void onTick(TickEvent tickEvent) {
+        if (mc.player == null || mc.level == null) {
+            return;
+        }
+        // 结尾 hold: 发完 STOP 后继续把同一条旋转压在方块上, 让 Grim 复核那几条 flying 包还能拼出
+        // "看着方块"的 look。期间不再寻点、不再累加进度、不再挥手, 时间到就交还真实视角。
+        if (this.heldRotation != null) {
+            if (this.holdTicks-- > 0) {
+                this.targetRotation = new Rotation(this.heldRotation.getYaw(), this.heldRotation.getPitch());
+                return;
+            }
+            this.releaseHold();
+        }
         BlockPos pos = this.targetPos;
-        if (pos == null || mc.player == null || mc.level == null || mc.gameMode == null) {
+        if (pos == null || mc.gameMode == null) {
             return;
         }
         // 选中之后不再看视角: 只校验方块还在、离得够近。
@@ -204,6 +237,9 @@ extends Module {
         if (this.accumulated >= 1.0f && this.elapsedTicks >= finishAt) {
             // face 按当前眼睛位置重算, 保证 PositionBreakA 的朝向判定成立。
             Direction face = this.resolveFace(pos);
+            // 结尾要保持的 rotation 取这一刻已经上报出去的那条(wire rotation): 本 tick 顶部的
+            // hitsBlock 校验已经确认它确实打得到方块, 而且它已经在 Grim 手里, 复核一定对得上。
+            Rotation frozen = this.freezeRotation();
             PacketUtil.sendPredictiveDirect(sequence -> {
                 // 原版挖穿时 (continueDestroyBlock → 预测 lambda) 也是先本地
                 // destroyBlock(pos) 再发 STOP, 两者在同一个预测窗口里, 服务端 ack 能回滚误判。
@@ -213,8 +249,51 @@ extends Module {
                 return new ServerboundPlayerActionPacket(
                         ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, pos, face, sequence);
             });
-            this.clearTarget();
+            this.holdRotation(frozen);
         }
+    }
+
+    /** 发 STOP 时冻结下来的那条 rotation: 就是这一刻已经上报给服务端的静默转角。 */
+    private Rotation freezeRotation() {
+        Rotation wire = this.wireRotation();
+        return new Rotation(wire.getYaw(), Mth.clamp(wire.getPitch(), -90.0f, 90.0f));
+    }
+
+    /**
+     * 挖穿后的收尾: 清掉挖掘会话, 但把 {@code rotation} 原样挂进 hold 阶段。
+     * hold 期间 {@link #targetRotation} 每 tick 都重新赋成同一个值, 所以 RotationHandler 依旧把
+     * 静默旋转发出去, 只是不再变化 —— Grim 的 up to 2 tick 的 look 回看窗口永远命中方块。
+     */
+    private void holdRotation(Rotation rotation) {
+        this.targetPos = null;
+        this.accumulated = 0.0f;
+        this.maxDamage = 0.0f;
+        this.elapsedTicks = 0;
+        this.progress = 0.0f;
+        this.landed = false;
+        this.aimPoint = null;
+        this.aimFace = null;
+        this.aimPos = null;
+        this.smoother.reset();
+        int ticks = this.rotate.getValue() ? this.endHold.getValue().intValue() : 0;
+        if (rotation == null || ticks <= 0) {
+            this.releaseHold();
+            return;
+        }
+        this.heldRotation = rotation;
+        this.holdTicks = ticks;
+        this.targetRotation = new Rotation(rotation.getYaw(), rotation.getPitch());
+    }
+
+    /** hold 结束: 清掉挂住的 rotation, 让本 tick 的移动包回到真实视角。 */
+    private void releaseHold() {
+        this.cancelHold();
+        this.resetAim();
+    }
+
+    private void cancelHold() {
+        this.heldRotation = null;
+        this.holdTicks = 0;
     }
 
     /**
@@ -406,6 +485,12 @@ extends Module {
      * Grim 的 PositionBreakA 逐面判定: 例如 EAST 要求眼睛 maxX 不在方块 X 区间内。
      */
     private Direction resolveFace(BlockPos pos) {
+        // 最优先: 当前上报的静默转角真正打进方块的那一面。按定义它就是从外侧被看到的,
+        // Grim 的 PositionBreakA 逐面判定(例如 EAST 要求眼睛 maxX 不在方块 X 区间内)必然成立。
+        BlockHitResult hit = this.traceBlock(pos, mc.player.getEyePosition(1.0f), this.wireRotation());
+        if (hit != null) {
+            return hit.getDirection();
+        }
         if (this.aimFace != null && pos.equals(this.aimPos)) {
             return this.aimFace;
         }
@@ -509,6 +594,7 @@ extends Module {
         this.elapsedTicks = 0;
         this.progress = 0.0f;
         this.landed = false;
+        this.cancelHold();
         this.resetAim();
     }
 }

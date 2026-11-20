@@ -12,6 +12,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
@@ -20,10 +21,11 @@ import net.minecraft.network.chat.Component;
 import org.lwjgl.glfw.GLFW;
 import client.nilore.ClientBase;
 import client.nilore.NiloreClient;
+import client.nilore.manager.ModuleManager;
+import client.nilore.modules.Module;
 import client.nilore.modules.impl.misc.MusicPlayer;
 import client.nilore.modules.impl.misc.music.AudioPlayer;
 import client.nilore.modules.impl.misc.music.LyricLine;
-import client.nilore.modules.impl.misc.music.LyricSprings;
 import client.nilore.modules.impl.misc.music.MusicHttp;
 import client.nilore.modules.impl.misc.music.NeteaseApi;
 import client.nilore.modules.impl.misc.music.SongInfo;
@@ -35,14 +37,19 @@ import client.nilore.modules.impl.render.LyricsModule;
 import client.nilore.render.CoverBackdrop;
 import client.nilore.render.DrawContext;
 import client.nilore.render.FontPresets;
+import client.nilore.render.Fonts;
 import client.nilore.render.FontRenderer;
 import client.nilore.render.GlHelper;
+import client.nilore.render.GlyphMetrics;
 import client.nilore.render.LyricGlowFbo;
 import client.nilore.render.Paint;
 import client.nilore.render.Rectangle;
 import client.nilore.render.Renderer;
 import client.nilore.render.RoundedRectangle;
 import client.nilore.render.Texture;
+import client.nilore.settings.Setting;
+import client.nilore.settings.impl.BooleanSetting;
+import client.nilore.settings.impl.NumberSetting;
 import client.nilore.utils.animation.SmoothAnimationTimer;
 import client.nilore.utils.animation.SpringSolver;
 import client.nilore.utils.math.Easings;
@@ -56,6 +63,10 @@ public class MusicPlayerScreen extends Screen {
     private static final float BOTTOM_H = 72.16f;
     private static final float PAD = 22.88f;
     private static final float RADIUS = 19.36f;
+    private static final float ROW_H = 44.0f;
+    private static final float ROW_LABEL_GAP = 4.0f;
+    private static final float GROUP_HEAD_H = 34.0f;
+    private static final float GROUP_GAP = 12.0f;
 
     private static int SCRIM = 0xC30B0807;
     private static int SHELL = 0xFF1B1215;
@@ -127,20 +138,65 @@ public class MusicPlayerScreen extends Screen {
         applyScheme(themeCurrent);
     }
 
-    private static final FontRenderer DISPLAY_FONT = FontPresets.poppinsBold(33.0f);
-    private static final FontRenderer TITLE_FONT = FontPresets.pingfang(29.0f);
-    private static final FontRenderer HEADING_FONT = FontPresets.pingfang(25.0f);
-    private static final FontRenderer BODY_FONT = FontPresets.pingfang(23.0f);
-    private static final FontRenderer SMALL_FONT = FontPresets.pingfang(21.0f);
-    private static final FontRenderer NAV_FONT = FontPresets.productSans(20.0f);
-    private static final FontRenderer ICON_FONT = FontPresets.materialIcons(28.0f);
-    private static final FontRenderer ICON_LARGE = FontPresets.materialIcons(38.0f);
-    private static final FontRenderer USERNAME_FONT = FontPresets.pingfang(33.0f);
+    private static FontRenderer DISPLAY_FONT = FontPresets.poppinsBold(33.0f);
+    private static FontRenderer TITLE_FONT = FontPresets.pingfang(29.0f);
+    private static FontRenderer HEADING_FONT = FontPresets.pingfang(25.0f);
+    private static FontRenderer BODY_FONT = FontPresets.pingfang(23.0f);
+    private static FontRenderer SMALL_FONT = FontPresets.pingfang(21.0f);
+    private static FontRenderer NAV_FONT = FontPresets.productSans(20.0f);
+    private static FontRenderer ICON_FONT = FontPresets.materialIcons(28.0f);
+    private static FontRenderer ICON_LARGE = FontPresets.materialIcons(38.0f);
+    private static FontRenderer USERNAME_FONT = FontPresets.pingfang(33.0f);
+    private static FontRenderer ROW_FONT = FontPresets.pingfang(21.0f);
+    private static FontRenderer DESC_FONT = FontPresets.pingfang(16.0f);
+    private static FontRenderer STEP_FONT = FontPresets.productSans(18.0f);
+    private static FontRenderer STEP_ARROW = FontPresets.materialIcons(20.0f);
+
+    private static float fontRasterScale = -1.0f;
+    private static float pendingFontScale = -1.0f;
+
+    /**
+     * The panel is drawn through scale(layoutScale), so a font rasterised for guiScale alone
+     * gets resampled on screen and looks soft. Rasterising at guiScale * layoutScale puts one
+     * atlas pixel on one physical pixel; hinted is off so the atlas keeps fractional advances
+     * and stays mipmapped for the fractional scales in between.
+     */
+    private static void refreshFonts(float layoutScale) {
+        float raster = Math.round(Fonts.deviceScale(layoutScale) * 20.0f) / 20.0f;
+        if (Math.abs(raster - fontRasterScale) < 0.02f) {
+            return;
+        }
+        // Rebuild only once the scale stops moving, otherwise dragging the window edge would
+        // rasterise every font again on every frame.
+        if (Math.abs(raster - pendingFontScale) > 0.001f) {
+            pendingFontScale = raster;
+            return;
+        }
+        fontRasterScale = raster;
+        FontRenderer pingfang21 = Fonts.getRenderer("pingfang_sc_regular.ttf", 21.0f, raster, false);
+        DISPLAY_FONT = Fonts.getRenderer("Poppins-Bold.ttf", 33.0f, raster, false);
+        TITLE_FONT = Fonts.getRenderer("pingfang_sc_regular.ttf", 29.0f, raster, false);
+        HEADING_FONT = Fonts.getRenderer("pingfang_sc_regular.ttf", 25.0f, raster, false);
+        BODY_FONT = Fonts.getRenderer("pingfang_sc_regular.ttf", 23.0f, raster, false);
+        SMALL_FONT = pingfang21;
+        ROW_FONT = pingfang21;
+        DESC_FONT = Fonts.getRenderer("pingfang_sc_regular.ttf", 16.0f, raster, false);
+        USERNAME_FONT = Fonts.getRenderer("pingfang_sc_regular.ttf", 33.0f, raster, false);
+        NAV_FONT = Fonts.getRenderer("product_sans_regular.ttf", 20.0f, raster, false);
+        STEP_FONT = Fonts.getRenderer("product_sans_regular.ttf", 18.0f, raster, false);
+        STEP_ARROW = Fonts.getRenderer("MaterialIcons-Regular.ttf", 20.0f, raster, false);
+        ICON_FONT = Fonts.getRenderer("MaterialIcons-Regular.ttf", 28.0f, raster, false);
+        ICON_LARGE = Fonts.getRenderer("MaterialIcons-Regular.ttf", 38.0f, raster, false);
+        AP_TITLE_FONT = new FontRenderer("product_sans_regular.ttf", 30.0f, true, raster, false);
+        AP_ARTIST_FONT = new FontRenderer("product_sans_regular.ttf", 22.0f, true, raster, false);
+        AP_TIME_FONT = Fonts.getRenderer("product_sans_regular.ttf", 16.0f, raster, false);
+        AP_LYRIC_FONT = new FontRenderer("product_sans_regular.ttf", 26.0f, true, raster, false);
+        AP_LYRIC_ACTIVE_FONT = new FontRenderer("product_sans_regular.ttf", 33.0f, true, raster, false);
+    }
 
     private static final float GLOW_RADIUS = 6.0f;
     private static final float GLOW_ALPHA = 0.55f;
 
-    private static final int LYRIC_FADE_DISTANCE = 2;
 
     private static final int AP_TEXT = 0xFFFFFFFF;
     private static final int AP_TEXT_DIM = 0xB3FFFFFF;
@@ -151,11 +207,11 @@ public class MusicPlayerScreen extends Screen {
     private static final int AP_BAR_GLOW = 0x4DFFFFFF;
     private static final int AP_PLACEHOLDER = 0x14FFFFFF;
 
-    private static final FontRenderer AP_TITLE_FONT = FontPresets.googleSansBold(30.0f);
-    private static final FontRenderer AP_ARTIST_FONT = FontPresets.googleSansBold(22.0f);
-    private static final FontRenderer AP_TIME_FONT = FontPresets.googleSans(16.0f);
-    private static final FontRenderer AP_LYRIC_FONT = FontPresets.googleSansBold(26.0f);
-    private static final FontRenderer AP_LYRIC_ACTIVE_FONT = FontPresets.googleSansBold(33.0f);
+    private static FontRenderer AP_TITLE_FONT = FontPresets.googleSansBold(30.0f);
+    private static FontRenderer AP_ARTIST_FONT = FontPresets.googleSansBold(22.0f);
+    private static FontRenderer AP_TIME_FONT = FontPresets.googleSans(16.0f);
+    private static FontRenderer AP_LYRIC_FONT = FontPresets.googleSansBold(26.0f);
+    private static FontRenderer AP_LYRIC_ACTIVE_FONT = FontPresets.googleSansBold(33.0f);
 
     private static final String ICON_PREV = "";
     private static final String ICON_PLAY = "";
@@ -170,8 +226,10 @@ public class MusicPlayerScreen extends Screen {
     private static final String ICON_HOME = "";
     private static final String ICON_BACK = "";
     private static final String ICON_MUSIC = "";
-    private static final String ICON_INFO = "";
     private static final String ICON_CLOSE = "";
+    private static final String ICON_SETTINGS = "\uE8B8";
+    private static final String ICON_CHEVRON_LEFT = "\uE5CB";
+    private static final String ICON_CHEVRON_RIGHT = "\uE5CC";
 
     private Page page = Page.HOME;
     private Page playerReturnPage = Page.HOME;
@@ -198,17 +256,27 @@ public class MusicPlayerScreen extends Screen {
     private float maxQueueScroll;
     private float playlistScroll;
     private float maxPlaylistScroll;
-    private long lyricSongId = -1;
 
-    private SpringSolver[] lyricLineY = new SpringSolver[0];
-    private SpringSolver[] lyricLineScale = new SpringSolver[0];
-    private float[] lyricRestY = new float[0];
-    private float[] lyricCascade = new float[0];
-    private int lyricAnchor = -1;
-    private float lyricLastBlockTop = Float.NaN;
-    private boolean lyricSpringsReady;
-    private long lyricFrameNs;
-    private long lyricLastPosMs = -1L;
+    private final List<SettingGroup> settingGroups = new ArrayList<>();
+    private float settingsScroll;
+    private float settingsScrollTarget;
+    private float maxSettingsScroll;
+    private Bounds settingsViewport;
+    private NumberSetting settingsDrag;
+    private Rectangle settingsDragTrack;
+    private SettingRow settingsEdit;
+    private String settingsEditText = "";
+    private float lastFrameDelta;
+
+    private static final float LYRIC_LINE_H = 46.64f;
+    private static final int LYRIC_SLOTS = 5;
+    private static final int LYRIC_MIDDLE = LYRIC_SLOTS / 2;
+    private static final float LYRIC_FADE_LINES = 2.75f;
+    private static final float LYRIC_SCROLL_TAU = 0.115f;
+    private static final float LYRIC_SCROLL_SNAP = 2.5f;
+    private float lyricScroll;
+    private long lyricScrollSongId = -1L;
+
 
     private Bounds searchViewport;
     private Bounds queueViewport;
@@ -263,6 +331,8 @@ public class MusicPlayerScreen extends Screen {
     private QrCode.RenderableQr loginQr;
     private volatile String loginQrKey;
     private volatile NeteaseOfficialApi.QrStatus loginQrStatus = NeteaseOfficialApi.QrStatus.WAITING;
+    private volatile int loginPollFailures;
+    private int loginPollCount;
     private long loginQrNextPollMs;
     private long lastLoginConfirmMs;
 
@@ -274,6 +344,10 @@ public class MusicPlayerScreen extends Screen {
         MusicPlayer.AUDIO_PLAYER.setOnCrossfadeTrackListener(this::onCrossfadeTrack);
         MusicSources.load(sourceFile);
         NeteaseOfficialApi.loadSession(sessionFile);
+        buildSettingGroups();
+        if (NeteaseOfficialApi.isLoggedIn()) {
+            refreshAccount();
+        }
     }
 
     @Override
@@ -286,8 +360,20 @@ public class MusicPlayerScreen extends Screen {
                 && loginQrStatus != NeteaseOfficialApi.QrStatus.EXPIRED
                 && loginQrStatus != NeteaseOfficialApi.QrStatus.FAILED
                 && System.currentTimeMillis() >= loginQrNextPollMs) {
-            loginQrNextPollMs = System.currentTimeMillis() + 1500L;
-            NeteaseOfficialApi.pollQr(loginQrKey, sessionFile).thenAccept(s -> loginQrStatus = s);
+            loginQrNextPollMs = System.currentTimeMillis() + 1000L;
+            NeteaseOfficialApi.pollQr(loginQrKey, sessionFile).thenAccept(status -> {
+                // A single network hiccup should not kill a scan that is already in progress.
+                if (status == NeteaseOfficialApi.QrStatus.FAILED && ++loginPollFailures < 3) {
+                    return;
+                }
+                loginPollFailures = 0;
+                loginPollCount++;
+                if (status != loginQrStatus) {
+                    ClientBase.logger.info("NetEase sign-in: {} (code {})",
+                            NeteaseOfficialApi.lastMessage(), NeteaseOfficialApi.lastQrCode());
+                }
+                loginQrStatus = status;
+            });
         }
     }
 
@@ -317,6 +403,7 @@ public class MusicPlayerScreen extends Screen {
         lastVolumeRect = null;
 
         float delta = frameDelta();
+        lastFrameDelta = delta;
         tickTheme(delta);
         if (backdropFade < 1.0f) {
             backdropFade = Math.min(1.0f, backdropFade + delta / BACKDROP_FADE_SECONDS);
@@ -333,6 +420,7 @@ public class MusicPlayerScreen extends Screen {
         layoutOriginX = transform.originX();
         layoutOriginY = transform.originY();
         layoutScale = transform.scale();
+        refreshFonts(layoutScale);
         float designMouseX = toDesignX(mouseX);
         float designMouseY = toDesignY(mouseY);
 
@@ -362,12 +450,18 @@ public class MusicPlayerScreen extends Screen {
     }
 
     private void renderRoot(DrawContext ctx, float mouseX, float mouseY, float alpha) {
+        // The fluid backdrop comes from the album art, so the cover has to be fetched on every
+        // page — not only on the player page, where it used to be the side effect of the layout.
+        ensureAlbum(MusicPlayer.AUDIO_PLAYER.getCurrentSong());
         ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(0, 0, DESIGN_W, DESIGN_H, RADIUS),
                 new Paint().setColor(withAlpha(SHELL, alpha)));
 
         if (fluidActive) {
             Texture fluid = fluidTexture;
             Texture previous = fluidPrev;
+            // The shader draws straight into the framebuffer, so the rounded shell above has to
+            // reach the GPU first; otherwise the queued batch paints over the fluid.
+            ctx.flush();
             CoverBackdrop.render(fluid.getGlId(),
                     previous == null ? fluid.getGlId() : previous.getGlId(),
                     backdropFade, width, height, 0.0f,
@@ -394,7 +488,7 @@ public class MusicPlayerScreen extends Screen {
             case SEARCH -> renderSearchPage(ctx, x, y, w, h, mouseX, mouseY);
             case QUEUE -> renderQueue(ctx, x, y, w, h, mouseX, mouseY);
             case PLAYLIST -> renderPlaylist(ctx, x, y, w, h, mouseX, mouseY);
-            case ABOUT -> renderAbout(ctx, x, y, w, h, mouseX, mouseY);
+            case SETTINGS -> renderSettings(ctx, x, y, w, h, mouseX, mouseY);
             default -> { }
         }
     }
@@ -408,7 +502,7 @@ public class MusicPlayerScreen extends Screen {
         navItem(ctx, x + 8.8f, navY + 63.36f, w - 17.6f, Page.SEARCH, ICON_SEARCH, "Search", mouseX, mouseY);
         navItem(ctx, x + 8.8f, navY + 126.72f, w - 17.6f, Page.QUEUE, ICON_QUEUE, "Queue", mouseX, mouseY);
         navItem(ctx, x + 8.8f, navY + 190.08f, w - 17.6f, Page.PLAYLIST, ICON_PLAYLIST, "Library", mouseX, mouseY);
-        navItem(ctx, x + 8.8f, h - 53.08f, w - 17.6f, Page.ABOUT, ICON_INFO, "About", mouseX, mouseY);
+        navItem(ctx, x + 8.8f, h - 53.08f, w - 17.6f, Page.SETTINGS, ICON_SETTINGS, "Settings", mouseX, mouseY);
     }
 
     private void navItem(DrawContext ctx, float x, float y, float w, Page target, String icon, String label,
@@ -463,7 +557,7 @@ public class MusicPlayerScreen extends Screen {
         float gap = 9.6f;
         float startX = x + (w - actionW * 3.0f - gap * 2.0f) * 0.5f;
         headerAction(ctx, startX, y + 7, ICON_SEARCH, mouseX, mouseY, () -> openPage(Page.SEARCH));
-        headerAction(ctx, startX + actionW + gap, y + 7, ICON_INFO, mouseX, mouseY, () -> openPage(Page.ABOUT));
+        headerAction(ctx, startX + actionW + gap, y + 7, ICON_SETTINGS, mouseX, mouseY, () -> openPage(Page.SETTINGS));
         headerAction(ctx, startX + (actionW + gap) * 2.0f, y + 7, ICON_CLOSE, mouseX, mouseY, this::onClose);
     }
 
@@ -715,69 +809,372 @@ public class MusicPlayerScreen extends Screen {
         return viewport;
     }
 
-    private void renderAbout(DrawContext ctx, float x, float y, float w, float h, float mouseX, float mouseY) {
+    private void renderSettings(DrawContext ctx, float x, float y, float w, float h, float mouseX, float mouseY) {
+        settingsDragTrack = null;
         float innerX = x + PAD;
-        GlHelper.drawText("About", innerX, y + 25.52f, DISPLAY_FONT, CREAM);
-        GlHelper.drawText("A focused player for your Minecraft sessions", innerX, y + 54.56f, BODY_FONT, MUTED);
+        float innerW = w - PAD * 2.2f;
+        GlHelper.drawText("Settings", innerX, y + 22.88f, DISPLAY_FONT, CREAM);
+        GlHelper.drawText("Changes apply instantly and are saved automatically", innerX, y + 51.04f, SMALL_FONT, MUTED);
 
-        float cardY = y + 82.72f;
+        float top = y + 78.32f;
+        Bounds view = new Bounds(innerX, top, innerW, h - (top - y) - 8.8f);
+        settingsViewport = view;
 
-        MusicSource current = MusicSources.current();
-        MusicSource next = nextSource(current);
-        boolean sourceHover = contains(mouseX, mouseY, innerX, cardY, w - PAD * 2, 63.36f);
-        aboutCard(ctx, innerX, cardY, w - PAD * 2, 63.36f,
-                "Music source",
-                current.displayName() + "   →   click to switch to " + next.displayName(),
-                sourceHover ? RAISED : SURFACE);
-        clickAreas.add(new ClickArea(innerX, cardY, w - PAD * 2, 63.36f, this::cycleMusicSource));
-
-        float secondCardY = cardY + 68;
-        if ("NetEase Official".equals(current.displayName())) {
-            String loginText = NeteaseOfficialApi.isLoggedIn()
-                    ? "Signed in. Open login dialog to re-authorize on another device."
-                    : "Sign in to play VIP-only tracks. QR-code login, no password leaves this device.";
-            boolean loginHover = contains(mouseX, mouseY, innerX, secondCardY, w - PAD * 2, 63.36f);
-            aboutCard(ctx, innerX, secondCardY, w - PAD * 2, 63.36f, "NetEase Account", loginText,
-                    loginHover ? RAISED : SURFACE);
-            clickAreas.add(new ClickArea(innerX, secondCardY, w - PAD * 2, 63.36f, this::openLoginDialog));
-            secondCardY += 68;
+        float cursor = 0.0f;
+        float[] groupTops = new float[settingGroups.size()];
+        float[] groupHeights = new float[settingGroups.size()];
+        for (int i = 0; i < settingGroups.size(); i++) {
+            groupTops[i] = cursor;
+            groupHeights[i] = GROUP_HEAD_H + settingGroups.get(i).visibleRows() * ROW_H + 6.0f;
+            cursor += groupHeights[i] + GROUP_GAP;
         }
+        float contentH = cursor - GROUP_GAP;
+        maxSettingsScroll = Math.max(0.0f, contentH - view.height);
+        settingsScrollTarget = clamp(settingsScrollTarget, 0.0f, maxSettingsScroll);
+        settingsScroll += (settingsScrollTarget - settingsScroll) * Math.min(1.0f, lastFrameDelta * 14.0f);
+        settingsScroll = clamp(settingsScroll, 0.0f, maxSettingsScroll);
 
-        aboutCard(ctx, innerX, secondCardY, w - PAD * 2, 63.36f, "Library",
-                "Saved tracks are stored locally in your Nilore config.");
-        aboutCard(ctx, innerX, secondCardY + 68, w - PAD * 2, 63.36f, "Playback",
-                "Music keeps playing after this screen is closed.");
+        ctx.save();
+        ctx.clipRect(Rectangle.ofXYWH(view.x, view.y, view.width, view.height), true);
+        for (int i = 0; i < settingGroups.size(); i++) {
+            float groupY = view.y + groupTops[i] - settingsScroll;
+            if (groupY + groupHeights[i] <= view.y || groupY >= view.y + view.height) {
+                continue;
+            }
+            renderSettingGroup(ctx, view.x, groupY, view.width, groupHeights[i], settingGroups.get(i), view,
+                    mouseX, mouseY);
+        }
+        ctx.restore();
 
-        boolean hover = contains(mouseX, mouseY, innerX, h - 50.16f, 116, 29.92f);
-        ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(innerX, h - 50.16f, 116, 29.92f, 14.96f),
-                new Paint().setColor(hover ? BERRY_HOVER : BERRY));
-        GlHelper.drawText(ICON_SEARCH, innerX + 12.32f, h - 35.08f, ICON_FONT, ACCENT);
-        GlHelper.drawText("Search music", innerX + 36.96f, h - 39, SMALL_FONT, CREAM);
-        clickAreas.add(new ClickArea(innerX, h - 50.16f, 116, 29.92f, () -> openPage(Page.SEARCH)));
+        if (maxSettingsScroll > 0.0f) {
+            float thumbH = Math.max(22.0f, view.height * view.height / contentH);
+            float thumbY = view.y + (view.height - thumbH) * (settingsScroll / maxSettingsScroll);
+            ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(view.x + view.width - 3.0f, thumbY, 3.0f, thumbH, 1.5f),
+                    new Paint().setColor(withAlpha(MUTED, 0.35f)));
+        }
     }
 
-    private void aboutCard(DrawContext ctx, float x, float y, float w, float h, String title, String text, int bg) {
-        ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(x, y, w, h, 17), new Paint().setColor(bg));
-        GlHelper.drawText(title, x + 18, y + 18, HEADING_FONT, CREAM);
-        GlHelper.drawText(ellipsize(text, BODY_FONT, w - 36), x + 18, y + 45, BODY_FONT, MUTED);
+    private void renderSettingGroup(DrawContext ctx, float x, float y, float w, float h, SettingGroup group,
+                                    Bounds view, float mouseX, float mouseY) {
+        ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(x, y, w, h, 18.0f),
+                new Paint().setColor(withAlpha(SURFACE, 0.72f)));
+        float headerCap = ROW_FONT.getMetrics().capHeight();
+        float headerBaseline = y + (GROUP_HEAD_H - headerCap) * 0.5f + headerCap;
+        drawTextBaseline(group.title, x + 14.0f, headerBaseline, ROW_FONT, CREAM);
+        drawTextBaseline(group.sub, x + 24.0f + measure(group.title, ROW_FONT), headerBaseline, DESC_FONT,
+                withAlpha(DIM, 0.85f));
+
+        float rowY = y + GROUP_HEAD_H;
+        for (SettingRow row : group.rows) {
+            if (!row.visible.get()) {
+                continue;
+            }
+            ctx.drawRectXYWH(x + 14.0f, rowY, w - 28.0f, 1.0f, new Paint().setColor(withAlpha(DIVIDER, 0.55f)));
+            renderSettingRow(ctx, x, rowY, w, row, view, mouseX, mouseY);
+            rowY += ROW_H;
+        }
     }
 
-    private void aboutCard(DrawContext ctx, float x, float y, float w, float h, String title, String text) {
-        aboutCard(ctx, x, y, w, h, title, text, SURFACE);
-    }
+    private void renderSettingRow(DrawContext ctx, float x, float y, float w, SettingRow row,
+                                  Bounds view, float mouseX, float mouseY) {
+        boolean live = row.enabled == null || row.enabled.get();
+        float alpha = live ? 1.0f : 0.4f;
+        float left = x + 14.0f;
+        float right = x + w - 14.0f;
+        float cy = y + ROW_H * 0.5f;
+        float controlW = switch (row.ctl) {
+            case TOGGLE -> 34.0f;
+            case SLIDER -> 190.0f;
+            case STEPPER -> 190.0f;
+            case ACTION -> 120.0f;
+        };
+        float textW = w - 28.0f - controlW - 14.0f;
 
-    private static MusicSource nextSource(MusicSource current) {
-        List<MusicSource> all = MusicSources.all();
-        for (int i = 0; i < all.size(); i++) {
-            if (all.get(i).displayName().equals(current.displayName())) {
-                return all.get((i + 1) % all.size());
+        float titleCap = ROW_FONT.getMetrics().capHeight();
+        float descCap = DESC_FONT.getMetrics().capHeight();
+        float stackH = titleCap + ROW_LABEL_GAP + descCap;
+        float stackTop = y + Math.max(0.0f, (ROW_H - stackH) * 0.5f);
+        drawTextBaseline(ellipsize(row.title, ROW_FONT, textW), left, stackTop + titleCap,
+                ROW_FONT, withAlpha(CREAM, alpha));
+        String subtitle = row.subText == null ? row.sub : row.subText.get();
+        drawTextBaseline(ellipsize(subtitle, DESC_FONT, textW), left,
+                stackTop + titleCap + ROW_LABEL_GAP + descCap, DESC_FONT, withAlpha(DIM, alpha * 0.92f));
+
+        switch (row.ctl) {
+            case TOGGLE -> {
+                BooleanSetting setting = (BooleanSetting) row.setting;
+                float switchX = right - 34.0f;
+                float switchY = cy - 10.0f;
+                settingSwitch(ctx, switchX, switchY, 34.0f, 20.0f, setting.getValue(),
+                        contains(mouseX, mouseY, switchX, switchY, 34.0f, 20.0f), alpha);
+                if (live) {
+                    addSettingClick(switchX - 4.0f, switchY - 4.0f, 42.0f, 28.0f,
+                            () -> setting.setValue(!setting.getValue()), view);
+                }
+            }
+            case SLIDER -> renderSettingSlider(ctx, row, right, cy, live, alpha, mouseX, mouseY, view);
+            case STEPPER -> renderSettingStepper(ctx, row, right, cy, live, alpha, mouseX, mouseY, view);
+            case ACTION -> {
+                String text = row.label.get();
+                float buttonW = controlW;
+                float buttonX = right - buttonW;
+                boolean hover = contains(mouseX, mouseY, buttonX, cy - 12.0f, buttonW, 24.0f);
+                ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(buttonX, cy - 12.0f, buttonW, 24.0f, 12.0f),
+                        new Paint().setColor(withAlpha(hover ? BERRY_HOVER : BERRY, alpha)));
+                drawTextCenterX(ellipsize(text, STEP_FONT, buttonW - 12.0f), buttonX, buttonW, cy, STEP_FONT,
+                        withAlpha(CREAM, alpha));
+                if (live && row.onClick != null) {
+                    addSettingClick(buttonX, cy - 12.0f, buttonW, 24.0f, row.onClick, view);
+                }
             }
         }
-        return all.get(0);
     }
 
-    private void cycleMusicSource() {
-        MusicSources.setCurrent(nextSource(MusicSources.current()).displayName());
+    private void renderSettingSlider(DrawContext ctx, SettingRow row, float right, float cy, boolean live,
+                                     float alpha, float mouseX, float mouseY, Bounds view) {
+        NumberSetting setting = (NumberSetting) row.setting;
+        float min = setting.getMin().floatValue();
+        float max = setting.getMax().floatValue();
+        float span = max - min;
+        float k = span > 0.0f ? clamp((setting.getValue().floatValue() - min) / span, 0.0f, 1.0f) : 0.0f;
+        boolean dragging = settingsDrag == setting;
+
+        float trackX = right - 190.0f;
+        float trackW = 136.0f;
+        float trackY = cy - 2.0f;
+        ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(trackX, trackY, trackW, 4.0f, 2.0f),
+                new Paint().setColor(withAlpha(RAISED, alpha)));
+        if (k > 0.0f) {
+            ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(trackX, trackY, trackW * k, 4.0f, 2.0f),
+                    new Paint().setColor(withAlpha(ACCENT, alpha)));
+        }
+        float knob = dragging ? 10.0f : 8.0f;
+        ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(trackX + trackW * k - knob * 0.5f, cy - knob * 0.5f,
+                knob, knob, knob * 0.5f), new Paint().setColor(withAlpha(CREAM, alpha)));
+
+        float valueX = right - 46.0f;
+        boolean editing = settingsEdit == row;
+        if (editing) {
+            ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(valueX - 2.0f, cy - 10.0f, 50.0f, 20.0f, 6.0f),
+                    new Paint().setColor(withAlpha(RAISED, alpha)));
+            String typed = settingsEditText;
+            drawTextCenterX(typed, valueX, 46.0f, cy, STEP_FONT, withAlpha(CREAM, alpha));
+        } else {
+            boolean hover = contains(mouseX, mouseY, valueX - 2.0f, cy - 10.0f, 50.0f, 20.0f);
+            if (hover) {
+                ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(valueX - 2.0f, cy - 10.0f, 50.0f, 20.0f, 6.0f),
+                        new Paint().setColor(withAlpha(RAISED, alpha)));
+            }
+            drawTextCenterX(settingText(setting) + row.suffix, valueX, 46.0f, cy, STEP_FONT,
+                    withAlpha(hover || dragging ? CREAM : MUTED, alpha));
+            if (live) {
+                addSettingClick(valueX - 2.0f, cy - 10.0f, 50.0f, 20.0f, () -> {
+                    commitSettingEdit();
+                    settingsEdit = row;
+                    settingsEditText = settingText(setting);
+                }, view);
+            }
+        }
+        if (live) {
+            addSettingClick(trackX - 6.0f, trackY - 10.0f, trackW + 12.0f, 24.0f, () -> {
+                settingsDrag = setting;
+                settingsDragTrack = Rectangle.ofXYWH(trackX, trackY, trackW, 4.0f);
+            }, view);
+        }
+    }
+
+    private void renderSettingStepper(DrawContext ctx, SettingRow row, float right, float cy, boolean live,
+                                      float alpha, float mouseX, float mouseY, Bounds view) {
+        float arrowL = right - 190.0f;
+        float arrowR = right - 22.0f;
+        float labelX = arrowL + 26.0f;
+        float labelW = arrowR - 4.0f - labelX;
+        String text = ellipsize(row.label.get(), STEP_FONT, labelW);
+        drawTextCenterX(text, labelX, labelW, cy, STEP_FONT, withAlpha(CREAM, alpha));
+
+        settingStepButton(ctx, arrowL, cy, ICON_CHEVRON_LEFT, live, alpha, mouseX, mouseY, view, row.onPrev);
+        settingStepButton(ctx, arrowR, cy, ICON_CHEVRON_RIGHT, live, alpha, mouseX, mouseY, view, row.onNext);
+    }
+
+    private void settingStepButton(DrawContext ctx, float x, float cy, String icon, boolean live, float alpha,
+                                   float mouseX, float mouseY, Bounds view, Runnable action) {
+        boolean hover = live && contains(mouseX, mouseY, x, cy - 11.0f, 22.0f, 22.0f);
+        ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(x, cy - 11.0f, 22.0f, 22.0f, 7.0f),
+                new Paint().setColor(withAlpha(hover ? RAISED : withAlpha(SURFACE, 0.9f), alpha)));
+        drawTextCenterX(icon, x, 22.0f, cy, STEP_ARROW, withAlpha(hover ? CREAM : MUTED, alpha));
+        if (live && action != null) {
+            addSettingClick(x, cy - 11.0f, 22.0f, 22.0f, action, view);
+        }
+    }
+
+    private void settingSwitch(DrawContext ctx, float x, float y, float w, float h, boolean on, boolean hover,
+                               float alpha) {
+        ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(x, y, w, h, h * 0.5f),
+                new Paint().setColor(withAlpha(on ? ACCENT : RAISED, alpha)));
+        float knob = h - 4.0f;
+        float knobX = on ? x + w - knob - 2.0f : x + 2.0f;
+        ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(knobX, y + 2.0f, knob, knob, knob * 0.5f),
+                new Paint().setColor(withAlpha(hover ? CREAM : withAlpha(CREAM, 0.92f), alpha)));
+    }
+
+    private void addSettingClick(float x, float y, float w, float h, Runnable action, Bounds view) {
+        if (y < view.y || y + h > view.y + view.height) {
+            return;
+        }
+        clickAreas.add(new ClickArea(x, y, w, h, action));
+    }
+
+    private void applySettingDrag(double designX) {
+        NumberSetting setting = settingsDrag;
+        if (setting == null || settingsDragTrack == null || settingsDragTrack.getWidth() <= 0.0f) {
+            return;
+        }
+        float min = setting.getMin().floatValue();
+        float max = setting.getMax().floatValue();
+        float k = clamp((float) ((designX - settingsDragTrack.getX()) / settingsDragTrack.getWidth()), 0.0f, 1.0f);
+        float raw = min + k * (max - min);
+        float step = setting.getStep().floatValue();
+        if (step > 0.0f) {
+            raw = Math.round(raw / step) * step;
+        }
+        setting.setValue(clamp(raw, min, max));
+    }
+
+    private void commitSettingEdit() {
+        SettingRow row = settingsEdit;
+        settingsEdit = null;
+        if (row == null || !(row.setting instanceof NumberSetting setting)) {
+            return;
+        }
+        float parsed;
+        try {
+            parsed = Float.parseFloat(settingsEditText.trim().replace(',', '.'));
+        } catch (NumberFormatException e) {
+            return;
+        }
+        float min = setting.getMin().floatValue();
+        float max = setting.getMax().floatValue();
+        float step = setting.getStep().floatValue();
+        if (step > 0.0f) {
+            parsed = Math.round(parsed / step) * step;
+        }
+        setting.setValue(clamp(parsed, min, max));
+    }
+
+    private static String settingText(NumberSetting setting) {
+        float value = setting.getValue().floatValue();
+        float step = setting.getStep().floatValue();
+        if (step >= 0.999f) {
+            return String.valueOf(Math.round(value));
+        }
+        return String.format(Locale.ROOT, step >= 0.099f ? "%.1f" : "%.2f", value);
+    }
+
+    private void buildSettingGroups() {
+        try {
+            buildSettingGroupsInner();
+        } catch (Exception e) {
+            ClientBase.logger.warn("Music settings could not resolve their modules: {}", e.toString());
+        }
+    }
+
+    private void buildSettingGroupsInner() {
+        ModuleManager modules = NiloreClient.getInstance().getModuleManager();
+        MusicPlayer music = modules.getModule(MusicPlayer.class);
+
+        NumberSetting volume = numberSetting(music, "Volume");
+        NumberSetting crossfade = numberSetting(music, "Crossfade");
+        BooleanSetting melodify = booleanSetting(music, "Melodify");
+        Supplier<Boolean> melodifyOn = () -> melodify == null || melodify.getValue();
+
+        SettingRow account = SettingRow.action("NetEase account", "Locked behind VIP? Sign in first",
+                () -> NeteaseOfficialApi.isLoggedIn() ? "Refresh" : "Sign in",
+                () -> {
+                    if (NeteaseOfficialApi.isLoggedIn()) {
+                        refreshAccount();
+                    } else {
+                        openLoginDialog();
+                    }
+                });
+        account.subText = () -> {
+            if (!NeteaseOfficialApi.isLoggedIn()) {
+                return NeteaseOfficialApi.lastMessage();
+            }
+            String name = NeteaseOfficialApi.accountName();
+            StringBuilder line = new StringBuilder("Signed in");
+            if (name != null && !name.isEmpty()) {
+                line.append(" as ").append(name);
+            }
+            if (NeteaseOfficialApi.isVip()) {
+                line.append(" · VIP");
+            }
+            long id = NeteaseOfficialApi.accountId();
+            if (id > 0L) {
+                line.append(" · UID ").append(id);
+            }
+            return line.toString();
+        };
+
+        SettingRow signOut = SettingRow.action("Sign out", "Forget the saved session on this PC",
+                () -> "Sign out", this::signOut);
+        signOut.visible = NeteaseOfficialApi::isLoggedIn;
+
+        settingGroups.add(new SettingGroup("Playback", "Volume and blending", settingsRows(
+                SettingRow.slider("Volume", "Output level", volume, "%", null),
+                SettingRow.slider("Crossfade", "Overlap between tracks", crossfade, " s", melodifyOn),
+                SettingRow.toggle("Melodify", "Preload the next track and blend it in", melodify, null))));
+
+        settingGroups.add(new SettingGroup("Music source", "Where tracks come from", settingsRows(
+                SettingRow.stepper("Source", "Click the arrows to switch provider",
+                        () -> MusicSources.current().displayName(),
+                        () -> cycleMusicSource(-1), () -> cycleMusicSource(1)))));
+
+        settingGroups.add(new SettingGroup("Account", "NetEase Music", settingsRows(account, signOut)));
+    }
+
+    private static List<SettingRow> settingsRows(SettingRow... rows) {
+        List<SettingRow> kept = new ArrayList<>();
+        for (SettingRow row : rows) {
+            if (row.setting == null && (row.ctl == SettingCtl.SLIDER || row.ctl == SettingCtl.TOGGLE)) {
+                continue;
+            }
+            kept.add(row);
+        }
+        return kept;
+    }
+
+    private static NumberSetting numberSetting(Module module, String name) {
+        for (Setting<?> setting : module.getSettings()) {
+            if (setting.getName().equals(name) && setting instanceof NumberSetting) {
+                return (NumberSetting) setting;
+            }
+        }
+        return null;
+    }
+
+    private static BooleanSetting booleanSetting(Module module, String name) {
+        for (Setting<?> setting : module.getSettings()) {
+            if (setting.getName().equals(name) && setting instanceof BooleanSetting) {
+                return (BooleanSetting) setting;
+            }
+        }
+        return null;
+    }
+
+
+    private void cycleMusicSource(int direction) {
+        List<MusicSource> all = MusicSources.all();
+        if (all.isEmpty()) {
+            return;
+        }
+        MusicSource current = MusicSources.current();
+        int index = 0;
+        for (int i = 0; i < all.size(); i++) {
+            if (all.get(i).displayName().equals(current.displayName())) {
+                index = i;
+            }
+        }
+        MusicSources.setCurrent(all.get(Math.floorMod(index + direction, all.size())).displayName());
         MusicSources.save(sourceFile);
     }
 
@@ -785,8 +1182,14 @@ public class MusicPlayerScreen extends Screen {
         loginDialogOpen = true;
         loginQrStatus = NeteaseOfficialApi.QrStatus.WAITING;
         loginQrNextPollMs = 0L;
+        loginQrKey = null;
+        loginPollFailures = 0;
+        loginPollCount = 0;
+        lastLoginConfirmMs = 0L;
+        releaseLoginQr();
         NeteaseOfficialApi.requestQrKey().thenAccept(key -> {
             if (key == null) {
+                ClientBase.logger.warn("NetEase QR key request returned nothing");
                 loginQrStatus = NeteaseOfficialApi.QrStatus.FAILED;
                 return;
             }
@@ -816,37 +1219,50 @@ public class MusicPlayerScreen extends Screen {
         releaseLoginQr();
     }
 
+    private void refreshAccount() {
+        NeteaseOfficialApi.fetchAccount().thenAccept(ok -> {
+            if (!ok) {
+                ClientBase.logger.warn("NetEase account lookup failed: {}", NeteaseOfficialApi.lastMessage());
+            }
+        });
+    }
+
+    private void signOut() {
+        NeteaseOfficialApi.logout(sessionFile);
+        loginDialogOpen = false;
+        loginQrKey = null;
+        loginQrStatus = NeteaseOfficialApi.QrStatus.WAITING;
+        lastLoginConfirmMs = 0L;
+        releaseLoginQr();
+    }
+
     private void renderLoginDialog(DrawContext ctx, int mouseX, int mouseY) {
         ctx.drawRectXYWH(0, 0, width, height, new Paint().setColor(withAlpha(0xFF000000, 0.55f)));
 
         float panelW = 304.0f;
-        float panelH = 372.0f;
+        float panelH = 396.0f;
         float px = (width - panelW) * 0.5f;
         float py = (height - panelH) * 0.5f;
         ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(px, py, panelW, panelH, 18),
                 new Paint().setColor(SHELL));
 
-        float headerY = py + 20;
-        float closeSize = 28;
-        float closeX = px + panelW - closeSize - 20;
-        float titleH = HEADING_FONT.getHeight();
-        float titleY = headerY + (closeSize - titleH) * 0.5f;
-        GlHelper.drawText("Sign in with NetEase Music", px + 24, titleY, HEADING_FONT, CREAM);
+        float headerY = py + 20.0f;
+        float closeSize = 28.0f;
+        float closeX = px + panelW - closeSize - 20.0f;
+        float headerCap = HEADING_FONT.getMetrics().capHeight();
+        drawTextBaseline("Sign in with NetEase Music", px + 24.0f,
+                headerY + (closeSize - headerCap) * 0.5f + headerCap, HEADING_FONT, CREAM);
 
         boolean closeHover = contains(mouseX, mouseY, closeX, headerY, closeSize, closeSize);
         ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(closeX, headerY, closeSize, closeSize, closeSize * 0.5f),
                 new Paint().setColor(closeHover ? RAISED : SIDEBAR));
-        float crossW = ICON_FONT.getWidth(ICON_CLOSE);
-        float crossH = ICON_FONT.getHeight();
-        GlHelper.drawText(ICON_CLOSE,
-                closeX + (closeSize - crossW) * 0.5f,
-                headerY + (closeSize - crossH) * 0.5f,
-                ICON_FONT, closeHover ? ACCENT : MUTED);
+        drawTextCenterX(ICON_CLOSE, closeX, closeSize, headerY + closeSize * 0.5f, ICON_FONT,
+                closeHover ? ACCENT : MUTED);
         dialogClickAreas.add(new ClickArea(closeX, headerY, closeSize, closeSize, this::closeLoginDialog));
 
         int qrSize = 240;
         float qrX = px + (panelW - qrSize) * 0.5f;
-        float qrY = py + 72;
+        float qrY = py + 64.0f;
         if (loginQr != null) {
             Texture tex = new Texture(loginQr.location(), qrSize, qrSize);
             ctx.drawTexture(tex,
@@ -854,43 +1270,64 @@ public class MusicPlayerScreen extends Screen {
                     Rectangle.ofXYWH(qrX, qrY, qrSize, qrSize),
                     new Paint().setColor(0xFFFFFFFF));
         } else {
-            ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(qrX, qrY, qrSize, qrSize, 8),
+            ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(qrX, qrY, qrSize, qrSize, 10),
                     new Paint().setColor(RAISED));
-            drawCentered("Generating QR...", qrX, qrY + qrSize * 0.5f - 8, qrSize, BODY_FONT, MUTED);
+            String placeholder = switch (loginQrStatus) {
+                case FAILED -> "Could not reach NetEase";
+                case EXPIRED -> "This QR code expired";
+                default -> "Requesting a QR code...";
+            };
+            drawTextCenterX(placeholder, qrX, qrSize, qrY + qrSize * 0.5f, BODY_FONT, MUTED);
         }
 
         String statusText;
         int statusColor = MUTED;
         switch (loginQrStatus) {
-            case WAITING -> {
-                statusText = "Scan with the NetEase Music app";
-                statusColor = MUTED;
-            }
+            case WAITING -> statusText = NeteaseOfficialApi.lastMessage();
             case SCANNED -> {
-                statusText = "Confirm sign-in on your phone";
+                statusText = NeteaseOfficialApi.lastMessage();
                 statusColor = ACCENT;
             }
             case CONFIRMED -> {
-                statusText = "Signed in";
+                String name = NeteaseOfficialApi.accountName();
+                statusText = name == null || name.isEmpty() ? "Signed in" : "Signed in as " + name;
                 statusColor = ACCENT_STRONG;
             }
             case EXPIRED -> {
-                statusText = "QR expired — close & reopen to refresh";
+                statusText = "Expired — request a new code";
                 statusColor = 0xFFFF8080;
             }
             default -> {
-                statusText = "Failed — close & reopen to retry";
+                statusText = NeteaseOfficialApi.lastMessage();
                 statusColor = 0xFFFF8080;
             }
         }
-        drawCentered(statusText, px, qrY + qrSize + 18, panelW, BODY_FONT, statusColor);
+        drawTextCenterX(ellipsize(statusText, BODY_FONT, panelW - 32.0f), px, panelW,
+                qrY + qrSize + 24.0f, BODY_FONT, statusColor);
+        if (loginQrStatus == NeteaseOfficialApi.QrStatus.WAITING
+                && NeteaseOfficialApi.lastQrCode() == 801) {
+            drawTextCenterX("Checked " + loginPollCount + " times", px, panelW,
+                    qrY + qrSize + 46.0f, SMALL_FONT, withAlpha(DIM, 0.8f));
+        }
+
+        if (loginQrStatus == NeteaseOfficialApi.QrStatus.EXPIRED
+                || loginQrStatus == NeteaseOfficialApi.QrStatus.FAILED) {
+            float buttonW = 112.0f;
+            float buttonH = 30.0f;
+            float buttonX = px + (panelW - buttonW) * 0.5f;
+            float buttonY = py + panelH - buttonH - 18.0f;
+            boolean hover = contains(mouseX, mouseY, buttonX, buttonY, buttonW, buttonH);
+            ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(buttonX, buttonY, buttonW, buttonH, 15.0f),
+                    new Paint().setColor(hover ? BERRY_HOVER : BERRY));
+            drawTextCenterX("Try again", buttonX, buttonW, buttonY + buttonH * 0.5f, STEP_FONT, CREAM);
+            dialogClickAreas.add(new ClickArea(buttonX, buttonY, buttonW, buttonH, this::openLoginDialog));
+        }
 
         if (loginQrStatus == NeteaseOfficialApi.QrStatus.CONFIRMED) {
             loginQrNextPollMs = Long.MAX_VALUE;
-            long since = System.currentTimeMillis() - lastLoginConfirmMs;
             if (lastLoginConfirmMs == 0L) {
                 lastLoginConfirmMs = System.currentTimeMillis();
-            } else if (since > 1200L) {
+            } else if (System.currentTimeMillis() - lastLoginConfirmMs > 1400L) {
                 closeLoginDialog();
                 lastLoginConfirmMs = 0L;
             }
@@ -952,8 +1389,9 @@ public class MusicPlayerScreen extends Screen {
 
         float dt = playerMotionDelta();
 
+        // 40% black keeps the cream text readable while the cover fluid still shows through.
         ctx.drawRoundedRect(RoundedRectangle.ofXYWHR(0, 0, DESIGN_W, DESIGN_H, RADIUS),
-                new Paint().setColor(0x96000000));
+                new Paint().setColor(0x66000000));
 
         float sideInset = 30.0f;
         float dividerX = DESIGN_W * 0.4f;
@@ -1151,6 +1589,11 @@ public class MusicPlayerScreen extends Screen {
         }
     }
 
+    /**
+     * Five-slot lyric window with a continuous scroll: the active line is pulled towards the
+     * middle slot and every line is drawn at its real offset, so switching lines slides the
+     * whole column instead of swapping the text in place.
+     */
     private void renderLyrics(DrawContext ctx, SongInfo song, float x, float y, float w, float h) {
         if (song == null) {
             GlHelper.drawText("Play a song to see lyrics", x, y + h * 0.495f, AP_TITLE_FONT, DIM);
@@ -1164,205 +1607,99 @@ public class MusicPlayerScreen extends Screen {
             return;
         }
 
-        final float lineH = 46.64f;
-        final int count = lines.size();
         long position = MusicPlayer.AUDIO_PLAYER.getCurrentPositionMs();
         int current = findCurrentLyricLine(lines, position);
 
-        if (lyricSongId != song.id || lyricLineY.length != count) {
-            lyricSongId = song.id;
-            lyricLineY = new SpringSolver[count];
-            lyricLineScale = new SpringSolver[count];
-            lyricRestY = new float[count];
-            lyricCascade = new float[count];
-            for (int i = 0; i < count; i++) {
-                lyricLineY[i] = new SpringSolver();
-                lyricLineScale[i] = new SpringSolver(2.0, 25.0, 100.0);
-            }
-            lyricAnchor = -1;
-            lyricLastBlockTop = Float.NaN;
-            lyricSpringsReady = false;
-            lyricLastPosMs = -1L;
-            lyricFrameNs = 0L;
-        }
-
-        float blockTop;
-        if (count * lineH < h) {
-            blockTop = (h - count * lineH) * 0.5f;
+        if (song.id != lyricScrollSongId) {
+            lyricScrollSongId = song.id;
+            lyricScroll = current;
         } else {
-            blockTop = clamp(h * 0.264f - current * lineH, h - count * lineH, h * 0.264f);
-        }
-        for (int i = 0; i < count; i++) {
-            lyricRestY[i] = y + blockTop + i * lineH;
-        }
-
-        long now = System.nanoTime();
-        float dt = lyricFrameNs == 0L ? 0.0f : (now - lyricFrameNs) / 1.0e9f;
-        lyricFrameNs = now;
-        dt = clamp(dt, 0.0f, 0.05f);
-
-        boolean seek = lyricLastPosMs >= 0L
-                && LyricSprings.isHardClockDiscontinuity(lyricLastPosMs / 1000.0, position / 1000.0);
-        long seekDeltaMs = lyricLastPosMs >= 0L ? position - lyricLastPosMs : 0L;
-        lyricLastPosMs = position;
-
-        boolean anchorMoved = current != lyricAnchor;
-        boolean layoutMoved = Float.isNaN(lyricLastBlockTop)
-                || Math.abs(blockTop - lyricLastBlockTop) > 0.5f;
-
-        if (anchorMoved || layoutMoved || seek) {
-            double posSec = position / 1000.0;
-            double lineEndSec = lineEndMs(lines, current) / 1000.0;
-            LyricSprings.Physics physics;
-            if (seek) {
-                physics = LyricSprings.seekSpring(current - lyricAnchor, seekDeltaMs / 1000.0);
-            } else {
-                double gap = current > 0
-                        ? Math.max(lines.get(current).timeMs() - lineEndMs(lines, current - 1), 0L) / 1000.0
-                        : 0.0;
-                physics = LyricSprings.lineTransitionSpring(lines.get(current).hasWordTiming(), gap);
-                physics = LyricSprings.retimeLineSpring(physics, lineEndSec, posSec,
-                        lineEndSec - posSec - 0.5 < 0.6);
+            float diff = current - lyricScroll;
+            if (Math.abs(diff) > LYRIC_SCROLL_SNAP) {
+                lyricScroll = current;
+            } else if (diff != 0.0f) {
+                lyricScroll += diff * (1.0f - (float) Math.exp(-lastFrameDelta / LYRIC_SCROLL_TAU));
+                if (Math.abs(current - lyricScroll) < 0.004f) {
+                    lyricScroll = current;
+                }
             }
-            for (int i = 0; i < count; i++) {
-                lyricLineY[i].setParams(physics.mass(), physics.damping(), physics.stiffness());
-                lyricLineScale[i].setParams(physics.mass(), physics.damping(), physics.stiffness());
-            }
-
-            int cascadeAnchor = current;
-            while (cascadeAnchor > 0 && lyricRestY[cascadeAnchor - 1] + lineH > y) {
-                cascadeAnchor--;
-            }
-            for (int i = 0; i < count; i++) {
-                double delay = seek ? 0.0 : LyricSprings.cascadeDelay(
-                        LyricSprings.validLineDistance(lines, cascadeAnchor, i), false);
-                lyricCascade[i] = (float) delay;
-                lyricLineY[i].setTarget(lyricRestY[i], delay);
-                lyricLineScale[i].setTarget(i == current ? 1.0 : 0.96, delay);
-            }
-            lyricAnchor = current;
-            lyricLastBlockTop = blockTop;
         }
 
-        for (int i = 0; i < count; i++) {
-            if (!lyricSpringsReady) {
-                lyricLineY[i].setValue(lyricRestY[i]);
-                lyricLineScale[i].setValue(1.0);
-                continue;
-            }
-            lyricLineY[i].update(dt);
-            lyricLineScale[i].update(dt);
-        }
-        lyricSpringsReady = true;
-
+        float blockTop = y + (h - LYRIC_SLOTS * LYRIC_LINE_H) * 0.5f;
+        float activeScale = Math.max(1.0f,
+                AP_LYRIC_ACTIVE_FONT.getMetrics().capHeight()
+                        / Math.max(1.0f, AP_LYRIC_FONT.getMetrics().capHeight()));
         Rectangle viewport = Rectangle.ofXYWH(x - 3.0f, y, w + 3.0f, h);
         ctx.save();
         ctx.clipRect(viewport, true);
 
-        for (int i = 0; i < count; i++) {
-            float rowY = (float) lyricLineY[i].getValue();
-            if (rowY < y - lineH || rowY > y + h) {
+        int from = Math.max(0, (int) Math.floor(lyricScroll) - LYRIC_MIDDLE - 1);
+        int to = Math.min(lines.size() - 1, (int) Math.ceil(lyricScroll) + LYRIC_MIDDLE + 1);
+        for (int index = from; index <= to; index++) {
+            float offset = index - lyricScroll;
+            float distance = Math.abs(offset);
+            if (distance > LYRIC_FADE_LINES) {
                 continue;
             }
-            int distance = Math.abs(i - current);
-            boolean active = i == current;
-            FontRenderer font = active ? AP_LYRIC_ACTIVE_FONT : AP_LYRIC_FONT;
-            float alpha = (0.30f + 0.70f * lyricActiveK(lines, i, position))
-                    * (distance >= LYRIC_FADE_DISTANCE ? 0.85f : 1.0f);
-            String raw = lines.get(i).text();
-            String text = ellipsize(raw == null || raw.isBlank() ? "···" : raw, font, w);
+            float rowY = blockTop + (LYRIC_MIDDLE + offset) * LYRIC_LINE_H;
+            if (rowY < y - LYRIC_LINE_H || rowY > y + h) {
+                continue;
+            }
 
-            float scale = (float) lyricLineScale[i].getValue();
-            boolean scaled = Math.abs(scale - 1.0f) > 0.001f;
-            if (scaled) {
-                float anchorY = rowY + lineH * 0.5f;
+            float alpha = clamp(1.0f - distance * 0.34f, 0.0f, 1.0f);
+            float emphasis = 1.0f - smooth01(distance);
+            float scale = 1.0f + (activeScale - 1.0f) * emphasis;
+            float progress = index < current ? 1.0f
+                    : index > current ? 0.0f
+                    : lineProgress(lines, current, position);
+
+            // The line that has settled in the middle is drawn with its own larger font so it
+            // stays crisp; every other line rides at its natural size and is scaled by the
+            // distance to the middle, which is what makes the column glide instead of jump.
+            boolean centered = distance < 0.004f;
+            FontRenderer font = centered ? AP_LYRIC_ACTIVE_FONT : AP_LYRIC_FONT;
+            float drawScale = centered ? 1.0f : scale;
+            float drawY = centered
+                    ? rowY - (activeScale - 1.0f) * AP_LYRIC_FONT.getMetrics().capHeight() * 0.5f
+                    : rowY;
+            String raw = lines.get(index).text();
+            String text = ellipsize(raw == null || raw.isBlank() ? "···" : raw, font, w / drawScale);
+
+            float pivotY = rowY + AP_LYRIC_FONT.getMetrics().capHeight() * 0.5f;
+            boolean transformed = Math.abs(drawScale - 1.0f) > 0.004f;
+            if (transformed) {
                 ctx.save();
-                ctx.translate(x, anchorY);
-                ctx.scale(scale, scale);
-                ctx.translate(-x, -anchorY);
+                ctx.translate(x, pivotY);
+                ctx.scale(drawScale, drawScale);
+                ctx.translate(-x, -pivotY);
             }
-            if (active) {
-                drawKaraokeLine(text, x, rowY, font, lineProgress(lines, current, position), alpha,
-                        lines.get(current), lineEndMs(lines, current), position);
-            } else {
-                GlHelper.drawText(text, x, rowY, font, withAlpha(CREAM, alpha));
+            drawKaraokeLine(text, x, drawY, font, progress, alpha);
+            if (index == current) {
+                emitLyricGlow(lines.get(index), x, drawY, w / drawScale, font);
             }
-            if (scaled) {
+            if (transformed) {
                 ctx.restore();
             }
-        }
-
-        if (current >= 0 && current < count) {
-            emitLyricGlow(lines.get(current), x, (float) lyricLineY[current].getValue(), w);
         }
         ctx.restore();
     }
 
-    private void emitLyricGlow(LyricLine line, float x, float rowY, float w) {
+    private static float smooth01(float value) {
+        float v = clamp(value, 0.0f, 1.0f);
+        return v * v * (3.0f - 2.0f * v);
+    }
+
+    private void emitLyricGlow(LyricLine line, float x, float rowY, float maxW, FontRenderer font) {
         String raw = line.text();
         if (raw == null || raw.isBlank()) {
             return;
         }
-        String text = ellipsize(raw, AP_LYRIC_ACTIVE_FONT, w);
+        String text = ellipsize(raw, font, maxW);
         LyricGlowFbo.begin();
         if (LyricGlowFbo.isCollecting()) {
-            GlHelper.drawText(text, x, rowY, AP_LYRIC_ACTIVE_FONT, withAlpha(CREAM, GLOW_ALPHA));
+            GlHelper.drawText(text, x, rowY, font, withAlpha(CREAM, GLOW_ALPHA));
             LyricGlowFbo.end(GLOW_RADIUS);
         }
-    }
-
-    private static long lineEndMs(List<LyricLine> lines, int index) {
-        LyricLine line = lines.get(index);
-        List<LyricLine.Word> words = line.words();
-        if (words != null && !words.isEmpty()) {
-            LyricLine.Word last = words.get(words.size() - 1);
-            return last.startMs() + Math.max(last.durationMs(), 1L);
-        }
-        if (index + 1 < lines.size()) {
-            return lines.get(index + 1).timeMs();
-        }
-        return line.timeMs() + 6000L;
-    }
-
-    private static float lyricActiveK(List<LyricLine> lines, int index, long positionMs) {
-        long start = lines.get(index).timeMs();
-        long end = Math.max(lineEndMs(lines, index), start + 1L);
-        long fadeInStart = start - 450L;
-        long fadeInEnd = fadeInStart + 600L;
-        if (positionMs < fadeInStart) {
-            return 0.0f;
-        }
-        if (positionMs < fadeInEnd) {
-            return smoothstep((positionMs - fadeInStart) / (float) Math.max(1L, fadeInEnd - fadeInStart));
-        }
-        long fadeOutStart = end + 100L;
-        long fadeOutEnd = fadeOutStart + 250L;
-        if (positionMs < fadeOutStart) {
-            return 1.0f;
-        }
-        if (positionMs >= fadeOutEnd) {
-            return 0.0f;
-        }
-        return 1.0f - smoothstep((positionMs - fadeOutStart) / (float) Math.max(1L, fadeOutEnd - fadeOutStart));
-    }
-
-    private static float smoothstep(float t) {
-        t = clamp(t, 0.0f, 1.0f);
-        return t * t * (3.0f - 2.0f * t);
-    }
-
-    private static float lyricLiftK(double tau) {
-        if (tau <= 0.0) {
-            return 0.0f;
-        }
-        if (tau > 2.5) {
-            return 1.0f;
-        }
-        double decay = 3.49999983766082;
-        double omegaD = 3.7416574 * Math.sqrt(0.12500008735550994);
-        double envelope = Math.exp(-decay * tau);
-        double y = 1.0 - envelope * (Math.cos(omegaD * tau) + decay / omegaD * Math.sin(omegaD * tau));
-        return (float) Math.max(0.0, y);
     }
 
     private static float lineProgress(List<LyricLine> lines, int index, long positionMs) {
@@ -1392,22 +1729,33 @@ public class MusicPlayerScreen extends Screen {
     }
 
     private void drawKaraokeLine(String text, float x, float rowY, FontRenderer font, float progress,
-                                 float alpha, LyricLine line, long lineEndMs, long positionMs) {
+                                 float alpha) {
         int count = text.length();
         if (count == 0) {
             return;
         }
-        long lineStart = line.timeMs();
-        long span = Math.max(1L, lineEndMs - lineStart);
         int dimColor = withAlpha(DIM, alpha);
         int litColor = withAlpha(CREAM, alpha);
+        // Whole-line fast paths keep the neighbouring lines to a single draw call; only the
+        // line currently filling in is drawn character by character.
+        if (progress >= 0.999f) {
+            GlHelper.drawText(text, x, rowY, font, litColor);
+            return;
+        }
+        if (progress <= 0.001f) {
+            GlHelper.drawText(text, x, rowY, font, dimColor);
+            return;
+        }
         float cursor = x;
         for (int i = 0; i < count; i++) {
             String glyph = String.valueOf(text.charAt(i));
-            long charEnd = lineStart + span * (i + 1) / count;
-            float lift = -2.0f * lyricLiftK((positionMs - charEnd) / 1000.0);
-            boolean lit = (i + 1) / (float) count <= progress;
-            GlHelper.drawText(glyph, cursor, rowY + lift, font, lit ? litColor : dimColor);
+            // The character under the play head is blended instead of switched, so the sweep
+            // reads as a continuous fill rather than a row of lamps.
+            float filled = clamp(progress * count - i, 0.0f, 1.0f);
+            int color = filled >= 1.0f ? litColor
+                    : filled <= 0.0f ? dimColor
+                    : ColorUtil.interpolateColor(dimColor, litColor, filled);
+            GlHelper.drawText(glyph, cursor, rowY, font, color);
             cursor += measure(glyph, font);
         }
     }
@@ -1544,6 +1892,7 @@ public class MusicPlayerScreen extends Screen {
         double designX = toDesignX(mouseX);
         double designY = toDesignY(mouseY);
         pressPlayerButton(mouseX, mouseY);
+        commitSettingEdit();
         for (int i = clickAreas.size() - 1; i >= 0; i--) {
             ClickArea area = clickAreas.get(i);
             if (!area.contains(designX, designY)) {
@@ -1554,6 +1903,8 @@ public class MusicPlayerScreen extends Screen {
                 updateProgress(designX);
             } else if (dragTarget == DragTarget.VOLUME) {
                 updateVolume(designX);
+            } else if (settingsDrag != null) {
+                applySettingDrag(designX);
             }
             return true;
         }
@@ -1571,6 +1922,10 @@ public class MusicPlayerScreen extends Screen {
         }
         if (button == 0 && dragTarget == DragTarget.VOLUME) {
             updateVolume(designX);
+            return true;
+        }
+        if (button == 0 && settingsDrag != null) {
+            applySettingDrag(designX);
             return true;
         }
         return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
@@ -1591,6 +1946,8 @@ public class MusicPlayerScreen extends Screen {
             pendingVolume = -1;
         }
         dragTarget = DragTarget.NONE;
+        settingsDrag = null;
+        settingsDragTrack = null;
         return super.mouseReleased(mouseX, mouseY, button);
     }
 
@@ -1610,11 +1967,22 @@ public class MusicPlayerScreen extends Screen {
             playlistScroll = clamp(playlistScroll - (float) delta * 30, 0, maxPlaylistScroll);
             return true;
         }
+        if (page == Page.SETTINGS && settingsViewport != null && settingsViewport.contains(designX, designY)) {
+            settingsScrollTarget = clamp(settingsScrollTarget - (float) delta * 42, 0, maxSettingsScroll);
+            return true;
+        }
         return super.mouseScrolled(mouseX, mouseY, delta);
     }
 
     @Override
     public boolean charTyped(char codePoint, int modifiers) {
+        if (settingsEdit != null) {
+            if (settingsEditText.length() < 8
+                    && (Character.isDigit(codePoint) || codePoint == '.' || codePoint == ',' || codePoint == '-')) {
+                settingsEditText += codePoint == ',' ? '.' : codePoint;
+            }
+            return true;
+        }
         if (!searchFocused || codePoint < 32 || codePoint == 127) {
             return super.charTyped(codePoint, modifiers);
         }
@@ -1626,6 +1994,18 @@ public class MusicPlayerScreen extends Screen {
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (settingsEdit != null) {
+            if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
+                commitSettingEdit();
+            } else if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+                settingsEdit = null;
+            } else if (keyCode == GLFW.GLFW_KEY_BACKSPACE) {
+                if (!settingsEditText.isEmpty()) {
+                    settingsEditText = settingsEditText.substring(0, settingsEditText.length() - 1);
+                }
+            }
+            return true;
+        }
         if (searchFocused) {
             if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
                 startSearch();
@@ -1702,7 +2082,6 @@ public class MusicPlayerScreen extends Screen {
         List<SongInfo> queueSnapshot = new ArrayList<>(queue);
         playQueue.clear();
         playQueue.addAll(queueSnapshot);
-        lyricSongId = -1;
 
         NeteaseApi.getLyrics(song.id).thenAccept(lines -> {
             List<LyricLine> safeLines = lines == null ? List.of() : lines;
@@ -1769,7 +2148,6 @@ public class MusicPlayerScreen extends Screen {
                 break;
             }
         }
-        lyricSongId = -1;
         if (lyricsCache.containsKey(song.id)) {
             return;
         }
@@ -1953,6 +2331,29 @@ public class MusicPlayerScreen extends Screen {
         GlHelper.drawText(text, x + (width - GlHelper.getStringWidth(text, font)) * 0.5f, y, font, color);
     }
 
+    /**
+     * Baseline that puts the ink of [font] on the vertical centre of [centerY]. GlHelper.drawText
+     * takes a position that is only approximately the optical centre (it adds ceil((lineGap -
+     * ascent - descent) / 2)), so anything that has to line up with a control is placed by
+     * baseline instead of by that guess.
+     */
+    private static float baselineFor(FontRenderer font, float centerY) {
+        GlyphMetrics metrics = font.getMetrics();
+        return centerY + (metrics.capHeight() - metrics.descent()) * 0.5f;
+    }
+
+    private static void drawTextBaseline(String text, float x, float baseline, FontRenderer font, int color) {
+        GlHelper.drawText(text, x, baseline - GlHelper.getFontAscent(font), font, color);
+    }
+
+    private static void drawTextCenter(String text, float x, float centerY, FontRenderer font, int color) {
+        drawTextBaseline(text, x, baselineFor(font, centerY), font, color);
+    }
+
+    private static void drawTextCenterX(String text, float x, float width, float centerY, FontRenderer font, int color) {
+        drawTextCenter(text, x + (width - measure(text, font)) * 0.5f, centerY, font, color);
+    }
+
     private static int withAlpha(int color, float alpha) {
         int sourceAlpha = color >>> 24 & 255;
         return ColorUtil.fromARGB(color >>> 16 & 255, color >>> 8 & 255, color & 255,
@@ -2004,7 +2405,90 @@ public class MusicPlayerScreen extends Screen {
         }
     }
 
-    private enum Page { HOME, PLAYER, SEARCH, QUEUE, PLAYLIST, ABOUT }
+    private enum SettingCtl { TOGGLE, SLIDER, STEPPER, ACTION }
+
+    private static final class SettingRow {
+        private String title = "";
+        private String sub = "";
+        private SettingCtl ctl = SettingCtl.ACTION;
+        private Setting<?> setting;
+        private Supplier<Boolean> enabled;
+        private String suffix = "";
+        private Supplier<String> label = () -> "";
+        private Runnable onPrev;
+        private Runnable onNext;
+        private Runnable onClick;
+        private Supplier<String> subText;
+        private Supplier<Boolean> visible = () -> true;
+
+        private static SettingRow toggle(String title, String sub, Setting<?> setting, Supplier<Boolean> enabled) {
+            SettingRow row = new SettingRow();
+            row.title = title;
+            row.sub = sub;
+            row.ctl = SettingCtl.TOGGLE;
+            row.setting = setting;
+            row.enabled = enabled;
+            return row;
+        }
+
+        private static SettingRow slider(String title, String sub, Setting<?> setting, String suffix,
+                                         Supplier<Boolean> enabled) {
+            SettingRow row = new SettingRow();
+            row.title = title;
+            row.sub = sub;
+            row.ctl = SettingCtl.SLIDER;
+            row.setting = setting;
+            row.suffix = suffix;
+            row.enabled = enabled;
+            return row;
+        }
+
+        private static SettingRow stepper(String title, String sub, Supplier<String> label,
+                                          Runnable onPrev, Runnable onNext) {
+            SettingRow row = new SettingRow();
+            row.title = title;
+            row.sub = sub;
+            row.ctl = SettingCtl.STEPPER;
+            row.label = label;
+            row.onPrev = onPrev;
+            row.onNext = onNext;
+            return row;
+        }
+
+        private static SettingRow action(String title, String sub, Supplier<String> label, Runnable onClick) {
+            SettingRow row = new SettingRow();
+            row.title = title;
+            row.sub = sub;
+            row.ctl = SettingCtl.ACTION;
+            row.label = label;
+            row.onClick = onClick;
+            return row;
+        }
+    }
+
+    private static final class SettingGroup {
+        private final String title;
+        private final String sub;
+        private final List<SettingRow> rows;
+
+        private SettingGroup(String title, String sub, List<SettingRow> rows) {
+            this.title = title;
+            this.sub = sub;
+            this.rows = rows;
+        }
+
+        private int visibleRows() {
+            int count = 0;
+            for (SettingRow row : rows) {
+                if (row.visible.get()) {
+                    count++;
+                }
+            }
+            return count;
+        }
+    }
+
+    private enum Page { HOME, PLAYER, SEARCH, QUEUE, PLAYLIST, SETTINGS }
 
     private enum DragTarget { NONE, PROGRESS, VOLUME }
 

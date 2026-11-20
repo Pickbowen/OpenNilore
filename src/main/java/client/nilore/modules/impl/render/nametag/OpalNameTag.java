@@ -50,9 +50,11 @@ public class OpalNameTag extends NameTagStyle {
     private final NumberSetting distanceSetting;
     private final BooleanSetting showHealthSetting;
     private final BooleanSetting showArmorSetting;
-    private final FontRenderer mainFont;
-    private final FontRenderer nameFont;
-    private final FontRenderer iconFont;
+    private FontRenderer mainFont;
+    private FontRenderer nameFont;
+    private FontRenderer iconFont;
+    /** 上一次建图集用的光栅倍率; 变了才重建三个字体。 */
+    private float cachedRasterScale = -1.0f;
     private final Paint paint;
     private final Map<Entity, Vector2f> entityPositions;
     private final Map<UUID, Long> itemCheckTimestamps;
@@ -67,8 +69,7 @@ public class OpalNameTag extends NameTagStyle {
         this.showArmorSetting = NameTags.INSTANCE.showArmorSetting;
         this.mainFont = FontPresets.pingfang(28.0f);
         this.nameFont = Fonts.getRenderer("AstaSans-Medium.ttf", 28.0f);
-        this.iconFont = Fonts.getRenderer("MaterialIcons-Regular.ttf", 28.0f);
-        this.paint = new Paint();
+        this.iconFont = Fonts.getRenderer("MaterialIcons-Regular.ttf", 28.0f);        this.paint = new Paint();
         this.entityPositions = new ConcurrentHashMap<>();
         this.itemCheckTimestamps = new HashMap<>();
         this.decodedNameCache = new HashMap<>();
@@ -136,6 +137,15 @@ public class OpalNameTag extends NameTagStyle {
             return;
         }
         float scale = this.scaleSetting.getValue().floatValue();
+        // 与 Simple / Naven 一致: 图集按 guiScale * scale 光栅化, 否则 scale 0.6 时
+        // 图集比屏幕像素大, 缩小成降采样, 字体发虚。
+        float rasterScale = Fonts.deviceScale(scale);
+        if (this.mainFont == null || rasterScale != this.cachedRasterScale) {
+            this.mainFont = FontPresets.pingfang(28.0f, rasterScale, true);
+            this.nameFont = Fonts.getRenderer("AstaSans-Medium.ttf", 28.0f, rasterScale, true);
+            this.iconFont = Fonts.getRenderer("MaterialIcons-Regular.ttf", 28.0f, rasterScale, true);
+            this.cachedRasterScale = rasterScale;
+        }
         int padding = 4;
         int gap = 4;
         float corner = 6.0f;

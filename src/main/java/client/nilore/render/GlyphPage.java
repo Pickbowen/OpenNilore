@@ -159,7 +159,9 @@ class GlyphPage {
         int rowHeight = 0;
         ArrayList<Glyph> glyphs = new ArrayList<>();
         AffineTransform affineTransform = new AffineTransform();
-        FontRenderContext fontRenderContext = new FontRenderContext(affineTransform, true, false);
+        // Measure with the same fractional-metric mode the glyph is drawn with, otherwise a
+        // fractional advance is packed into an integral cell and the right edge gets clipped.
+        FontRenderContext fontRenderContext = new FontRenderContext(affineTransform, true, !this.hinted);
         while (index <= total) {
             char c = (char)(this.startChar + index);
             Font font = this.getFontForChar(c);

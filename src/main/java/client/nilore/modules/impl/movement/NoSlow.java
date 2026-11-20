@@ -14,7 +14,6 @@ import net.minecraft.network.protocol.game.ClientGamePacketListener;
 import net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket;
 import net.minecraft.network.protocol.game.ClientboundEntityEventPacket;
 import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket;
-import net.minecraft.network.protocol.game.ClientboundKeepAlivePacket;
 import net.minecraft.network.protocol.game.ClientboundLoginPacket;
 import net.minecraft.network.protocol.game.ClientboundPingPacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket;
@@ -698,9 +697,7 @@ public class NoSlow extends Module {
     }
 
     private boolean isBlinkablePacket(Packet<?> packet) {
-        if (packet instanceof ClientboundKeepAlivePacket || packet instanceof ClientboundPingPacket) {
-            return true;
-        }
+        // KeepAlive / Ping 不参与 blink: 它们是对账包, 压住只会让 TransactionOrder 对不上。
         if (packet instanceof ClientboundSetEntityMotionPacket motion) {
             return mc.player != null && motion.getId() == mc.player.getId();
         }

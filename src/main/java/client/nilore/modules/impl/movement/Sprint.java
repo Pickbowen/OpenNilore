@@ -17,6 +17,9 @@ import client.nilore.modules.impl.player.Stuck;
  */
 public class Sprint extends Module {
 
+    /** 上一拍 SprintEvent 时读到的疾跑状态, 用来判断这一拍起点是不是"被强制停掉了"。 */
+    private boolean wasSprinting;
+
     public Sprint() {
         super("Sprint", Category.MOVEMENT);
         this.setEnabled(true);
@@ -25,6 +28,20 @@ public class Sprint extends Module {
     @EventTarget(value = 0)
     public void onSprint(SprintEvent sprintEvent) {
         if (mc.player == null || InventoryManager.isPerformingAction) {
+            return;
+        }
+        boolean sprinting = mc.player.isSprinting();
+        // 上一拍还在疾跑, 这一拍起点已经掉下来了 —— 只可能是别的东西把它停了
+        // (攻击的 sprint reset, 或者 NoXZ 反打补的那一下 setSprinting(false))。
+        boolean forceStopped = this.wasSprinting && !sprinting;
+        this.wasSprinting = sprinting;
+        if (forceStopped) {
+            // 这一拍只松键、不重压。让 vanilla 的 sendIsSprintingIfNeeded 在 tick 末尾
+            // 真的把 STOP_SPRINTING 发出去; 下一拍再正常重压, 由 aiStep 重开并补 START。
+            //
+            // 两边都压的话 isSprinting 在 tick 内"开了又关", 头尾相同, 一个疾跑包都不会发:
+            // 服务端仍按疾跑算, 客户端却已经掉了速度, 每 tick 记一笔 .029 级的 Simulation。
+            mc.options.keySprint.setDown(false);
             return;
         }
         if (this.shouldHoldSprint()) {

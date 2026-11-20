@@ -8,16 +8,11 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import com.mojang.blaze3d.platform.InputConstants;
 import com.mojang.blaze3d.vertex.PoseStack;
 
-import net.minecraft.client.gui.screens.ConnectScreen;
-import net.minecraft.client.gui.screens.ReceivingLevelScreen;
 import net.minecraft.client.gui.screens.inventory.InventoryScreen;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ClientGamePacketListener;
 import net.minecraft.network.protocol.game.ClientboundAnimatePacket;
-import net.minecraft.network.protocol.game.ClientboundBossEventPacket;
-import net.minecraft.network.protocol.game.ClientboundClearTitlesPacket;
 import net.minecraft.network.protocol.game.ClientboundContainerClosePacket;
-import net.minecraft.network.protocol.game.ClientboundDamageEventPacket;
 import net.minecraft.network.protocol.game.ClientboundDisconnectPacket;
 import net.minecraft.network.protocol.game.ClientboundHurtAnimationPacket;
 import net.minecraft.network.protocol.game.ClientboundKeepAlivePacket;
@@ -25,20 +20,11 @@ import net.minecraft.network.protocol.game.ClientboundMoveEntityPacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerChatPacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerCombatKillPacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket;
-import net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket;
-import net.minecraft.network.protocol.game.ClientboundRotateHeadPacket;
-import net.minecraft.network.protocol.game.ClientboundSetDisplayObjectivePacket;
-import net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket;
+import net.minecraft.network.protocol.game.ClientboundPingPacket;
 import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket;
-import net.minecraft.network.protocol.game.ClientboundSetEquipmentPacket;
 import net.minecraft.network.protocol.game.ClientboundSetHealthPacket;
-import net.minecraft.network.protocol.game.ClientboundSetObjectivePacket;
 import net.minecraft.network.protocol.game.ClientboundSetPlayerTeamPacket;
-import net.minecraft.network.protocol.game.ClientboundSetScorePacket;
-import net.minecraft.network.protocol.game.ClientboundSetSubtitleTextPacket;
 import net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket;
-import net.minecraft.network.protocol.game.ClientboundSetTitlesAnimationPacket;
-import net.minecraft.network.protocol.game.ClientboundSoundEntityPacket;
 import net.minecraft.network.protocol.game.ClientboundSoundPacket;
 import net.minecraft.network.protocol.game.ClientboundSystemChatPacket;
 import net.minecraft.network.protocol.game.ClientboundTeleportEntityPacket;
@@ -46,11 +32,7 @@ import net.minecraft.network.protocol.game.ServerboundInteractPacket;
 import net.minecraft.network.protocol.game.ServerboundKeepAlivePacket;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.entity.projectile.AbstractHurtingProjectile;
-import net.minecraft.world.entity.projectile.Fireball;
 import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.Vec3;
@@ -68,7 +50,6 @@ import client.nilore.event.impl.RotationEvent;
 import client.nilore.event.impl.SprintEvent;
 import client.nilore.event.impl.StrafeEvent;
 import client.nilore.event.impl.TickEvent;
-import client.nilore.event.impl.UseItemRayTraceEvent;
 import client.nilore.modules.impl.combat.AntiKB;
 import client.nilore.modules.impl.combat.KillAura;
 import client.nilore.modules.impl.movement.NoSlow;
@@ -83,49 +64,32 @@ extends AntiKBMode {
     public static NoXZMode INSTANCE;
     public static boolean handlingVelocity;
 
-    /**
-     * 延迟队列。元素类型放宽到 {@code Packet<?>} 是为了能塞进 {@link #TICK_MARKER} —— 它是
-     * 出站包, 不是 {@code ClientGamePacketListener} 的入站包, 永远只当分隔符用, 不会 handle。
-     */
     private final ConcurrentLinkedQueue<Packet<?>> packetQueue = new ConcurrentLinkedQueue<>();
+    private final Map<Entity, Vec3> entityPositions = new HashMap<>();
+
     /**
-     * 每拍的队列边界标记, 对齐对方 {@code ServerPacketManager.postTick()} 里压一个
-     * {@code KeepAliveC2SPacket(-1337L)} 的做法。
+     * 每拍压在队尾的出站 KeepAlive, 只当"这一拍"的分隔符, 永远不 handle。
      *
-     * <p>原来的实现拿"这一包击退包"当 marker, 问题在于击退包本身就是延迟队列的第一个元素:
-     * 释放时它已经被 poll 掉, 之后所有比较都落空, 于是一次 {@code releaseUntil} 会把整条队列
-     * 一口气放干净 —— 想要"只放到本拍为止"根本表达不出来。改成每拍末尾压一个独立标记后,
-     * "释放到本拍边界"变成一个纯粹的队列操作, 与包的内容无关, 也和击退包是哪一个无关。
+     * <p>有了它, 释放就能精确停在"本拍之前到达的包"这个边界上, 而不是把队列里所有东西
+     * 一次倒出去。Grim 的 Simulation 是按拍的位移差记账的, 一次性倒出几十个包 = 客户端位置
+     * 在那一拍瞬移, 下一拍就被记一笔。
      */
     private static final ServerboundKeepAlivePacket TICK_MARKER = new ServerboundKeepAlivePacket(-1337L);
-    private final Map<Entity, Vec3> entityPositions = new HashMap<>();
+
+    /** 释放阶段每拍最多放回的包数。 */
+    private static final int RELEASE_PER_TICK = 3;
+
+    /** 已经开窗放包, 剩下的积压正在按拍排空。 */
+    private boolean releasing;
 
     public static boolean compensating;
     public static boolean inDelayWindow;
     public static int counterRemaining;
 
     private boolean positionCorrection;
-    private int coolDownTicks;
     private int delayTicks;
-    /**
-     * 上一次看到的世界引用。切换维度 / 重连后 {@code mc.level} 会换成另一个实例, 用它当
-     * "世界已经变了"的判据, 比盯 screen 更可靠 —— 有些服务端的维度切换根本不会让你看到
-     * 加载屏, 但旧队列里的包一旦被 handle 到新世界, 就是卡加载界面 / 实体错位。
-     */
-    private Object lastLevel;
-    private long lastFireballTick = Long.MIN_VALUE;
     private int noAimTicks;
     private int noSprintTicks;
-    /** 反打阶段已经等了多少拍; 冷却/瞄准迟迟不满足时用它兜底收尾。 */
-    private int counterTicks;
-    private static final int COUNTER_TIMEOUT_TICKS = 20;
-    /** 反打结束后每拍放回的包数。 */
-    private static final int RELEASE_PER_TICK = 3;
-    /** 反打完成、正在按拍排空队列。 */
-    private boolean releasing;
-    /** 最近一次被火球类投射物命中的拍; 窗口在它之后若干拍内不参与。 */
-    private int lastFireballHitTick = Integer.MIN_VALUE / 2;
-    private static final int FIREBALL_IGNORE_TICKS = 8;
     private int jumpTicks;
     private boolean jumpKeyForced;
     private float barProgress;
@@ -133,18 +97,6 @@ extends AntiKBMode {
     private long lastFrameNanos;
     private long compensateUntilMs = -1L;
     private Entity target;
-    /**
-     * 最近一次真正打到我的实体。
-     *
-     * <p>进入 delay window 的那一包（自己的 {@code ClientboundSetEntityMotionPacket}）只要求
-     * {@link #shouldNotEngage()} 为 false，而它里面唯一的"软"条件就是 {@code target != null}。
-     * 可 {@link #target} 每拍都被 {@code KillAura.target} 覆盖，而 KillAura 的
-     * {@code isValidAttack} 会被 hurtTime / FoV / 距离过滤 —— 刚砍中的人 hurtTime 是 10，
-     * 跳砍转身又会掉出 FoV，于是那一拍 {@code KillAura.target} 就是 null，"跳着砍人被打"
-     * 永远进不了 delay window。受击来源本身是确定的，用它兜底。
-     */
-    private Entity lastAttacker;
-    private int lastAttackerTick = Integer.MIN_VALUE / 2;
 
     private static final int WINDUP_TICKS = 2;
 
@@ -208,6 +160,20 @@ extends AntiKBMode {
     public void onPreMotion(PreMotionEvent preMotionEvent) {
     }
 
+    /**
+     * 不接管疾跑。
+     *
+     * <p>当前 Sprint 模块是"每拍现算"的基线实现: 它在 SprintEvent 里问一次
+     * {@link KillAura#canCritUnderVelocity()}, 成立就松键掉疾跑 (为了下一刀暴击), 不成立就
+     * 立刻把疾跑还给玩家。那套判定已经把 NoXZ 算进去了 —— 窗口攥着输入
+     * ({@code isInDelayWindow() && shouldKeepSprintInDelayWindow()}) 和反打
+     * ({@code isCountering()}) 两种情况它都返回 false, 也就是窗口/反打期间由 Sprint 维持
+     * 疾跑, 窗口交出控制权之后才轮到它掉疾跑。
+     *
+     * <p>所以这里再写一遍"什么时候该疾跑"只会和 Sprint 抢同一拍: 两边一个 setSprinting(false)
+     * 一个 setSprinting(true), 谁后跑谁赢, 顺序随模块启用顺序漂移。保持空实现, 单一真相在
+     * Sprint / KillAura 那边。
+     */
     @Override
     public void onSprint(SprintEvent sprintEvent) {
     }
@@ -225,20 +191,8 @@ extends AntiKBMode {
         if (attacker == null) {
             attacker = event.damageSource().getEntity();
         }
-        // 忽略火球: 火球的击退是投射物自己的冲量, 不是近战结算, 压住它只会让火球命中
-        // 那一下的位移和服务端对不上。记下拍数, 之后若干拍不进窗口。
-        if (attacker instanceof Fireball || attacker instanceof AbstractHurtingProjectile) {
-            this.lastFireballHitTick = mc.player.tickCount;
-            return;
-        }
-        if (attacker != null && attacker != mc.player && attacker.isAlive()) {
-            // 记下受击来源：onTick 每拍会把 target 改成 KillAura.target，可能为 null，
-            // 这条记录是"被打了却没索敌目标"时唯一还能进 delay window 的依据。
-            this.lastAttacker = attacker;
-            this.lastAttackerTick = mc.player.tickCount;
-            if (this.target == null) {
-                this.target = attacker;
-            }
+        if (attacker != null && attacker != mc.player && attacker.isAlive() && this.target == null) {
+            this.target = attacker;
         }
     }
 
@@ -276,23 +230,6 @@ extends AntiKBMode {
         if (mc.player == null || mc.level == null) {
             return;
         }
-        // 切世界 / 重连时队列里的包属于旧连接: 再 handle 就是把旧维度的实体和坐标写进新世界,
-        // 表现就是卡在加载界面。Southside 在 ServerPacketManager.onPacket 里判 ConnectScreen
-        // 后直接 stop(); 这里把 ReceivingLevelScreen(落地前接收区块) 一起判, 并且直接丢包
-        // 而不是 flush —— 那些包在新连接上已经没有任何应用价值。
-        if (mc.screen instanceof ReceivingLevelScreen || mc.screen instanceof ConnectScreen) {
-            this.abortAll();
-            return;
-        }
-        // 包可能是先于 onTick 到达的: 世界已经换了就必须在这里先丢掉旧队列, 否则新旧包混排。
-        if (mc.level != this.lastLevel) {
-            this.lastLevel = mc.level;
-            this.abortAll();
-            return;
-        }
-        if (this.shouldNotEngage()) {
-            return;
-        }
         Packet<ClientGamePacketListener> packet = receivePacketEvent.getPacket();
 
         if (packet instanceof ClientboundPlayerPositionPacket) {
@@ -300,59 +237,67 @@ extends AntiKBMode {
             return;
         }
 
-        if (packet instanceof ClientboundSetEntityMotionPacket motion
-                && motion.getId() == mc.player.getId()) {
-            if (!inDelayWindow) {
-                if (this.shouldNotEngage() || this.justHitByFireball()) {
-                    return;
-                }
-                double horizontal = Math.hypot(motion.getXa(), motion.getZa()) / 8000.0;
-                if (this.coolDownTicks > 0 || horizontal < 0.13) {
-                    return;
-                }
-                inDelayWindow = true;
-                this.delayTicks = 0;
-                handlingVelocity = true;
-            } else if (counterRemaining > 0) {
-                counterRemaining = 0;
-            }
-            receivePacketEvent.setCancelled(true);
-            this.packetQueue.add(packet);
+        if (this.shouldNotEngage()) {
             return;
         }
 
-        // 位置记录必须放在放行判断之前: 换成对方 canDelay 清单后, MoveEntity / Teleport 属于
-        // "可直接处理"的包, 根本走不到入队那一段, 而 Target ESP 正是靠这里缓存的坐标画框。
+        if (packet instanceof ClientboundSetEntityMotionPacket motion
+                && motion.getId() == mc.player.getId()) {
+            if (!inDelayWindow) {
+                inDelayWindow = true;
+                this.delayTicks = 0;
+                handlingVelocity = true;
+            }
+            receivePacketEvent.setCancelled(true);
+            this.packetQueue.add(packet);
+        }
+
+        if (this.isAllowedPacket(packet)) {
+            return;
+        }
+        // 与 deobf 的 VelocityModule 一致: 队列只在窗口打开期间攒包, 释放当拍窗口就关掉,
+        // 之后不再拦截 —— 反打阶段没有额外的压包相位, 否则压着的位移包会在释放时集中倒出,
+        // 那一段位移和 Grim 的预测差好几拍, 直接记 Simulation。
+        if (!inDelayWindow) {
+            return;
+        }
+
+        // 仅在压包期间追踪: 这一包的位移还没有被 apply, 实体仍在旧位置, 增量叠上去才是
+        // 服务端侧的真实坐标。放行时实体位置由 handle 自己更新, 不需要这里再算一遍。
+        this.trackEntityPosition(packet);
+
+        receivePacketEvent.setCancelled(true);
+        this.packetQueue.add(packet);
+    }
+
+    /**
+     * 记下实体在服务端侧的最新位置。
+     *
+     * <p>{@code ClientboundMoveEntityPacket} 只带增量, 必须叠在上一次的基准上; 传送包给的是
+     * 绝对值。调用点限定在"这一包已经被压住、还没 apply"的时刻, 基准才等价于服务端位置。
+     */
+    private void trackEntityPosition(Packet<?> packet) {
+        if (mc.level == null) {
+            return;
+        }
         if (packet instanceof ClientboundMoveEntityPacket move) {
             Entity entity = move.getEntity(mc.level);
-            if (entity != null) {
+            if (entity != null && move.hasPosition()) {
                 Vec3 base = this.entityPositions.getOrDefault(entity,
                         new Vec3(entity.getX(), entity.getY(), entity.getZ()));
-                if (move.hasPosition()) {
-                    this.entityPositions.put(entity, base.add(
-                            move.getXa() / 4096.0,
-                            move.getYa() / 4096.0,
-                            move.getZa() / 4096.0
-                    ));
-                }
+                this.entityPositions.put(entity, base.add(
+                        move.getXa() / 4096.0,
+                        move.getYa() / 4096.0,
+                        move.getZa() / 4096.0
+                ));
             }
-        }
-        if (packet instanceof ClientboundTeleportEntityPacket teleport) {
+        } else if (packet instanceof ClientboundTeleportEntityPacket teleport) {
             Entity entity = mc.level.getEntity(teleport.getId());
             if (entity != null) {
                 this.entityPositions.put(entity,
                         new Vec3(teleport.getX(), teleport.getY(), teleport.getZ()));
             }
         }
-        if (this.isAllowedPacket(packet)) {
-            return;
-        }
-        if (!inDelayWindow) {
-            return;
-        }
-
-        receivePacketEvent.setCancelled(true);
-        this.packetQueue.add(packet);
     }
 
     @Override
@@ -360,39 +305,16 @@ extends AntiKBMode {
         if (mc.player == null || mc.level == null) {
             return;
         }
-        // 加载/重连期间什么都不能做: 窗口如果跨世界存活, 恢复后第一拍就会拿着旧队列去 handle。
-        if (mc.screen instanceof ReceivingLevelScreen || mc.screen instanceof ConnectScreen) {
-            this.abortAll();
-            return;
-        }
-        // 兜底: 世界实例换了(跨维度/重连)就直接丢队列, 不依赖加载屏是否出现过。
-        if (mc.level != this.lastLevel) {
-            this.lastLevel = mc.level;
-            this.abortAll();
-            return;
-        }
 
-        // postTick(): 延迟窗口内每拍在队尾压一个边界标记。releaseUntilKb 只放到这个标记为止,
-        // 也就是"释放本拍之前到达的包", 与具体是哪一包击退无关。
+        // 每拍在队尾压一个边界标记。releaseUntilKb 只放到这个标记为止, 也就是"本拍之前
+        // 到达的包", 剩下的继续攒到下一拍, 客户端的位置是一次一小段地补回去的。
         if (inDelayWindow) {
             this.packetQueue.add(TICK_MARKER);
         }
 
-        boolean auraOn = KillAura.INSTANCE != null && KillAura.INSTANCE.isEnabled();
-        this.target = auraOn && AntiKB.INSTANCE.requireKillAura.getValue()
+        this.target = AntiKB.INSTANCE.requireKillAura.getValue()
                 ? KillAura.target
                 : this.crosshairTarget();
-        if (this.target == null && auraOn) {
-            // 4 格内最近玩家这个兜底只对 aura 有意义 (它会静默把视角转过去)。无 aura 时
-            // 锁一个身后的玩家, 只会让窗口空转: 压包 → 射线打不到 → 复位, 纯 lag。
-            this.target = this.nearestPlayer(4.0);
-        }
-        if (this.target == null && AntiKB.INSTANCE.requireKillAura.getValue()
-                && this.lastAttacker != null && this.lastAttacker.isAlive()
-                && this.lastAttacker.distanceToSqr(mc.player) <= 64.0
-                && mc.player.tickCount - this.lastAttackerTick <= 40) {
-            this.target = this.lastAttacker;
-        }
 
         if (this.compensateUntilMs != -1L
                 && (System.currentTimeMillis() >= this.compensateUntilMs || mc.options.keyUp.isDown())) {
@@ -400,16 +322,12 @@ extends AntiKBMode {
             this.compensateUntilMs = -1L;
         }
 
-        if (this.coolDownTicks > 0) {
-            --this.coolDownTicks;
-        }
-
         if (this.shouldNotEngage() || this.noAimTicks >= 3) {
             this.resetAll();
             return;
         }
 
-        // 缓慢释放: 反打结束之后, 队列按拍放回, 不再一次性倒给主线程。
+        // 已经开窗放过的包: 剩下的一拍放几个, 直到排空。
         if (this.releasing) {
             this.drainQueue(RELEASE_PER_TICK);
             if (this.packetQueue.isEmpty()) {
@@ -417,120 +335,51 @@ extends AntiKBMode {
             }
         }
 
-        if (inDelayWindow && counterRemaining <= 0) {
+        if (inDelayWindow) {
             compensating = true;
-            if (this.delayTicks > AntiKB.INSTANCE.maxDelayTicks.getValue().intValue()) {
+            counterRemaining = 0;
+            if (this.delayTicks >= AntiKB.INSTANCE.maxDelayTicks.getValue().intValue()) {
                 this.resetAll();
                 return;
             }
+            ++this.delayTicks;
             if (this.canRelease()) {
-                // 击退包必须在这一拍就放出去。压到反打之后才放, 客户端要等好几拍才吃到
-                // 击退, 那几拍里位置又被服务端按原轨迹结算, 释放时两段位移叠在一起,
-                // 表现就是"释放之后 KB 异常大"。先放到本拍边界, 再进反打; 反打那一刀会
-                // 用更小的击退覆盖掉服务端这次的计算。
-                this.releaseUntilKb();
-                counterRemaining = Math.max(1, AntiKB.INSTANCE.attackAmount.getValue().intValue());
+                counterRemaining = AntiKB.INSTANCE.attackAmount.getValue().intValue();
                 this.noAimTicks = 0;
-                this.noSprintTicks = 0;
-                this.counterTicks = 0;
+                inDelayWindow = false;
+                handlingVelocity = false;
+                // 只放到自己的击退包那一拍, marker 之后的残包交给上面的 drainQueue 按拍排空。
+                this.releaseUntilKb();
+                this.releasing = true;
                 if (AntiKB.INSTANCE.jumpReset.getValue()) {
                     this.jumpTicks = 1;
                 }
-            } else {
-                ++this.delayTicks;
             }
         }
 
         if (counterRemaining > 0) {
-            if (this.isManualAttacking()) {
-                this.finishWindow();
-                return;
-            }
-            if (++this.counterTicks > COUNTER_TIMEOUT_TICKS) {
-                this.debug("Failed (Timeout)");
-                this.resetAll();
-                return;
-            }
-            if (!this.auraLockedOnTarget() && !this.isAimingAtTarget()) {
+            if (!this.isAimingAtTarget()) {
                 ++this.noAimTicks;
                 this.debug("Failed (RayCast)");
                 return;
             }
-            this.noAimTicks = 0;
+            // 这里必须读"当前"疾跑状态, 不能换成"本拍将要恢复到疾跑"的预测:
+            // ATTACK 包就在下面这一行发出去, 它携带的是此刻客户端的疾跑标记, 服务端按
+            // sprint-hit 结算的也是这个值。预测成 true 但实际还在停疾跑, 打出来的就是
+            // 普通命中, 0.6 自减速叠不上去 —— 表现为"反打打了但不减击退"。
+            //
+            // 掉疾跑只跳过这一刀, 不收窗: 对齐 deobf 的 {@code if (!isSprinting()) return;}
+            // —— 那边不数拍数。数到 3 就 resetAll 会把窗口里压着的包一次性 flush 出去,
+            // 客户端位置在那一拍直接跳一段, 就是 Simulation 的 VL 来源。
             if (!mc.player.isSprinting()) {
-                ++this.noSprintTicks;
                 this.debug("Failed (Sprint)");
-                if (this.noSprintTicks > COUNTER_TIMEOUT_TICKS) {
-                    this.resetAll();
-                }
                 return;
             }
-            this.noSprintTicks = 0;
-            if (!this.attackReduce(this.target)) {
-                return;
-            }
-            if (--counterRemaining <= 0) {
-                // 打完再放: 反打这一拍已经出手, 队列从这里开始按拍排空。
-                inDelayWindow = false;
-                handlingVelocity = false;
-                this.delayTicks = 0;
-                this.releasing = true;
-                this.drainQueue(RELEASE_PER_TICK);
-            }
+            this.attackReduce(this.target);
+            --counterRemaining;
         } else if (compensating) {
             this.compensateUntilMs = System.currentTimeMillis() + 10L;
         }
-    }
-
-    /** 收窗: 手动让位时调用, 同样走按拍排空而不是一次性倒出去。 */
-    private void finishWindow() {
-        inDelayWindow = false;
-        handlingVelocity = false;
-        counterRemaining = 0;
-        this.delayTicks = 0;
-        this.releasing = true;
-        this.drainQueue(RELEASE_PER_TICK);
-    }
-
-    /**
-     * 按拍把队列放回, 每拍最多 {@code budget} 个包。
-     *
-     * <p>一次性 {@code flushQueue} 会在同一拍往主线程塞几十个 handle, 服务端那边看到的
-     * 是一段"瞬间位移 + 瞬时补齐", 比慢慢补更容易被当成瞬移。这里按拍摊开, 也让 marker
-     * 边界继续保持"本拍之前"的语义。
-     */
-    private void drainQueue(int budget) {
-        if (mc.getConnection() == null) {
-            this.packetQueue.clear();
-            return;
-        }
-        mc.execute(() -> {
-            if (mc.getConnection() == null) {
-                this.packetQueue.clear();
-                return;
-            }
-            for (int i = 0; i < budget; i++) {
-                Packet<?> packet = this.packetQueue.poll();
-                if (packet == null) {
-                    break;
-                }
-                if (packet == TICK_MARKER) {
-                    continue;
-                }
-                // 反打已经出手, 服务端会按那一刀重算击退另发一包; 队列里这条旧击退再 apply
-                // 只会和新击退叠在一起 —— 就是"释放之后 KB 异常大"。
-                if (packet instanceof ClientboundSetEntityMotionPacket motion
-                        && motion.getId() == mc.player.getId()) {
-                    continue;
-                }
-                try {
-                    this.handleDelayed(packet);
-                } catch (Exception exception) {
-                    this.packetQueue.clear();
-                    break;
-                }
-            }
-        });
     }
 
     @Override
@@ -546,27 +395,8 @@ extends AntiKBMode {
     }
 
     @Override
-    public void onItemUseRayTrace(UseItemRayTraceEvent event) {
-        if (mc.player == null || mc.level == null) {
-            return;
-        }
-        if (!mc.player.getMainHandItem().is(Items.FIRE_CHARGE)
-                && !mc.player.getOffhandItem().is(Items.FIRE_CHARGE)) {
-            return;
-        }
-        long tick = mc.level.getGameTime();
-        if (tick == this.lastFireballTick) {
-            return;
-        }
-        this.lastFireballTick = tick;
-        this.coolDownTicks = 10;
-    }
-
-    @Override
     public void onDisconnect(DisconnectEvent disconnectEvent) {
-        // 断开时连接已经没了, 队列里的包 handle 不出去, 直接丢。
-        this.lastLevel = null;
-        this.abortAll();
+        this.resetAll();
     }
 
     @Override
@@ -635,125 +465,95 @@ extends AntiKBMode {
         poseStack.popPose();
     }
 
-    /**
-     * 反打一次。返回 {@code false} 表示"这一拍打不出去"（冷却没满 / 射线没打到 / 本 tick
-     * 已经出过手），调用方不该扣减计数 —— 否则次数被烧掉，实际一个有效攻击都没发出去。
-     *
-     * <p>为什么必须自己查冷却：KillAura 开着时它有 APS 蓄力引擎在管节奏，NoXZ 只是搭车；
-     * 没有 aura 时这里是唯一的出手点，连着 5 拍甩 5 个冷却不足的攻击包，服务端会当成
-     * 无效攻击 / 超频，紧接着就是位置修正 —— 也就是"不用杀戮打人反而更卡、被拉回"。
-     */
-    private boolean attackReduce(Entity entity) {
+    private void attackReduce(Entity entity) {
         if (entity == null || mc.player == null || mc.getConnection() == null) {
-            return true;
-        }
-        // 1.9 冷却闸门: 和 KillAura 的 delayMode "1.9" 用同一个阈值。
-        if (mc.player.getAttackStrengthScale(0.5f) < 0.9f) {
-            return false;
-        }
-        // 没有 aura 的静默旋转兜着时, 攻击包算不算数取决于玩家真实准星: 打不到就别发。
-        if (!this.auraLockedOnTarget() && !this.isAimingAtTarget()) {
-            return false;
+            return;
         }
         if (!KillAura.attackAndLock()) {
-            return false;
+            return;
         }
         if (NiloreClient.isReady()) {
             NiloreClient.getInstance().getEventBus().call(new EntityRemoveEvent(false, entity));
         }
         mc.getConnection().send(ServerboundInteractPacket.createAttackPacket(entity, mc.player.isShiftKeyDown()));
         mc.player.swing(InteractionHand.MAIN_HAND);
+        // 原版 {@code Player.attack} 的疾跑攻击分支会 setSprinting(false); 这里直接构造
+        // interact 包绕过了它, 所以必须自己补上。否则服务端按"被攻击停疾跑"结算, 客户端
+        // 还在疾跑速度上, 两边每 tick 差一个 .029 级的 Simulation offset —— 一直差到有人
+        // 手动松键为止。
+        if (mc.player.isSprinting()) {
+            mc.player.setSprinting(false);
+        }
         Vec3 movement = mc.player.getDeltaMovement();
         mc.player.setDeltaMovement(movement.x * 0.6, movement.y, movement.z * 0.6);
-        return true;
     }
 
     private Entity crosshairTarget() {
         return mc.hitResult instanceof EntityHitResult hit ? hit.getEntity() : null;
     }
 
-    private Entity nearestPlayer(double range) {
-        if (mc.player == null || mc.level == null) {
-            return null;
-        }
-        Entity best = null;
-        double bestDistance = range * range;
-        for (Player player : mc.level.players()) {
-            if (player == mc.player || !player.isAlive() || player.isSpectator()) {
-                continue;
-            }
-            double distance = player.distanceToSqr(mc.player);
-            if (distance <= bestDistance) {
-                bestDistance = distance;
-                best = player;
-            }
-        }
-        return best;
-    }
-
-    /**
-     * aura 是否正锁着当前目标。
-     *
-     * <p>锁着时不再复检射线: 朝向在 tick 末尾才交接给 {@code ClientBase}, 而这里的判定跑在
-     * TickEvent 里, 读到的是上一拍的朝向 —— 复检会把"明明已经锁着人"的拍判成
-     * {@code Failed (RayCast)}。
-     */
-    private boolean auraLockedOnTarget() {
-        return KillAura.INSTANCE != null
-                && KillAura.INSTANCE.isEnabled()
-                && this.target != null
-                && this.target == KillAura.target;
-    }
-
     private boolean isAimingAtTarget() {
         if (this.target == null || mc.player == null) {
             return false;
         }
-        // 静默瞄准只有在 aura 真的跑着的时候才存在。没有 aura 时命中目标的就是玩家自己的
-        // 准星 (hitResult) —— 老版本 requireKillAura=false 走的就是这条路径, 所以手动打
-        // 同样能进窗口。这里不再要求用户先把 Require KillAura 关掉, 而是看 aura 是否在跑。
-        boolean auraOn = KillAura.INSTANCE != null && KillAura.INSTANCE.isEnabled();
-        if (!auraOn || !AntiKB.INSTANCE.requireKillAura.getValue()) {
+        if (!AntiKB.INSTANCE.requireKillAura.getValue()) {
             return mc.hitResult instanceof EntityHitResult hit && hit.getEntity() == this.target;
         }
-        double range = Math.max(3.0, AntiKB.INSTANCE.releaseDistance.getValue().doubleValue() + 1.0);
-        // 容差从 0.3 放到 0.6: 目标来自 KillAura.target, 判定用的是静默瞄准的朝向, 而
-        // rayTraceForAim 的盒子是 inflate 后的 AABB。0.3 在快转身 / 高延迟下会把"其实已经
-        // 对着"的那一拍判掉, 表现就是 aura 明明锁着人, 窗口却一直进不去。
-        return RotationUtil.isLookingAt(this.target, range, 0.6f);
+        return RotationUtil.isLookingAt(this.target,
+                Math.max(3.0, RotationUtil.getReachLimit()), 0.1f);
     }
 
-    /** 释放闸门: 疾跑 + 落地 + 目标在 Release Distance 内; aura 锁着时不再复检射线。 */
+    /**
+     * 释放闸门: 射线锁着 + 落地 + 疾跑。
+     *
+     * <p>疾跑这里问的是 {@link #sprintThisTick()}, 不是 {@code mc.player.isSprinting()} —— 原因见
+     * 那个方法。落地那一条不能省: 空中释放时服务端仍按"玩家在空中"结算这一包的位移补偿,
+     * 击退等于白吞, 必须等脚踩实的那一拍。
+     */
     private boolean canRelease() {
-        if (!this.ready() || this.target == null) {
+        if (mc.player == null || !mc.player.onGround()) {
             return false;
         }
-        if (!this.isWithinReleaseDistance()) {
-            return false;
-        }
-        return this.auraLockedOnTarget() || this.isAimingAtTarget();
+        return this.isAimingAtTarget() && this.sprintThisTick();
     }
 
-    private boolean isWithinReleaseDistance() {
-        if (this.target == null || mc.player == null) {
+    /**
+     * 本拍客户端实际会不会处于疾跑: 已疾跑, 或者这一拍 Sprint 模块就会把它恢复回来。
+     *
+     * <p>顺序问题: {@code TickEvent} (本方法的调用点) 在 {@code Minecraft.tick()} 顶部发出,
+     * 而 {@code SprintEvent} 要等 {@code LocalPlayer.tick()} 走到 {@code super.tick()} 之前才发。
+     * 落地那一拍读 {@code isSprinting()} 读到的是"上一拍空中被停掉之后"的值, 于是明明落地、
+     * 明明在疾跑、Sprint 这一拍马上就会把疾跑还回来, 这里却始终不放行, 表现为"落地了也不
+     * 释放, 一直拖到超时"。
+     *
+     * <p>Sprint 是每拍现算的基线实现: 只要它这一拍不 hold (Stuck / 暴击门成立), 就会
+     * {@code keySprint.setDown(true)} 并在有前进输入时 {@code setSprinting(true)}。所以
+     * "已疾跑 || (键没松 && 有前进输入 && Sprint 不 hold)" 就是这一拍结束时的疾跑状态。
+     *
+     * <p>反打阶段不用这个预测: 那里发的是 ATTACK 包, 要的是发包瞬间的真实状态。
+     */
+    private boolean sprintThisTick() {
+        if (mc.player == null) {
             return false;
         }
-        Vec3 eye = mc.player.getEyePosition();
-        double limit = AntiKB.INSTANCE.releaseDistance.getValue().doubleValue();
-        return RotationUtil.closestPoint(eye, this.target.getBoundingBox()).distanceTo(eye) <= limit;
-    }
-
-    /** 刚刚吃过火球: 这段期间的击退包不参与 antikb。 */
-    private boolean justHitByFireball() {
-        return mc.player != null
-                && mc.player.tickCount - this.lastFireballHitTick <= FIREBALL_IGNORE_TICKS;
+        if (mc.player.isSprinting()) {
+            return true;
+        }
+        // Sprint 这一拍会不会 hold: 与 Sprint.shouldHoldSprint() 同一组条件。
+        boolean sprintHeld = Stuck.INSTANCE != null && Stuck.INSTANCE.isEnabled()
+                || KillAura.INSTANCE != null && KillAura.INSTANCE.canCritUnderVelocity();
+        if (sprintHeld) {
+            return false;
+        }
+        boolean hasForwardInput = mc.player.input != null && mc.player.input.forwardImpulse > 0.0f;
+        return mc.options.keySprint.isDown() && hasForwardInput;
     }
 
     private boolean shouldNotEngage() {
         if (mc.player == null || mc.getConnection() == null) {
             return true;
         }
-        if (mc.player.isInLava() || mc.player.isInWater()) {
+        if (mc.player.isUsingItem() || mc.player.isInLava() || mc.player.isInWater()) {
             return true;
         }
         if (mc.level != null && mc.level.getBlockState(mc.player.blockPosition()).is(Blocks.COBWEB)) {
@@ -781,137 +581,62 @@ extends AntiKBMode {
         return stuck != null && stuck.isEnabled();
     }
 
-    /**
-     * 这一包是否"不进延迟队列"、直接交给原版处理。
-     *
-     * <p>清单完整对齐对方 {@code PacketUtils.canDelay}: 那边返回 {@code true} 表示"可以延迟",
-     * 这里是它的取反, 所以两边放行的包集合完全一致。对方的 {Fabric 名} 对应这里的 {Mojmap 名}:
-     * ChatMessage/SystemChat、Scoreboard*、EntityEquipmentUpdate、ClearTitle/Title/Subtitle/
-     * TitleFade、BossBar、EntitiesDestroy、HealthUpdate、PlaySound(FromEntity)、EntitySetHeadYaw、
-     * EntityS2CPacket、EntityPositionS2CPacket、EntityTrackerUpdate(仅他人)、KeepAlive、
-     * EntityDamage、EntityVelocityUpdate(仅他人)、PlayerPositionLook。
-     *
-     * <p>1.20.1 没有 {@code ClientboundResetScorePacket}(对方那个版本才有), 其余逐条对应。
-     * 末尾几条是我们原本就在放行的项 (玩家聊天 / 击杀消息 / 队伍 / 关容器 / 受击动画), 放行
-     * 集合更大只会让更多包走原版路径, 不影响"延迟窗口只压可延迟包"的语义。
-     */
     private boolean isAllowedPacket(Packet<?> packet) {
-        return packet instanceof ClientboundSystemChatPacket                                    // ChatMessageS2CPacket
-                || packet instanceof ClientboundSetDisplayObjectivePacket                       // ScoreboardDisplayS2CPacket
-                || packet instanceof ClientboundSetEquipmentPacket                              // EntityEquipmentUpdateS2CPacket
-                || packet instanceof ClientboundClearTitlesPacket                               // ClearTitleS2CPacket
-                || packet instanceof ClientboundSetTitleTextPacket                              // TitleS2CPacket
-                || packet instanceof ClientboundBossEventPacket                                 // BossBarS2CPacket
-                || packet instanceof ClientboundRemoveEntitiesPacket                            // EntitiesDestroyS2CPacket
-                || packet instanceof ClientboundSetHealthPacket                                 // HealthUpdateS2CPacket
-                || packet instanceof ClientboundSetObjectivePacket                              // ScoreboardObjectiveUpdateS2CPacket
-                || packet instanceof ClientboundSetScorePacket                                  // ScoreboardScoreUpdateS2CPacket
-                || packet instanceof ClientboundSetSubtitleTextPacket                           // SubtitleS2CPacket
-                || packet instanceof ClientboundSetTitlesAnimationPacket                        // TitleFadeS2CPacket
-                || packet instanceof ClientboundSoundPacket                                     // PlaySoundS2CPacket
-                || packet instanceof ClientboundSoundEntityPacket                               // PlaySoundFromEntityS2CPacket
-                || packet instanceof ClientboundRotateHeadPacket                                // EntitySetHeadYawS2CPacket
-                || packet instanceof ClientboundMoveEntityPacket                                // EntityS2CPacket
-                || packet instanceof ClientboundTeleportEntityPacket                            // EntityPositionS2CPacket
-                || packet instanceof ClientboundSetEntityDataPacket data                        // EntityTrackerUpdateS2CPacket
-                        && (mc.player == null || data.id() != mc.player.getId())
-                || packet instanceof ClientboundKeepAlivePacket                                 // KeepAliveS2CPacket
-                || packet instanceof ClientboundDamageEventPacket                               // EntityDamageS2CPacket
-                || packet instanceof ClientboundSetEntityMotionPacket motion                    // EntityVelocityUpdateS2CPacket
-                        && (mc.player == null || motion.getId() != mc.player.getId())
-                || packet instanceof ClientboundPlayerPositionPacket                            // PlayerPositionLookS2CPacket
-                || packet instanceof ClientboundDisconnectPacket
+        return packet instanceof ClientboundSetEntityMotionPacket
+                || packet instanceof ClientboundSetHealthPacket
+                || packet instanceof ClientboundPlayerPositionPacket
+                || packet instanceof ClientboundSoundPacket
                 || packet instanceof ClientboundPlayerChatPacket
                 || packet instanceof ClientboundPlayerCombatKillPacket
-                || packet instanceof ClientboundSetPlayerTeamPacket
                 || packet instanceof ClientboundContainerClosePacket
                 || packet instanceof ClientboundHurtAnimationPacket
+                || packet instanceof ClientboundSetTitleTextPacket
+                || packet instanceof ClientboundSetPlayerTeamPacket
+                || packet instanceof ClientboundSystemChatPacket
+                || packet instanceof ClientboundDisconnectPacket
+                // 对账包, 压不得。Grim 的 Post 是这么判的: 收到 flying 时把 sentFlying 置位,
+                // 之后收到的动作包(ATTACK / INTERACT_ENTITY / ANIMATION ...)都进 post 队列,
+                // 等收到 transaction(pong) 时若队列非空就记一条。压住 KeepAlive / Ping 等于
+                // 把客户端的 pong 往后拖, 服务端那边 sentFlying 一直是 true —— 这期间反打的
+                // ATTACK 就全被算进 post, pong 一到就报 "Post"。
+                || packet instanceof ClientboundKeepAlivePacket
+                || packet instanceof ClientboundPingPacket
+                // 白名单其余部分与 deobf 的 {@code һсxјаs} 一致: 实体移动(EntityS2C)、传送
+                // (EntityPositionS2C)、头部朝向、他人 tracker update、伤害事件都在压包范围内,
+                // 只有上面两个对账包必须放行 —— 压住它们会让 pong 晚发, 反打的 ATTACK 落进
+                // 服务端的 post 窗口, 就是 Grim 的 Post。
                 || packet instanceof ClientboundAnimatePacket animation
-                        && animation.getId() != mc.player.getId();
+                && animation.getId() != mc.player.getId();
     }
 
     /**
-     * 释放条件, 取对方 {@code Velocity.ready()} 且把 {@code Delay Till Ground} 一路写死为 true:
-     * 没用物品 + 在疾跑 + 已经落地。
+     * 按拍把队列放回, 每拍最多 {@code budget} 个包。
      *
-     * <p>落地这一条不是可有可无的: 空中释放时服务端仍按"玩家在空中"处理这一包的位移补偿,
-     * 击退等于白吞。落地那一拍释放, 位移补偿才落在脚踩实的这一 tick 上。
+     * <p>一次性清空会在同一拍往主线程塞几十个 handle: 服务端看到的是"瞬间位移 + 瞬时补齐",
+     * 客户端下一拍的位移和 Grim 的预测差出好几拍的量, 记的就是 Simulation。摊到多拍之后
+     * 每拍只补一点, 位移差始终压在一个小范围里。
      */
-    /**
-     * 释放条件: 没用物品 + 这一拍确实是能结算的时机。
-     *
-     * <p>不再在这里要求 {@code isSprinting()}: 这段跑在 TickEvent, 比 SprintEvent 还早,
-     * 读到的是"上一拍被攻击停掉之后"的疾跑状态 —— 落地那一拍 Sprint 还没把疾跑恢复回来,
-     * 于是判定总是差一拍, 表现就是"落地了、也明明在疾跑, 却一直不放行"。疾跑的要求放在
-     * 反打阶段 (attackReduce), 那时 SprintEvent 已经跑过, 状态是准的。
-     *
-     * <p>落地那一条只对自动反打有意义; 玩家手动出刀时他自己那一刀就是服务端重算击退的
-     * 触发点, 空中释放才是对的 (跳打), 硬等落地只会让延迟包拖着, 变成 lag。
-     */
-    /**
-     * 对齐 Southside 的 {@code Velocity.ready()}: 没用物品 + 在疾跑。
-     *
-     * <p>那边 {@code delayTillGround} 默认是 false, 也就是不要求落地; 之前把落地写死成
-     * 必要条件, 结果空中被击退、或者落地那一拍 {@code onGround} 还没翻过来时窗口一直不放,
-     * 表现就是"落地了也不释放"。
-     */
-    private boolean ready() {
-        return mc.player != null
-                && !mc.player.isUsingItem()
-                && mc.player.isSprinting()
-                && mc.player.onGround();
-    }
-
-    /**
-     * 玩家这一拍是否会自己砍出去: 按住左键且攻击冷却已经好。
-     *
-     * <p>手动攻击与 NoXZ 的反打用的是同一个出口 ({@code ServerboundInteractPacket} /
-     * {@code Player.attack}), 同一 tick 出现两个 ATTACK 服务端就判非法并修正位置。所以
-     * 手动优先: NoXZ 看到玩家在打就让开, 而不是去抢 {@code attackAndLock}。
-     */
-    private boolean isManualAttacking() {
-        return mc.options != null
-                && mc.player != null
-                && mc.options.keyAttack.isDown()
-                && mc.player.getAttackStrengthScale(0.5f) >= 0.9f;
-    }
-
-    /**
-     * 释放到"本拍边界"为止 —— 对齐对方 {@code releaseUntil(Objects::isNull, false)}。
-     *
-     * <p>队列里每拍被压入一个 {@link #TICK_MARKER}, 所以第一个标记之前的所有包, 都是"这一拍
-     * 开始之前就已经到了、还在等释放"的包; 放到标记就停, 标记之后的包继续留在队列里。取不到
-     * 标记 (队列里还没有 postTick 打点, 比如进窗口当拍就释放) 就退化成整队放行, 与对方在
-     * channel 为空时的收尾行为一致。
-     */
-    private void releaseUntilKb() {
+    private void drainQueue(int budget) {
         if (mc.getConnection() == null) {
             this.packetQueue.clear();
             return;
         }
-        Packet<?> packet;
-        while ((packet = this.packetQueue.poll()) != null) {
-            if (packet == TICK_MARKER) {
-                break;
-            }
-            try {
-                this.handleDelayed(packet);
-            } catch (Exception exception) {
-                this.packetQueue.clear();
-                break;
-            }
-        }
-    }
-
-    private void flushQueue() {
         mc.execute(() -> {
             if (mc.getConnection() == null) {
                 this.packetQueue.clear();
                 return;
             }
-            Packet<?> packet;
-            while ((packet = this.packetQueue.poll()) != null) {
+            for (int i = 0; i < budget; i++) {
+                Packet<?> packet = this.packetQueue.poll();
+                if (packet == null) {
+                    break;
+                }
                 if (packet == TICK_MARKER) {
+                    continue;
+                }
+                // 反打已经出手, 服务端会按那一刀重算击退另发一包; 队列里这条旧击退再 apply
+                // 只会和新击退叠在一起 —— 表现就是"释放之后 KB 异常大"。
+                if (this.isOwnKnockback(packet)) {
                     continue;
                 }
                 try {
@@ -922,6 +647,46 @@ extends AntiKBMode {
                 }
             }
         });
+    }
+
+    /**
+     * 释放到"自己的击退包所在那一拍"为止。
+     *
+     * <p>{@link #TICK_MARKER} 只当分隔符: 遇到 marker 时若还没命中击退包就跳过继续放,
+     * 命中之后的下一个 marker 才 break。这样放出去的是"截止本拍、且包含这次击退"的那一段,
+     * 后面的残包留给 {@link #drainQueue}。
+     */
+    private void releaseUntilKb() {
+        if (mc.getConnection() == null) {
+            this.packetQueue.clear();
+            return;
+        }
+        Packet<?> packet;
+        boolean stopRelease = false;
+        while ((packet = this.packetQueue.poll()) != null) {
+            if (packet == TICK_MARKER) {
+                if (stopRelease) {
+                    break;
+                }
+                continue;
+            }
+            try {
+                this.handleDelayed(packet);
+            } catch (Exception exception) {
+                this.packetQueue.clear();
+                break;
+            }
+            if (this.isOwnKnockback(packet)) {
+                stopRelease = true;
+            }
+        }
+    }
+
+    /** 这一包是不是自己的击退 (EntityVelocityUpdate 且 id 是自己)。 */
+    private boolean isOwnKnockback(Packet<?> packet) {
+        return packet instanceof ClientboundSetEntityMotionPacket motion
+                && mc.player != null
+                && motion.getId() == mc.player.getId();
     }
 
     @SuppressWarnings("unchecked")
@@ -942,39 +707,24 @@ extends AntiKBMode {
     }
 
     private void resetAll() {
-        this.resetAll(true);
-    }
-
-    /**
-     * @param releaseQueued true  = 正常收尾, 队列里的包还要按顺序 handle 掉;
-     *                      false = 转世界/重连, 队列属于旧连接, 直接丢弃。
-     */
-    private void resetAll(boolean releaseQueued) {
-        if (releaseQueued) {
-            this.flushQueue();
-        } else {
-            this.packetQueue.clear();
-        }
+        // 收尾也不整队倒: 只放到本拍边界, 残包（含 marker）直接丢弃 —— 那些包对应的
+        // 时刻已经过去了, 补 apply 只会让位置再跳一次。
+        this.releaseUntilKb();
+        this.packetQueue.clear();
         inDelayWindow = false;
         compensating = false;
+        this.releasing = false;
         this.positionCorrection = false;
         this.delayTicks = 0;
         counterRemaining = 0;
         this.noAimTicks = 0;
         this.noSprintTicks = 0;
-        this.counterTicks = 0;
-        this.releasing = false;
         this.compensateUntilMs = -1L;
         this.jumpTicks = 0;
         this.restoreJumpKey();
         this.entityPositions.clear();
         this.target = null;
         handlingVelocity = false;
-    }
-
-    /** 切换世界 / 重连: 旧连接上的包一个都不能再 handle, 直接丢弃并复位。 */
-    private void abortAll() {
-        this.resetAll(false);
     }
 
     private void debug(String message) {

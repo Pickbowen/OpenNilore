@@ -38,7 +38,7 @@ public final class NeteaseOfficialApi {
 
     private static final String BASE = "https://music.163.com";
     private static final String UA =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
     private static final Pattern YRC_LINE = Pattern.compile("\\[(\\d+),(\\d+)](.*)");
     private static final Pattern YRC_WORD = Pattern.compile("\\((\\d+),(\\d+),\\d+\\)([^()]*)");
@@ -58,6 +58,9 @@ public final class NeteaseOfficialApi {
 
     private static volatile boolean loggedIn = false;
 
+    private static volatile String lastMessage = "Not signed in";
+    private static volatile int lastQrCode = 0;
+
     private NeteaseOfficialApi() {
     }
 
@@ -68,10 +71,18 @@ public final class NeteaseOfficialApi {
     private static void resetDeviceCookies() {
         String nuid = randomHex(32);
         long ts = System.currentTimeMillis();
+        COOKIES.put("__remember_me", "true");
+        COOKIES.put("ntes_kaola_ad", "1");
         COOKIES.put("_ntes_nuid", nuid);
         COOKIES.put("_ntes_nnid", nuid + "," + ts);
         COOKIES.put("WNMCID", randomHex(12) + ts);
+        COOKIES.put("WEVNSM", "1.0.0");
         COOKIES.put("NMTID", randomHex(16));
+        COOKIES.put("os", "pc");
+        COOKIES.put("osver", "Microsoft-Windows-10");
+        COOKIES.put("appver", "2.10.7");
+        COOKIES.put("channel", "netease");
+        COOKIES.put("deviceId", randomHex(16));
         COOKIES.remove("__csrf");
         COOKIES.remove("JSESSIONID-WYYY");
     }
@@ -87,8 +98,89 @@ public final class NeteaseOfficialApi {
     // ------------------------------------------------------------------
     // ------------------------------------------------------------------
 
+    private static volatile String accountName = null;
+    private static volatile long accountId = 0L;
+    private static volatile boolean vip = false;
+
     public static boolean isLoggedIn() {
         return loggedIn;
+    }
+
+    /** Nickname of the signed-in account, or null when unknown / signed out. */
+    public static String accountName() {
+        return accountName;
+    }
+
+    /** NetEase user id of the signed-in account, 0 when unknown. */
+    public static long accountId() {
+        return accountId;
+    }
+
+    /** True when the signed-in account has an active VIP subscription. */
+    public static boolean isVip() {
+        return vip;
+    }
+
+    /** Latest human readable step of the sign-in flow, shown in the settings page and the dialog. */
+    public static String lastMessage() {
+        return lastMessage;
+    }
+
+    /** Raw NetEase status code of the last QR poll (801 waiting, 802 scanned, 803 ok, 800 expired). */
+    public static int lastQrCode() {
+        return lastQrCode;
+    }
+
+    /**
+     * Drops the session cookie and the saved file, keeping the device cookies so the next
+     * sign-in looks like the same install.
+     */
+    public static void logout(Path sessionFile) {
+        loggedIn = false;
+        accountName = null;
+        accountId = 0L;
+        vip = false;
+        lastMessage = "Not signed in";
+        lastQrCode = 0;
+        COOKIES.remove("MUSIC_U");
+        COOKIES.remove("MUSIC_A");
+        COOKIES.remove("__csrf");
+        COOKIES.remove("JSESSIONID-WYYY");
+        try {
+            if (sessionFile != null) {
+                Files.deleteIfExists(sessionFile);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** Asks the server who we are; also the cheapest way to find out if a stored cookie died. */
+    public static CompletableFuture<Boolean> fetchAccount() {
+        return post("/weapi/w/nuser/account/get", "{}").thenApply(root -> {
+            if (root == null || !root.isJsonObject()) {
+                return loggedIn;
+            }
+            JsonObject obj = root.getAsJsonObject();
+            JsonObject profile = obj.has("profile") && obj.get("profile").isJsonObject()
+                    ? obj.getAsJsonObject("profile") : null;
+            if (profile == null) {
+                // Only a 200 answer is allowed to drop the session; a proxy or a 5xx must not
+                // sign the user out, it just means "could not tell right now".
+                if (optLong(obj, "code") == 200) {
+                    loggedIn = false;
+                    accountName = null;
+                    accountId = 0L;
+                    vip = false;
+                }
+                return false;
+            }
+            accountName = optString(profile, "nickname");
+            accountId = optLong(profile, "userId");
+            vip = optLong(profile, "vipType") > 0;
+            loggedIn = true;
+            lastMessage = accountName.isEmpty() ? "Signed in" : "Signed in as " + accountName;
+            return true;
+        });
     }
 
     public static void loadSession(Path file) {
@@ -96,29 +188,51 @@ public final class NeteaseOfficialApi {
             if (!Files.isRegularFile(file)) {
                 return;
             }
-            String cookie = Files.readString(file, StandardCharsets.UTF_8).trim();
-            if (cookie.isEmpty()) {
+            String saved = Files.readString(file, StandardCharsets.UTF_8).trim();
+            if (saved.isEmpty()) {
                 return;
             }
-            for (String part : cookie.split(";")) {
-                String[] kv = part.trim().split("=", 2);
-                if (kv.length == 2 && !kv[0].isEmpty()) {
-                    COOKIES.put(kv[0], kv[1]);
+            if (saved.startsWith("{")) {
+                JsonObject obj = JsonParser.parseString(saved).getAsJsonObject();
+                String musicU = obj.has("MUSIC_U") ? obj.get("MUSIC_U").getAsString() : "";
+                String csrf = obj.has("__csrf") ? obj.get("__csrf").getAsString() : "";
+                if (!musicU.isBlank()) {
+                    COOKIES.put("MUSIC_U", musicU);
+                }
+                if (!csrf.isBlank()) {
+                    COOKIES.put("__csrf", csrf);
+                }
+            } else {
+                for (String part : saved.split(";")) {
+                    String[] kv = part.trim().split("=", 2);
+                    if (kv.length == 2 && !kv[0].isEmpty()) {
+                        COOKIES.put(kv[0], kv[1]);
+                    }
                 }
             }
             String musicU = COOKIES.get("MUSIC_U");
             loggedIn = musicU != null && !musicU.isEmpty();
+            if (loggedIn) {
+                lastMessage = "Restored the saved session";
+            }
         } catch (Exception ignored) {
         }
     }
 
     private static void saveSession(Path file) {
         try {
+            String musicU = COOKIES.get("MUSIC_U");
+            if (musicU == null || musicU.isBlank()) {
+                return;
+            }
             Path parent = file.getParent();
             if (parent != null) {
                 Files.createDirectories(parent);
             }
-            Files.writeString(file, cookieHeader(), StandardCharsets.UTF_8);
+            JsonObject obj = new JsonObject();
+            obj.addProperty("MUSIC_U", musicU);
+            obj.addProperty("__csrf", COOKIES.getOrDefault("__csrf", ""));
+            Files.writeString(file, obj.toString(), StandardCharsets.UTF_8);
         } catch (Exception ignored) {
         }
     }
@@ -129,8 +243,6 @@ public final class NeteaseOfficialApi {
             if (sb.length() > 0) sb.append("; ");
             sb.append(e.getKey()).append('=').append(e.getValue());
         }
-        if (sb.length() > 0) sb.append("; ");
-        sb.append("os=pc; appver=2.9.7");
         return sb.toString();
     }
 
@@ -270,11 +382,16 @@ public final class NeteaseOfficialApi {
     public static CompletableFuture<String> requestQrKey() {
         return post("/weapi/login/qrcode/unikey", "{\"type\":1}").thenApply(root -> {
             if (root == null || !root.isJsonObject()) {
+                lastMessage = "Could not reach NetEase";
                 return null;
             }
             JsonObject obj = root.getAsJsonObject();
-            return obj.has("unikey") && !obj.get("unikey").isJsonNull()
-                    ? obj.get("unikey").getAsString() : null;
+            if (!obj.has("unikey") || obj.get("unikey").isJsonNull()) {
+                lastMessage = "NetEase refused the QR request (code " + optLong(obj, "code") + ")";
+                return null;
+            }
+            lastMessage = "Waiting for the NetEase app to scan";
+            return obj.get("unikey").getAsString();
         });
     }
 
@@ -284,26 +401,66 @@ public final class NeteaseOfficialApi {
 
     public static CompletableFuture<QrStatus> pollQr(String key, Path sessionFile) {
         return post("/weapi/login/qrcode/client/login", "{\"key\":\"" + key + "\",\"type\":1}")
-                .thenApply(root -> {
+                .thenCompose(root -> {
                     if (root == null || !root.isJsonObject()) {
-                        return QrStatus.FAILED;
+                        lastMessage = "Network error while polling";
+                        return CompletableFuture.completedFuture(QrStatus.FAILED);
                     }
                     int code = (int) optLong(root.getAsJsonObject(), "code");
+                    lastQrCode = code;
                     switch (code) {
-                        case 802:
-                            return QrStatus.SCANNED;
-                        case 803:
+                        case 802 -> {
+                            lastMessage = "Scanned — confirm on your phone";
+                            return CompletableFuture.completedFuture(QrStatus.SCANNED);
+                        }
+                        case 803 -> {
                             loggedIn = true;
                             saveSession(sessionFile);
-                            return QrStatus.CONFIRMED;
-                        case 800:
-                            return QrStatus.EXPIRED;
-                        case 801:
-                            return QrStatus.WAITING;
-                        default:
-                            return QrStatus.FAILED;
+                            lastMessage = "Confirmed, loading your account";
+                            // 803 only means "the phone said yes"; the session is real only if the
+                            // account endpoint can read a profile with the cookies we just stored.
+                            return confirmAccount(sessionFile, 3);
+                        }
+                        case 800 -> {
+                            lastMessage = "QR code expired";
+                            return CompletableFuture.completedFuture(QrStatus.EXPIRED);
+                        }
+                        case 801 -> {
+                            lastMessage = "Waiting for the NetEase app to scan";
+                            return CompletableFuture.completedFuture(QrStatus.WAITING);
+                        }
+                        default -> {
+                            lastMessage = "Unexpected answer from NetEase (code " + code + ")";
+                            return CompletableFuture.completedFuture(QrStatus.FAILED);
+                        }
                     }
                 });
+    }
+
+    /**
+     * The account call right after a confirm sometimes answers before the new session cookie is
+     * accepted, which used to surface as a bogus "sign in failed". Retry a couple of times.
+     */
+    private static CompletableFuture<QrStatus> confirmAccount(Path sessionFile, int attemptsLeft) {
+        return fetchAccount().thenCompose(ok -> {
+            if (ok) {
+                // The account call can rotate the session cookies, so the file is written again.
+                saveSession(sessionFile);
+                return CompletableFuture.completedFuture(QrStatus.CONFIRMED);
+            }
+            if (attemptsLeft <= 1) {
+                lastMessage = "Signed in, but the account could not be loaded";
+                return CompletableFuture.completedFuture(QrStatus.CONFIRMED);
+            }
+            return CompletableFuture.supplyAsync(() -> {
+                try {
+                    Thread.sleep(700L);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                return null;
+            }).thenCompose(ignored -> confirmAccount(sessionFile, attemptsLeft - 1));
+        });
     }
 
     // ------------------------------------------------------------------

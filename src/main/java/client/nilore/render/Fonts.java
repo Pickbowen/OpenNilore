@@ -18,7 +18,7 @@ public final class Fonts {
     private static final Set<String> awtFontMissing = ConcurrentHashMap.newKeySet();
     private static final Object AWT_LOCK = new Object();
 
-    private static final int MAX_RASTER_VARIANTS = 24;
+    private static final int MAX_RASTER_VARIANTS = 64;
     private static final Map<String, CustomFont> scaledFontCache = new LinkedHashMap<>(16, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<String, CustomFont> eldest) {

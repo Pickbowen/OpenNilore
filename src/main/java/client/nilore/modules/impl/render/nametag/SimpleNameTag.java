@@ -18,6 +18,7 @@ import client.nilore.modules.impl.render.NameTags;
 import client.nilore.modules.impl.world.Teams;
 import client.nilore.render.FontPresets;
 import client.nilore.render.FontRenderer;
+import client.nilore.render.Fonts;
 import client.nilore.render.Paint;
 import client.nilore.render.Renderer;
 import client.nilore.render.RoundedRectangle;
@@ -36,7 +37,9 @@ public class SimpleNameTag extends NameTagStyle {
     private final Map<ItemStack, Vector2f> itemPositions = new HashMap<>();
     private final Set<Entity> seenEntities = new HashSet<>();
     private final List<BlurRect> blurRects = new ArrayList<>();
-    private final FontRenderer font = FontPresets.pingfang(16.0f);
+    private FontRenderer font = FontPresets.pingfang(16.0f);
+    /** 上一次建图集用的光栅倍率; 变了才重建。 */
+    private float cachedRasterScale = -1.0f;
     private Paint paint;
 
     public SimpleNameTag() {
@@ -113,11 +116,21 @@ public class SimpleNameTag extends NameTagStyle {
 
     @Override
     public void onRender2D(Render2DEvent event) {
-        if (this.entityPositions.isEmpty() || mc.level == null || this.font == null) {
+        if (this.entityPositions.isEmpty() || mc.level == null) {
             return;
         }
         this.blurRects.clear();
         float scale = NameTags.INSTANCE.scaleSetting.getValue().floatValue();
+        // nametag 最终是 ctx.scale(scale) 画出来的, 图集必须按 guiScale * scale 光栅化,
+        // 否则 scale < 1 时图集比屏幕像素大, 缩小就是降采样, 字看起来发虚。
+        float rasterScale = Fonts.deviceScale(scale);
+        if (this.font == null || rasterScale != this.cachedRasterScale) {
+            this.font = FontPresets.pingfang(16.0f, rasterScale, true);
+            this.cachedRasterScale = rasterScale;
+        }
+        if (this.font == null) {
+            return;
+        }
         float corner = 6.0f;
         int padding = 4;
         int gap = 4;
