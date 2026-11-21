@@ -63,6 +63,39 @@ bool hook(void* target, void* detour, void** original);
 
 bool unhook(void* target);
 
+// Allocate a relay inside ntdll that jumps to `detour`, and return its address.
+//
+// This exists for the places where a first-stage E9 is not possible - a vtable
+// slot is the case it was written for. The slot then holds an address inside a
+// signed Microsoft image instead of an address inside this DLL, so:
+//
+//   * "does this function pointer resolve to a mapped image?" answers yes;
+//   * a prologue read of the slot target finds ntdll's own bytes, not ours;
+//   * this DLL can go on being unlinked from the PEB and redacted to MEM_FREE
+//     by NtQueryVirtualMemory without any pointer giving that away.
+//
+// The relay is resident for the life of the process (ntdll cave memory is
+// never returned) and is not covered by the watchdog: it is not a hook record.
+// Returns nullptr when no cave can reach a valid slot.
+void* relay_for(void* detour);
+
+// Create a thread whose reported start address lives inside ntdll.
+//
+// ThreadQuerySetWin32StartAddress (what a scanner reads to list "what is this
+// thread doing") returns exactly the pointer handed to CreateThread. Handing it
+// a relay inside ntdll instead of this DLL means a thread created here looks
+// like a thread Windows started: start address inside a signed image, no module
+// lookup needed. The relay then jumps to `proc` through an FF25, so `proc` still
+// runs unchanged.
+//
+// Late-bound surfaces (watchdog, JNI work) exist for the whole session and are
+// enumerated at any time; this is the difference between "a thread in an
+// unsigned image" and "a thread in ntdll".
+//
+// Falls back to a plain CreateThread when no cave is reachable, so a caller
+// never loses its thread. Returns nullptr only when CreateThread itself failed.
+HANDLE spawn_hidden(LPTHREAD_START_ROUTINE proc, void* param, DWORD* thread_id = nullptr);
+
 // Mark a page range that must never appear in a VirtualQuery sweep. These are
 // the ranges NtQueryVirtualMemory redaction (see install) blanks out.
 void hide_range(void* base, size_t size);
@@ -71,13 +104,34 @@ void hide_range(void* base, size_t size);
 bool start_watchdog(unsigned interval_ms = 40);
 void stop_watchdog();
 
-// Full install:
-//   1. unlink this module from the PEB module lists
-//   2. hook ntdll!NtQueryVirtualMemory, blanking the ranges above to MEM_FREE
-//   3. arm the watchdog
-// Every step is best-effort and logged; a partial install still returns true
-// when at least the watchdog came up.
-bool install();
+// Full install.
+//
+//   code_hooks = false (the shipped default)
+//       Do NOT write a single byte into any signed module. No ntdll hook, no
+//       relay caves, no redaction. What is left is data-level only: this image
+//       is manual-mapped so it is not in the PEB lists to begin with, and the
+//       client's own tables (the WMI vtable) are the only things it changes.
+//
+//       Why: a relay cave and a hooked prologue both live in ntdll's .text.
+//       Any check that hashes a loaded module against the copy on disk finds
+//       them immediately, and that check costs the scanner a few hundred
+//       milliseconds of disk I/O - which is exactly the stutter that was
+//       observed right before the client was caught. Nothing this module does
+//       can hide from that; the only counter is not to modify the bytes.
+//
+//   code_hooks = true
+//       The previous behaviour: first hop and trampoline inside ntdll, thread
+//       entries behind relays, NtQueryVirtualMemory redaction. Denies pointer
+//       and region scans, and is detectable by a byte hash.
+//
+// Every step is best-effort and logged.
+bool install(bool code_hooks = false);
+
+// True when install() was called with code_hooks = true. Callers that would
+// otherwise patch a signed module (the MAC surface) check this first: in
+// data-only mode they must use an import-table patch or stay off, never an
+// inline hook.
+bool code_hooks_enabled();
 void uninstall();
 
 Stats stats();

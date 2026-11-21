@@ -1,5 +1,6 @@
 #include "manual_map.h"
 
+#include "inject_support.h"
 #include "loader_settings.h"
 
 #include <psapi.h>
@@ -31,7 +32,7 @@ const IMAGE_NT_HEADERS* nt_of(const void* base) {
 
 // Run LoadLibraryW(name) inside the target process and return the resulting
 // HMODULE seen by that process, or nullptr on failure.
-HMODULE remote_load_library(HANDLE process, const wchar_t* dll_name) {
+HMODULE remote_load_library(HANDLE process, DWORD pid, const wchar_t* dll_name) {
     SIZE_T sz = (std::wcslen(dll_name) + 1) * sizeof(wchar_t);
     LPVOID arg = VirtualAllocEx(process, nullptr, sz,
             MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
@@ -41,23 +42,23 @@ HMODULE remote_load_library(HANDLE process, const wchar_t* dll_name) {
         VirtualFreeEx(process, arg, 0, MEM_RELEASE);
         return nullptr;
     }
-    auto load_lib = reinterpret_cast<LPTHREAD_START_ROUTINE>(GetProcAddress(
+    auto load_lib = reinterpret_cast<void*>(GetProcAddress(
             GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW"));
-    HANDLE thread = CreateRemoteThread(process, nullptr, 0, load_lib, arg, 0, nullptr);
-    if (!thread) {
-        VirtualFreeEx(process, arg, 0, MEM_RELEASE);
-        return nullptr;
-    }
-    WaitForSingleObject(thread, 10000);
-    DWORD ret = 0;
-    GetExitCodeThread(thread, &ret);
-    CloseHandle(thread);
+
+    // Not a bare CreateRemoteThread: see inject_support.h. A machine that blocks
+    // remote thread creation still has to be able to pull in a dependency, or
+    // the whole manual map fails on it.
+    DWORD exit_code = 0, thread_err = 0;
+    const bool ran = remote_call(process, pid, load_lib,
+                                 reinterpret_cast<void*>(arg), 10000,
+                                 &exit_code, &thread_err);
     VirtualFreeEx(process, arg, 0, MEM_RELEASE);
+    if (!ran) return nullptr;
     // On x64 GetExitCodeThread returns a DWORD which truncates HMODULE, but
     // ASLR keeps HMODULEs within 32 bits for almost every module on Windows,
     // so this works in practice. The remote_module enumerator below is the
     // fallback if the truncation ever bites us.
-    return reinterpret_cast<HMODULE>(static_cast<ULONG_PTR>(ret));
+    return reinterpret_cast<HMODULE>(static_cast<ULONG_PTR>(exit_code));
 }
 
 HMODULE find_remote_module(HANDLE process, const wchar_t* name) {
@@ -102,7 +103,7 @@ void apply_relocations(BYTE* image, const IMAGE_NT_HEADERS* nt, ULONGLONG delta)
     }
 }
 
-bool resolve_imports(HANDLE process, BYTE* local_image,
+bool resolve_imports(HANDLE process, DWORD pid, BYTE* local_image,
                      const IMAGE_NT_HEADERS* nt, std::wstring& err) {
     const auto& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
     if (dir.Size == 0) return true;
@@ -115,7 +116,7 @@ bool resolve_imports(HANDLE process, BYTE* local_image,
 
         HMODULE remote_mod = find_remote_module(process, dll_name_w);
         if (!remote_mod) {
-            remote_mod = remote_load_library(process, dll_name_w);
+            remote_mod = remote_load_library(process, pid, dll_name_w);
             if (!remote_mod) remote_mod = find_remote_module(process, dll_name_w);
         }
         if (!remote_mod) {
@@ -192,11 +193,27 @@ std::wstring inject_in_memory(DWORD pid, const void* dll_bytes, size_t dll_size)
         return L"DLL is not x64 (only AMD64 supported)";
     }
 
+    // Elevation first: everything below needs to open the game process, and on a
+    // machine where the launcher ran elevated this is the difference between
+    // "access denied" and working.
+    enable_debug_privilege();
+
     HANDLE process = OpenProcess(
             PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
             PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ,
             FALSE, pid);
-    if (!process) return fmt_err(L"OpenProcess", GetLastError());
+    if (!process) return explain_win32(L"OpenProcess", GetLastError());
+
+    // Bitness gate. The payload is x64, and a 32-bit JVM can never run it - the
+    // old message ("DLL is not x64") was being produced for the DLL, which sent
+    // users looking at the wrong thing. Name the actual culprit.
+    bool target_x86 = false;
+    if (target_bitness(process, target_x86) && target_x86) {
+        CloseHandle(process);
+        return L"Target is a 32-bit Java process. This build only ships an x64 "
+               L"payload, so it cannot map into it. Install 64-bit Java (or point "
+               L"the launcher at a 64-bit runtime) and restart the game.";
+    }
 
     SIZE_T image_size = nt->OptionalHeader.SizeOfImage;
     LPVOID remote_image = VirtualAllocEx(process, nullptr, image_size,
@@ -227,7 +244,7 @@ std::wstring inject_in_memory(DWORD pid, const void* dll_bytes, size_t dll_size)
     apply_relocations(local_image.data(), nt, delta);
 
     std::wstring imp_err;
-    if (!resolve_imports(process, local_image.data(), nt, imp_err)) {
+    if (!resolve_imports(process, pid, local_image.data(), nt, imp_err)) {
         VirtualFreeEx(process, remote_image, 0, MEM_RELEASE);
         CloseHandle(process);
         return imp_err;
@@ -291,17 +308,16 @@ std::wstring inject_in_memory(DWORD pid, const void* dll_bytes, size_t dll_size)
         return fmt_err(L"WriteProcessMemory (shellcode)", err);
     }
 
-    HANDLE thread = CreateRemoteThread(process, nullptr, 0,
-            reinterpret_cast<LPTHREAD_START_ROUTINE>(remote_sc), nullptr, 0, nullptr);
-    if (!thread) {
-        DWORD err = GetLastError();
+    // Not a bare CreateRemoteThread: an AV that blocks remote thread creation
+    // rejects that call while the same request through ntdll, or through an APC
+    // on an existing thread, still goes through. See inject_support.h.
+    DWORD exit_code = 0, thread_err = 0;
+    if (!remote_call(process, pid, remote_sc, nullptr, 30000, &exit_code, &thread_err)) {
         VirtualFreeEx(process, remote_sc, 0, MEM_RELEASE);
         VirtualFreeEx(process, remote_image, 0, MEM_RELEASE);
         CloseHandle(process);
-        return fmt_err(L"CreateRemoteThread", err);
+        return explain_win32(L"CreateRemoteThread", thread_err);
     }
-    WaitForSingleObject(thread, 30000);
-    CloseHandle(thread);
 
     VirtualFreeEx(process, remote_sc, 0, MEM_RELEASE);
     // Leave remote_image allocated - the DLL stays mapped in the target's

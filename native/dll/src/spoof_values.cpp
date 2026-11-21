@@ -14,6 +14,9 @@
 #include <intrin.h>
 #endif
 
+#include "hwid_config.h"
+#include "openzen.h"
+
 namespace hwid {
 
 namespace {
@@ -408,7 +411,15 @@ std::wstring reshape_uuid(const std::wstring& real, Rng& rng) {
     }
 
     const wchar_t* hex = lower ? L"0123456789abcdef" : L"0123456789ABCDEF";
-    for (size_t i = 8; i < s.size(); ++i) {
+    // Every hex digit is reseeded, including the first group.
+    //
+    // Keeping the real leading 8 characters ("the first four bytes are real,
+    // the rest is not") reads as a plausible UUID to anyone who has never seen
+    // this machine, and as an obvious edit to anyone who has: a server that
+    // stored the real UUID once will match the prefix and flag the change. A
+    // fully independent value has no such relationship, and nothing in SMBIOS
+    // promises that the leading group means anything.
+    for (size_t i = 0; i < s.size(); ++i) {
         if (s[i] == L'-') continue;
         s[i] = hex[rng.below(16)];
     }
@@ -466,6 +477,28 @@ SpoofValues build(const RealValues& r) {
     hash_mix(seed, r.disk_serial);
     hash_mix(seed, r.machine_guid);
     hash_mix(seed, r.processor_id);
+
+    // Operator seed. Everything above makes the fake identity a pure function
+    // of the hardware, which is the right shape for "the scanner must not see a
+    // VM or an inconsistency" and the wrong shape for "this identity is burned,
+    // I need another one": the same machine presents the same fake forever.
+    //
+    // Mixing a user-chosen value in (openzen_hwid.ini `seed=`) keeps every
+    // derivation deterministic and internally consistent, but moves the whole
+    // set to a new identity. The avalanche step matters: seed=1 and seed=2 must
+    // not produce neighbouring values that look like a re-imaged machine.
+    if (const unsigned long long salt = config().seed; salt != 0) {
+        uint64_t s = static_cast<uint64_t>(salt) ^ 0xD1B54A32D192ED03ull;
+        s ^= s >> 30;
+        s *= 0xBF58476D1CE4E5B9ull;
+        s ^= s >> 27;
+        s *= 0x94D049BB133111EBull;
+        s ^= s >> 31;
+        seed ^= s;
+        openzen::log::info("HWID profile: rotating identity with seed 0x%llX",
+                           static_cast<unsigned long long>(salt));
+    }
+
     Rng rng(seed);
 
     SpoofValues v;

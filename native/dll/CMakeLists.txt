@@ -26,6 +26,7 @@ add_library(OpenZen SHARED
     src/hwid_net.cpp
     src/iat_patch.cpp
     src/inline_hook.cpp
+    src/jni_probe.cpp
     src/nt_guard.cpp
     src/spoof_values.cpp
     res/openzen.rc

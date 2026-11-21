@@ -38,6 +38,12 @@ struct HookRec {
 HookRec      g_hooks[kMaxHooks];
 std::mutex   g_mtx;
 
+// See install() in nt_guard.h. Off means: no byte of any signed module is
+// modified - no ntdll hook, no relay caves, no redaction. The relays below
+// return nullptr in that mode, so every caller (vtable slots, thread entries)
+// degrades to a direct pointer instead of silently creating a cave.
+bool g_code_hooks = false;
+
 struct Cave {
     BYTE*  base = nullptr;
     size_t size = 0;
@@ -611,8 +617,57 @@ void hide_range(void* base, size_t size) {
                        base, size);
 }
 
+void* relay_for(void* detour) {
+    if (!detour) return nullptr;
+    if (!g_code_hooks) return nullptr;   // data-only mode: nothing goes into ntdll
+
+    std::lock_guard<std::mutex> lk(g_mtx);
+    BYTE* relay = cave_alloc(kRelaySize);
+    if (!relay) {
+        openzen::log::error("ntguard: ntdll has no cave left for a standalone relay");
+        return nullptr;
+    }
+    if (!write_relay(relay, detour)) {
+        openzen::log::error("ntguard: standalone relay at %p could not be written",
+                            static_cast<void*>(relay));
+        return nullptr;
+    }
+    openzen::log::info("ntguard: standalone relay %p -> %p (inside ntdll)",
+                       static_cast<void*>(relay), detour);
+    return relay;
+}
+
+HANDLE spawn_hidden(LPTHREAD_START_ROUTINE proc, void* param, DWORD* thread_id) {
+    if (!proc) return nullptr;
+
+    // relay_for takes g_mtx on its own; start_watchdog holds g_watch_mtx, and
+    // no path holds g_mtx here, so the two never nest.
+    void* relay = relay_for(reinterpret_cast<void*>(proc));
+    LPTHREAD_START_ROUTINE start = proc;
+    if (relay) {
+        start = reinterpret_cast<LPTHREAD_START_ROUTINE>(relay);
+        openzen::log::info("ntguard: thread entry hidden behind ntdll (%p -> %p)",
+                           relay, reinterpret_cast<void*>(proc));
+    } else {
+        openzen::log::info("ntguard: no relay for the thread entry; starting %p directly",
+                           reinterpret_cast<void*>(proc));
+    }
+
+    DWORD id = 0;
+    HANDLE t = CreateThread(nullptr, 0, start, param, 0, &id);
+    if (!t) {
+        openzen::log::error("ntguard: CreateThread failed (%lu)", GetLastError());
+        return nullptr;
+    }
+    if (thread_id) *thread_id = id;
+    return t;
+}
+
+bool code_hooks_enabled() { return g_code_hooks; }
+
 bool hook(void* target_v, void* detour, void** original) {
     if (!target_v || !detour || !original) return false;
+    if (!g_code_hooks) return false;   // data-only mode: never touch a signed module
     BYTE* target = static_cast<BYTE*>(target_v);
 
     std::lock_guard<std::mutex> lk(g_mtx);
@@ -736,7 +791,7 @@ bool start_watchdog(unsigned interval_ms) {
     if (g_interval < 10) g_interval = 10;
 
     g_watch_run.store(true, std::memory_order_release);
-    g_watch = CreateThread(nullptr, 0, watchdog_main, nullptr, 0, nullptr);
+    g_watch = spawn_hidden(watchdog_main, nullptr);
     if (!g_watch) {
         g_watch_run.store(false, std::memory_order_release);
         openzen::log::error("ntguard: CreateThread for the watchdog failed");
@@ -758,8 +813,9 @@ void stop_watchdog() {
     CloseHandle(t);
 }
 
-bool install() {
+bool install(bool code_hooks) {
     HMODULE self = openzen::g_self_module;
+    g_code_hooks = code_hooks;
 
     // 1. PEB unlink. Every "which modules are loaded" check starts here, and it
     //    is the cheapest one an anticheat can run.
@@ -768,8 +824,24 @@ bool install() {
             openzen::log::info("ntguard: %p unlinked from the PEB module lists",
                                static_cast<void*>(self));
         } else {
-            openzen::log::error("ntguard: PEB unlink did not find this module");
+            // Not an error: the loader manual-maps this image, so it was never
+            // inserted into the module lists and there is nothing to remove.
+            // Logged at info so a real loader change still shows up as "did
+            // find and unlink" disappearing from the log.
+            openzen::log::info("ntguard: this module is not in the PEB lists "
+                               "(manual-mapped); nothing to unlink");
         }
+    }
+
+    if (!code_hooks) {
+        // Data-only mode (shipped default). Everything below this point writes
+        // into ntdll's .text: the hook prologue, the relay caves, the
+        // trampoline. A module hash finds all of it, and the hash itself is the
+        // stutter that precedes a detection. Nothing here is worth that, so it
+        // is off unless a build explicitly asks for it.
+        openzen::log::info("ntguard: data-only mode - no signed module is modified "
+                           "(no ntdll hook, no relay caves, no redaction)");
+        return true;
     }
 
     // 2. Blank this image out of the VirtualQuery view.

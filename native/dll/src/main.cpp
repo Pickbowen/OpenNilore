@@ -6,11 +6,14 @@
 #include "hwid_firmware.h"
 #include "hwid_disk.h"
 #include "hwid_net.h"
+#include "jni_probe.h"
 #include "nt_guard.h"
 #include "spoof_values.h"
 
 #include <atomic>
+#include <cstdio>
 #include <cstring>
+#include <ctime>
 
 namespace openzen {
     HMODULE g_self_module = nullptr;
@@ -24,6 +27,30 @@ void report_install(const char* what, int code) {
     if (code > 0) openzen::log::info("  %-32s active", what);
     else if (code == 0) openzen::log::info("  %-32s armed, no importer yet", what);
     else openzen::log::info("  %-32s unavailable", what);
+}
+
+// The vtable installer reports its own status codes, and a partial or
+// self-check-vetoed install is NOT "active": the bitmap of "which slots are
+// live" is the whole point of having the codes.
+void report_wmi_vtbl(int status) {
+    switch (status) {
+        case hwid::kWmiVtblFull:
+            openzen::log::info("  %-32s active (all slots + self check)",
+                               "WMI vtable (UUID/disk/board)");
+            break;
+        case hwid::kWmiVtblPartial:
+            openzen::log::info("  %-32s PARTIAL - see the WMI vtbl lines above",
+                               "WMI vtable (UUID/disk/board)");
+            break;
+        case hwid::kWmiVtblNothing:
+            openzen::log::info("  %-32s armed, provider not reachable yet",
+                               "WMI vtable (UUID/disk/board)");
+            break;
+        default:
+            openzen::log::info("  %-32s unavailable",
+                               "WMI vtable (UUID/disk/board)");
+            break;
+    }
 }
 
 // Log the exact values this process will now report, once, at startup. This is
@@ -40,9 +67,46 @@ void log_profile() {
                        hwid::narrow_ascii(v.processor_id).c_str());
 }
 
+// Which build is actually running, as one token. The loader embeds this DLL,
+// so "I rebuilt it" and "the game ran the rebuilt one" are different facts and
+// the log has to be able to tell them apart.
+const char* self_build_stamp() {
+    static char buf[40];
+    static bool done = false;
+    if (done) return buf;
+    done = true;
+
+    HMODULE self = openzen::g_self_module;
+    if (!self) self = GetModuleHandleW(nullptr);
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(self);
+    if (!self || dos->e_magic != IMAGE_DOS_SIGNATURE) {
+        std::snprintf(buf, sizeof buf, "unknown");
+        return buf;
+    }
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(
+        reinterpret_cast<BYTE*>(self) + dos->e_lfanew);
+    const DWORD stamp = nt->FileHeader.TimeDateStamp;
+    std::tm tm{};
+    const time_t tt = static_cast<time_t>(stamp);
+    gmtime_s(&tm, &tt);
+    std::snprintf(buf, sizeof buf, "%04d-%02d-%02d.%02d%02dZ",
+                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min);
+    return buf;
+}
+
 void install_hwid_surfaces() {
     const hwid::Config& cfg = hwid::config();
-    if (!cfg.enabled) {
+
+    // One line that makes the log self-explanatory: which build, which file,
+    // what it parsed to, and whether an environment variable overrode it.
+    static std::atomic<bool> config_logged{false};
+    if (!config_logged.exchange(true)) {
+        openzen::log::info("OpenZen build %s | HWID enabled=%d surfaces=%ls seed=0x%llX",
+                           self_build_stamp(), cfg.enabled ? 1 : 0, cfg.surfaces.c_str(),
+                           static_cast<unsigned long long>(cfg.seed));
+    }
+
+    if (!cfg.enabled) {   // constant today; kept so the branch cannot be lost
         openzen::log::info("HWID spoof disabled by configuration");
         return;
     }
@@ -60,7 +124,18 @@ void install_hwid_surfaces() {
     if (hwid::surface_on("wmi")) {
         // vtable patch first: no import table is touched, so an anticheat that
         // diffs its own IAT sees nothing.
-        report_install("WMI vtable (UUID/disk/board)", hwid::install_wmi_vtbl());
+        //
+        // One silent retry, 300 ms later. COM is only usable once the JVM (and
+        // the toolkit inside it) has brought combase up; the first attempt can
+        // land just before that. Two attempts total, capped inside the
+        // installer as well - the probe is the one thing here that has crashed
+        // this process before, so it does not get to loop.
+        int vtbl = hwid::install_wmi_vtbl();
+        if (vtbl != hwid::kWmiVtblFull) {
+            Sleep(300);
+            vtbl = hwid::install_wmi_vtbl(true);
+        }
+        report_wmi_vtbl(vtbl);
         if (!hwid::wmi_vtbl_active() && hwid::surface_on("wmipx")) {
             // Only on request: this path patches IAT slots and hands out proxy
             // objects, which is exactly what the vtable patch exists to avoid.
@@ -79,6 +154,11 @@ void install_hwid_surfaces() {
     if (hwid::surface_on("disk")) {
         report_install("disk IOCTL (legacy)", hwid::install_disk());
     }
+
+    // One line that answers "is the spoof up" without reading the rest of the
+    // log, and says exactly which surfaces are live.
+    openzen::log::info("HWID spoof armed: surfaces=%ls",
+                       hwid::config().surfaces.c_str());
 }
 
 // Early-mode risk: the loader injects the moment a Minecraft window appears,
@@ -145,6 +225,12 @@ DWORD WINAPI inject_thread(LPVOID) {
     }
     log::info("Attached bootstrap thread to JavaVM");
 
+    // Read-only recon of the JNI boundary, and the first thing that runs after
+    // we are attached: an anticheat that watches native -> Java traffic plants
+    // its tripwire in these two dispatch tables, and the answer decides whether
+    // our own JNI calls are safe to make at all. It patches nothing.
+    jnipro::install(vm);
+
     std::wstring jar_path;
     if (!jar::extract_embedded(jar_path)) {
         vm->DetachCurrentThread();
@@ -196,7 +282,11 @@ DWORD WINAPI inject_thread(LPVOID) {
     //   - the watchdog thread re-seats any byte an integrity scan restored
     // It runs after every HWID surface is armed and before the game jar loads,
     // which is the first moment an anticheat can be looking at this process.
-    report_install("native guard (ntdll relay+watchdog)", ntguard::install() ? 1 : 0);
+    // Relay mode: the one session that got through ran with the image hidden and
+    // its threads behind ntdll relays, so that posture is kept. The trade is
+    // known: first hops and trampolines live inside ntdll, which a byte hash
+    // can see. Hiding wins over "no modification" on the evidence available.
+    report_install("native guard (ntdll relay+watchdog)", ntguard::install(true) ? 1 : 0);
 
     jclass bridge_cls = classes::load_dll_bootstrap(env, game_loader, jar_path);
     if (!bridge_cls) {
@@ -236,6 +326,28 @@ DWORD WINAPI inject_thread(LPVOID) {
 
 } // namespace
 
+// The thread DllMain creates necessarily starts inside this DLL - that is what
+// CreateThread does with the pointer it is given. It is also the most visible
+// object this client owns: a thread whose start address belongs to no mapped
+// image, enumerable with one NtQueryInformationThread for as long as it runs.
+//
+// This launcher exists for a few milliseconds. It hands the real work to a
+// thread whose entry is an ntdll relay (see ntguard::spawn_hidden), then exits,
+// so the long-lived bootstrap thread answers "which module started you?" with
+// ntdll instead of this DLL.
+DWORD WINAPI bootstrap_launcher(LPVOID) {
+    openzen::log::init();
+
+    HANDLE t = ntguard::spawn_hidden(inject_thread, nullptr);
+    if (t) {
+        CloseHandle(t);
+        return 0;
+    }
+    // No usable ntdll cave: run the bootstrap on this thread rather than
+    // leaving the client unloaded.
+    return inject_thread(nullptr);
+}
+
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         // Idempotence: if the loader injects twice (or the host calls
@@ -249,7 +361,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
         DisableThreadLibraryCalls(module);
         // Never call JNI from inside DllMain - the loader lock is held. Kick
         // a separate worker thread that will do all the heavy lifting.
-        HANDLE t = CreateThread(nullptr, 0, inject_thread, nullptr, 0, nullptr);
+        HANDLE t = CreateThread(nullptr, 0, bootstrap_launcher, nullptr, 0, nullptr);
         if (t) CloseHandle(t);
     }
     return TRUE;

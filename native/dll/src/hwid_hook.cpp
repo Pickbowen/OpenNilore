@@ -10,7 +10,10 @@
 #include <string>
 #include <vector>
 
+#include "openzen.h"
 #include "iat_patch.h"
+#include "inline_hook.h"
+#include "nt_guard.h"
 #include "spoof_values.h"
 
 namespace hwid {
@@ -201,6 +204,51 @@ RegQueryValueExW_t real_reg_query() {
     return g_real;
 }
 
+// Hook the *body* of a registry API instead of the import tables.
+//
+// The anticheat in this process resolves APIs itself: it walks the PEB module
+// list, hashes every export name with fnv-1a (per-site random basis) and calls
+// the address it gets. A pointer obtained that way never passes through any
+// module's import table, so every IAT slot we patch is invisible to it - it
+// keeps reading the real value while the game and the JVM see the fake.
+//
+// On Windows 10+ the advapi32 export is a forwarder (`jmp kernelbase!...`),
+// which cannot carry a 5-byte rel32 and would be pointless to patch anyway, so
+// the implementation in kernelbase is the target. ntguard keeps the first hop
+// and the trampoline inside ntdll's image: a prologue check of the hooked
+// function then reads as an ordinary kernel32 -> ntdll jump, and a VirtualQuery
+// sweep finds no private executable page.
+bool hook_registry_body(const char* name, void* hook, void** original) {
+    const char* const hosts[] = {"kernelbase.dll", "advapi32.dll"};
+
+    for (const char* host : hosts) {
+        HMODULE mod = GetModuleHandleA(host);
+        if (!mod) continue;
+        void* target = reinterpret_cast<void*>(GetProcAddress(mod, name));
+        if (!target) continue;
+        if (ntguard::hook(target, hook, original)) {
+            openzen::log::info("HWID reg spoof: ntdll-relay hook on %s!%s (%p)",
+                               host, name, target);
+            return true;
+        }
+    }
+
+    // Second choice: a plain inline hook. It still covers self-resolving
+    // callers, at the cost of a private trampoline page.
+    for (const char* host : hosts) {
+        HMODULE mod = GetModuleHandleA(host);
+        if (!mod) continue;
+        void* target = reinterpret_cast<void*>(GetProcAddress(mod, name));
+        if (!target) continue;
+        if (install_inline_hook(target, hook, original)) {
+            openzen::log::info("HWID reg spoof: inline hook on %s!%s (%p), "
+                               "private trampoline", host, name, target);
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 int install() {
@@ -211,13 +259,39 @@ int install() {
     // read from another thread never pays for the initialisation.
     values();
 
-    int patched = install_import("ADVAPI32.dll", "RegQueryValueExW",
+    int hooked = 0;
+    void* trampoline = nullptr;
+
+    // Body hooks first: only these cover a caller that resolved the API through
+    // the PEB export tables instead of an import table.
+    if (hook_registry_body("RegQueryValueExW",
+                           reinterpret_cast<void*>(&HookRegQueryValueExW), &trampoline)) {
+        g_real = reinterpret_cast<RegQueryValueExW_t>(trampoline);
+        ++hooked;
+    }
+    trampoline = nullptr;
+    if (hook_registry_body("RegGetValueW",
+                           reinterpret_cast<void*>(&HookRegGetValueW), &trampoline)) {
+        g_real_reg_get = reinterpret_cast<RegGetValueW_t>(trampoline);
+        ++hooked;
+    }
+
+    // Whatever the body hook could not take still gets the import-table patch,
+    // which at least covers the game and the JVM. Never both for one function:
+    // a body hook plus an IAT hook on the same callee would forward into the
+    // trampoline twice.
+    if (!g_real) {
+        hooked += install_import("ADVAPI32.dll", "RegQueryValueExW",
                                  reinterpret_cast<void*>(&HookRegQueryValueExW));
-    patched += install_import("ADVAPI32.dll", "RegGetValueW",
-                              reinterpret_cast<void*>(&HookRegGetValueW));
-    g_patch_count = patched;
-    g_active = patched > 0;
-    return patched;
+    }
+    if (!g_real_reg_get) {
+        hooked += install_import("ADVAPI32.dll", "RegGetValueW",
+                                 reinterpret_cast<void*>(&HookRegGetValueW));
+    }
+
+    g_patch_count = hooked;
+    g_active = hooked > 0;
+    return hooked;
 }
 
 bool active() {

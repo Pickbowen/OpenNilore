@@ -31,6 +31,7 @@ import client.nilore.patch.EntityRenderDispatcherPatch;
 import client.nilore.patch.EntityRendererPatch;
 import client.nilore.patch.FriendlyByteBufPatch;
 import client.nilore.patch.GuiPatch;
+import client.nilore.patch.BiomePatch;
 import client.nilore.patch.BlockOcclusionCachePatch;
 import client.nilore.patch.GameRendererPatch;
 import client.nilore.patch.HumanoidModelPatch;
@@ -182,6 +183,7 @@ public class NiloreClient extends ClientBase {
         PatchRegistry.register(EntityPatch.class);
         PatchRegistry.register(PlayerPatch.class);
         PatchRegistry.register(ClientLevelPatch.class);
+        PatchRegistry.register(BiomePatch.class);
         PatchRegistry.register(ConnectionPatch.class);
         PatchRegistry.register(PacketUtilsPatch.class);
         PatchRegistry.register(KeyboardHandlerPatch.class);

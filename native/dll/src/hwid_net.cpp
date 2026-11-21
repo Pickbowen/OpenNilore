@@ -12,6 +12,7 @@
 #include "openzen.h"
 #include "iat_patch.h"
 #include "inline_hook.h"
+#include "nt_guard.h"
 #include "spoof_values.h"
 
 namespace hwid {
@@ -85,12 +86,35 @@ int install_net() {
     // This is the technique Cheart's own spoof DLL uses (Detours inline hook),
     // and GetAdaptersAddresses has a relocatable prologue
     // (mov r11,rsp; push rdi; sub rsp,0x60), which is what makes it safe here.
+    // First choice: ntguard, whose first hop lands in ntdll.
+    //
+    // A plain inline hook leaves `E9 <rel32> -> OpenZen.dll` in the function
+    // prologue. Two checks kill that against a native anticheat:
+    //   * a byte-hash of the first N bytes no longer matches the vendor build;
+    //   * the jmp target resolves into a MEM_PRIVATE RWX page, which is exactly
+    //     the "committed + executable, not backed by an image" test a scanner
+    //     runs on every suspicious address.
+    // GetAdaptersAddresses is in the anticheat's own import table, so its
+    // prologue is a cheap thing for it to look at. ntguard keeps both the first
+    // hop and the trampoline inside ntdll's image, so the prologue reads as an
+    // ordinary kernel32 -> ntdll jump and no private executable page exists.
     void* original = nullptr;
-    if (install_inline_hook(entry, reinterpret_cast<void*>(&HookGetAdaptersAddresses),
+    const bool may_patch_code = ntguard::code_hooks_enabled();
+    if (may_patch_code &&
+        ntguard::hook(entry, reinterpret_cast<void*>(&HookGetAdaptersAddresses), &original)) {
+        g_real = reinterpret_cast<GetAdaptersAddresses_t>(original);
+        g_ready = true;
+        openzen::log::info("HWID MAC spoof: ntdll-relay hook on iphlpapi!GetAdaptersAddresses");
+        return 1;
+    }
+
+    if (may_patch_code &&
+        install_inline_hook(entry, reinterpret_cast<void*>(&HookGetAdaptersAddresses),
                             &original)) {
         g_real = reinterpret_cast<GetAdaptersAddresses_t>(original);
         g_ready = true;
-        openzen::log::info("HWID MAC spoof: inline hook on iphlpapi!GetAdaptersAddresses");
+        openzen::log::info("HWID MAC spoof: inline hook on iphlpapi!GetAdaptersAddresses "
+                           "(private trampoline; ntguard declined)");
         return 1;
     }
 

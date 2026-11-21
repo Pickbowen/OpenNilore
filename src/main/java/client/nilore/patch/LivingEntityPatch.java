@@ -44,10 +44,14 @@ public class LivingEntityPatch {
     public static boolean overwriteHasEffect(LivingEntity entity, MobEffect effect) throws Exception {
         if (ClientBase.mc != null
                 && entity == ClientBase.mc.player
-                && effect == MobEffects.NIGHT_VISION
                 && FullBright.INSTANCE != null
                 && FullBright.INSTANCE.isEnabled()) {
-            return true;
+            if (effect == MobEffects.NIGHT_VISION) {
+                return true;
+            }
+            if (effect == MobEffects.BLINDNESS && FullBright.INSTANCE.antiBlindness.getValue()) {
+                return false;
+            }
         }
         Map<MobEffect, MobEffectInstance> activeEffects =
                 (Map<MobEffect, MobEffectInstance>) ReflectionUtil.getStaticField(entity, "activeEffects", "net/minecraft/world/entity/LivingEntity");

@@ -68,7 +68,7 @@ COMBAT, MOVEMENT, PLAYER, RENDER, EXPLOIT, WORLD, MISC
 - `helper/`: HelperBase
 - `helper/impl/`: BlockLava, BlockWater, ExtinguishFire, SelfExtinguish
 
-**render/ (22)**: Armor, AspectRatio, ChestESP, ClickGuiModule, Compass, DamageGlow, ESP, EntityEditor, FakeAntiAim, FullBright, Interface, ItemTags, LyricsModule, NameProtect, NameTags, NoFov, NoHurtCam, OldHitting, Projectiles, TimeWeather, Watermark, XRay
+**render/ (22)**: Armor, AspectRatio, ChestESP, ClickGuiModule, Compass, DamageGlow, ESP, EntityEditor, FakeAntiAim, FullBright, Interface, ItemTags, LyricsModule, NameProtect, NameTags, NoFov, NoHurtCam, OldHitting, Projectiles, Ambience, Watermark, XRay
 - `esp/`: ArrowEspColor, ClassEspColor, EspColorProvider, PotionEspColor
 - `nametag/`: NameTagStyle, OpalNameTag, SimpleNameTag
 
