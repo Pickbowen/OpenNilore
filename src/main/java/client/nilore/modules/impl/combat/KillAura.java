@@ -66,7 +66,6 @@ import client.nilore.settings.impl.ModeSetting;
 import client.nilore.settings.impl.NumberSetting;
 import client.nilore.utils.game.EntityUtil;
 import client.nilore.utils.game.ItemUtil;
-import client.nilore.utils.game.MotionSimulator;
 import client.nilore.utils.game.RotationUtil;
 import client.nilore.utils.math.MathUtil;
 import client.nilore.utils.misc.Assets;
@@ -92,6 +91,7 @@ public class KillAura extends Module {
 
     private static final double MAX_REACH = 3.0;
 
+    private static final int JELLO_RINGS = 4;
     private static final double JELLO_GRADIENT_HEIGHT = 4.2;
     private static final float JELLO_END_ALPHA = 0.6f;
     private static final double JELLO_RING_WIDTH = 0.01;
@@ -297,18 +297,8 @@ public class KillAura extends Module {
         }
     }
 
-    /**
-     * 基线 {@code canAttackNow()} 里的 keepSprint 三道门: 命中任何一条, aura 这一拍就不出手。
-     *
-     * <p>{@code isInDelayWindow() && shouldKeepSprintInDelayWindow()} 是 keepsprint 与 antikb 的
-     * 契约: 窗口还攥着输入时 aura 让开, 窗口自己的 {@code isSprinting()} 才不会被打破。
-     * 最后一条是"疾跑时先不打" —— Sprint 模块每拍问一次 {@code canCritUnderVelocity()},
-     * 成立就掉疾跑, 下一拍这里自然放行, 于是那一刀是暴击。
-     */
+    /** NoXZ 等待击退时绕过保疾跑暂停门；反打期由 attackTick 单独互斥。 */
     private boolean keepSprintGate() {
-        if (NoXZMode.isInDelayWindow() && shouldKeepSprintInDelayWindow()) {
-            return true;
-        }
         return this.keepSprint.getValue()
                 && mc.player != null
                 && mc.player.isSprinting()
@@ -611,10 +601,12 @@ public class KillAura extends Module {
     }
 
     public static boolean shouldKeepSprintInDelayWindow() {
-        if (mc.player == null || mc.level == null) return false;
-        if (mc.player.onGround() || NoXZMode.isCountering()) return true;
-        if (mc.player.getDeltaMovement().y > 0 || mc.player.fallDistance <= 0.0f) return false;
-        return new MotionSimulator(mc.player).findLandingBlock(1) != null;
+        return mc.player != null && mc.level != null && NoXZMode.isInDelayWindow();
+    }
+
+    /** 对应参考 Aura 计时器复位，避免反打收尾后立即消费积存的 APS。 */
+    public void onVelocityAttack() {
+        this.attacks = 0.0f;
     }
 
     private boolean canAttackTarget() {
@@ -868,7 +860,7 @@ public class KillAura extends Module {
 
         AABB box = EntityUtil.getInterpolatedAABB(entity, partialTick);
         Vec3 pos = EntityUtil.getInterpolatedPos(entity, partialTick);
-        double radius = Math.max((box.maxX - box.minX) - 0.25, 0.02);
+        double radius = Math.max((box.maxX - box.minX) - 0.20, 0.02);
         double height = box.maxY - box.minY;
 
         double lastY = this.jelloYPos;
@@ -912,10 +904,13 @@ public class KillAura extends Module {
             float oz2 = (float) (pos.z + Math.cos(a2) * radius);
             float ix2 = (float) (pos.x - Math.sin(a2) * innerRadius);
             float iz2 = (float) (pos.z + Math.cos(a2) * innerRadius);
-            builder.vertex(matrix, ox1, (float) bottomY, oz1).color(1.0f, 1.0f, 1.0f, 1.0f).endVertex();
-            builder.vertex(matrix, ix1, (float) bottomY, iz1).color(1.0f, 1.0f, 1.0f, 1.0f).endVertex();
-            builder.vertex(matrix, ix2, (float) bottomY, iz2).color(1.0f, 1.0f, 1.0f, 1.0f).endVertex();
-            builder.vertex(matrix, ox2, (float) bottomY, oz2).color(1.0f, 1.0f, 1.0f, 1.0f).endVertex();
+            for (int ring = 0; ring < JELLO_RINGS; ++ring) {
+                float ringY = (float) (bottomY + deltaY * ring / (JELLO_RINGS - 1));
+                builder.vertex(matrix, ox1, ringY, oz1).color(1.0f, 1.0f, 1.0f, 1.0f).endVertex();
+                builder.vertex(matrix, ix1, ringY, iz1).color(1.0f, 1.0f, 1.0f, 1.0f).endVertex();
+                builder.vertex(matrix, ix2, ringY, iz2).color(1.0f, 1.0f, 1.0f, 1.0f).endVertex();
+                builder.vertex(matrix, ox2, ringY, oz2).color(1.0f, 1.0f, 1.0f, 1.0f).endVertex();
+            }
         }
         BufferUploader.drawWithShader(builder.end());
 

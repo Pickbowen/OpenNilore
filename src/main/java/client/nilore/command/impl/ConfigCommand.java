@@ -1,5 +1,6 @@
 package client.nilore.command.impl;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.List;
 import client.nilore.NiloreClient;
@@ -74,8 +75,14 @@ public class ConfigCommand extends Command {
     }
 
     private void openFolder() {
+        // The folder the command opens is the one holding the user's saved
+        // profiles, not the internal working directory next to it.
+        ConfigManager.ensureSavedConfigsDir();
+        File dir = ConfigManager.SAVED_CONFIGS_DIR;
         try {
-            Runtime.getRuntime().exec("explorer " + ConfigManager.CONFIG_DIR.getAbsolutePath());
+            // Quote the path: the home directory routinely contains spaces and
+            // an unquoted argument makes explorer open somewhere else.
+            Runtime.getRuntime().exec("explorer \"" + dir.getAbsolutePath() + "\"");
         } catch (IOException ignored) {
         }
     }

@@ -314,11 +314,14 @@ RealValues collect_real() {
 // ---------------------------------------------------------------------------
 
 wchar_t reseed_char(wchar_t c, Rng& rng, bool hex_only) {
-    // Exclude the glyphs vendors avoid printing on a label (I, O, 0, 1) but
-    // keep the position's character class, which is what parsers key on.
-    static const wchar_t kUpper[] = L"ABCDEFGHJKLMNPQRSTUVWXYZ";
-    static const wchar_t kLower[] = L"abcdefghijkmnopqrstuvwxyz";
-    static const wchar_t kDigit[] = L"23456789";
+    // Keep the position's full character class. An earlier version dropped the
+    // glyphs vendors avoid printing on a label (I, O, 0, 1). That sounds right
+    // and measures wrong: real OEM serials are full of 0 and 1
+    // ("S417NBCV00KYC3MB", "S4N0CV15N828181"), so a fifteen-character serial
+    // with neither glyph in it is a distribution no vendor ever shipped.
+    static const wchar_t kUpper[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    static const wchar_t kLower[] = L"abcdefghijklmnopqrstuvwxyz";
+    static const wchar_t kDigit[] = L"0123456789";
     static const wchar_t kHexU[] = L"ABCDEF";
     static const wchar_t kHexL[] = L"abcdef";
 
@@ -332,9 +335,9 @@ wchar_t reseed_char(wchar_t c, Rng& rng, bool hex_only) {
         if (c >= L'a' && c <= L'f') return kHexL[rng.below(6)];
         return c;
     }
-    if (c >= L'A' && c <= L'Z') return kUpper[rng.below(24)];
-    if (c >= L'a' && c <= L'z') return kLower[rng.below(25)];
-    if (c >= L'0' && c <= L'9') return kDigit[rng.below(8)];
+    if (c >= L'A' && c <= L'Z') return kUpper[rng.below(26)];
+    if (c >= L'a' && c <= L'z') return kLower[rng.below(26)];
+    if (c >= L'0' && c <= L'9') return kDigit[rng.below(10)];
     return c;   // separators, spaces and punctuation are structural
 }
 
@@ -362,6 +365,25 @@ std::wstring reshape(const std::wstring& real, size_t keep, Rng& rng, const wcha
     std::wstring out = base;
     for (size_t i = keep; i < out.size(); ++i) out[i] = reseed_char(out[i], rng, hex_only);
     return out;
+}
+
+// Boards that never filled their DMI strings report one of these verbatim, and
+// on the machine that has it the placeholder IS the real value. Reseeding a
+// placeholder produces a string no firmware can emit ("To bq lklltd fn N.P.F."),
+// which is a far stronger spoof signal than the placeholder itself - a scanner
+// skips the known placeholders, it does not skip nonsense. Pass them through.
+bool is_placeholder_serial(const std::wstring& s) {
+    static const wchar_t* const kPlaceholders[] = {
+        L"to be filled by o.e.m.", L"to be filled by oem", L"default string",
+        L"system serial number", L"base board serial number", L"chassis serial number",
+        L"system manufacturer", L"system product name", L"none", L"not applicable",
+        L"not specified", L"unknown", L"o.e.m.", L"0123456789", L"1234567890",
+        L"123456789", L"0123456789abcdef", nullptr,
+    };
+    for (int i = 0; kPlaceholders[i]; ++i) {
+        if (_wcsicmp(s.c_str(), kPlaceholders[i]) == 0) return true;
+    }
+    return false;
 }
 
 // Reseed only the hex digits, preserving the 8-4-4-4-12 layout, the leading
@@ -393,7 +415,29 @@ std::wstring reshape_uuid(const std::wstring& real, Rng& rng) {
     return s;
 }
 
-std::wstring derive_product_id(const std::wstring& real, Rng& rng) {
+// Windows does not write MachineGuid by hand: UuidCreate always emits RFC 4122
+// version 4 with the RFC variant, so the first nibble of the third group is
+// always '4' and the first nibble of the fourth group is always 8, 9, a or b.
+// The general reshape reseeds both, which produces a value Windows cannot
+// produce in 63 of 64 cases - one comparison, no analysis. Put the two nibbles
+// back where Windows keeps them and leave the rest derived.
+std::wstring force_uuid_v4(std::wstring s, Rng& rng) {
+    if (s.size() != 36) return s;
+    static const wchar_t kVarLower[] = L"89ab";
+    static const wchar_t kVarUpper[] = L"89AB";
+    const bool lower = (s[19] >= L'a' && s[19] <= L'f');
+    const wchar_t* variants = lower ? kVarLower : kVarUpper;
+
+    s[14] = L'4';
+    const wchar_t cur = s[19];
+    if (cur != variants[0] && cur != variants[1] &&
+        cur != variants[2] && cur != variants[3]) {
+        s[19] = variants[rng.below(4)];
+    }
+    return s;
+}
+
+[[maybe_unused]] std::wstring derive_product_id(const std::wstring& real, Rng& rng) {
     // Retail/OEM Windows ProductId look like 00330-80000-00000-AA123.
     // Keep the group layout and reseed digits only.
     std::wstring s = real;
@@ -431,12 +475,18 @@ SpoofValues build(const RealValues& r) {
         std::wstring real = r.machine_guid;
         if (real.size() != 36) real = L"3f2b1a90-4c7d-4e21-9b8a-0d6e5f4c3b2a";
         // Registry MachineGuid has no braces; the old code emitted "{...}".
-        std::wstring s = reshape_uuid(real, rng);
+        std::wstring s = force_uuid_v4(reshape_uuid(real, rng), rng);
         if (!s.empty() && s.front() == L'{') s.erase(s.begin());
         if (!s.empty() && s.back() == L'}') s.pop_back();
         v.machine_guid = s;
     }
-    v.product_id = derive_product_id(L"", rng);
+    // ProductId is not a hardware identifier: it names the Windows product-key
+    // family and has to agree with EditionID / DigitalProductId, neither of
+    // which is spoofed. Randomising it (the old code emitted a random five
+    // digit prefix that no product-key family uses) only manufactures a
+    // contradiction, so the field stays empty and the registry hook passes the
+    // real value through.
+    v.product_id = std::wstring();
     v.computer_name = derive_computer_name(L"", rng);
     v.volume_serial = reshape(L"00000000", 0, rng, L"00000000");
 
@@ -449,13 +499,18 @@ SpoofValues build(const RealValues& r) {
     // (Samsung "S41...", Dell service tags, ASUS "MB-..."), so keep four of
     // them: enough that the serial still looks like it belongs to this model,
     // leaving 11+ derived characters of entropy.
-    v.system_serial = reshape(r.system_serial, r.system_serial.size() >= 10 ? 4 : 2, rng,
-                              L"ABC1234567");
+    v.system_serial = is_placeholder_serial(r.system_serial)
+                          ? r.system_serial
+                          : reshape(r.system_serial, r.system_serial.size() >= 10 ? 4 : 2, rng,
+                                    L"ABC1234567");
 
     // SMBIOS type 2. The manufacturer/model/version stay verbatim: the serial
     // is derived from the real one, so it already matches that vendor's shape.
-    v.baseboard_serial = reshape(r.baseboard_serial, r.baseboard_serial.size() >= 10 ? 4 : 2,
-                                 rng, L"AB12345678");
+    v.baseboard_serial = is_placeholder_serial(r.baseboard_serial)
+                             ? r.baseboard_serial
+                             : reshape(r.baseboard_serial,
+                                       r.baseboard_serial.size() >= 10 ? 4 : 2,
+                                       rng, L"AB12345678");
     v.baseboard_manufacturer = r.baseboard_manufacturer;
     v.baseboard_product = r.baseboard_product;
     v.baseboard_version = r.baseboard_version;

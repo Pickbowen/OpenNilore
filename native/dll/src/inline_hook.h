@@ -19,6 +19,15 @@
 
 namespace hwid {
 
+// Length of the single instruction at `p`, or 0 when it cannot be decoded
+// with confidence. `unsafe` is set for relocatable-hostile forms (rip-relative
+// operands, relative branches): copying those bytes to another address changes
+// their meaning.
+//
+// Exposed because nt_guard.cpp has to displace exactly the same prologues, and
+// two decoders drifting apart is how a half-patched function gets shipped.
+int insn_length(const BYTE* p, bool* unsafe);
+
 // Install a 5-byte jmp at `target`. On success `*original` receives the
 // trampoline, which executes the displaced instructions and continues into the
 // rest of the real function - call it to forward.

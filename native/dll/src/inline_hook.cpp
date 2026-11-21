@@ -308,4 +308,10 @@ bool remove_inline_hook(void* target_v) {
     return false;
 }
 
+// Public face of the anonymous-namespace decoder: nt_guard needs the exact same
+// prologue split when it displaces instructions into an ntdll trampoline.
+int insn_length(const BYTE* p, bool* unsafe) {
+    return insn_len(p, unsafe);
+}
+
 } // namespace hwid

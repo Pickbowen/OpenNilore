@@ -350,7 +350,7 @@ public final class NeverloseClickGui extends Screen {
             return true;
         }
         if (button == 0 && SEARCH.contains(this.mouseX, this.mouseY)) {
-            focusEditor(search, SEARCH, 30, true);
+            focusEditor(search, SEARCH, SEARCH_PADDING, true);
             return true;
         }
         search.setFocused(false);
@@ -363,7 +363,7 @@ public final class NeverloseClickGui extends Screen {
             }
         }
         if (button == 0 && maximumScroll > 0
-                && new Rect(743, CONTENT.y(), 12, CONTENT.height()).contains(this.mouseX, this.mouseY)) {
+                && new Rect(CONTENT.right() + 1, CONTENT.y(), 12, CONTENT.height()).contains(this.mouseX, this.mouseY)) {
             Rect thumb = thumb(scroll, maximumScroll, CONTENT);
             scrollbarGrab = thumb.contains(this.mouseX, this.mouseY) ? this.mouseY - thumb.y() : thumb.height() / 2;
             draggingScrollbar = true;
@@ -446,7 +446,7 @@ public final class NeverloseClickGui extends Screen {
     }
 
     private int cursorAt(Field field, Rect rect, float padding) {
-        FontRenderer font = FontPresets.poppinsRegular(24f, rasterScale());
+        FontRenderer font = FontPresets.poppinsRegular(SEARCH_FONT, rasterScale());
         float x = mouseX - rect.x() - padding + editorOffset(field, rect, padding);
         String value = field.value;
         for (int index = 0; index < value.length(); ) {
@@ -466,7 +466,7 @@ public final class NeverloseClickGui extends Screen {
             return 0;
         }
         float width = GlHelper.getStringWidth(field.value.substring(0, field.cursor),
-                FontPresets.poppinsRegular(24f, rasterScale()));
+                FontPresets.poppinsRegular(SEARCH_FONT, rasterScale()));
         return Math.max(0, width - box.width() + padding + 18);
     }
 
@@ -551,7 +551,7 @@ public final class NeverloseClickGui extends Screen {
             return true;
         }
         if (draggingEditor != null) {
-            draggingEditor.moveCursorTo(cursorAt(draggingEditor, SEARCH, 30), true);
+            draggingEditor.moveCursorTo(cursorAt(draggingEditor, SEARCH, SEARCH_PADDING), true);
             return true;
         }
         if (draggingSlider != null) {
@@ -764,7 +764,7 @@ public final class NeverloseClickGui extends Screen {
         }
         if ((modifiers & 2) != 0 && keyCode == 70) {
             popup = null;
-            focusEditor(search, SEARCH, 30, true);
+            focusEditor(search, SEARCH, SEARCH_PADDING, true);
             return true;
         }
         if (popup != null && popup.open) {

@@ -399,8 +399,10 @@ extends ClientBase {
         }
         int clippedX = Math.max(scaledX, parentBounds[0]);
         int clippedY = Math.max(scaledY, parentBounds[1]);
-        int clippedWidth = Math.min(scaledX + scaledWidth, parentBounds[0] + parentBounds[2]) - clippedX;
-        int clippedHeight = Math.min(scaledY + scaledHeight, parentBounds[1] + parentBounds[3]) - clippedY;
+        // Disjoint nested clips are an empty scissor, not a negative-sized box.
+        // OpenGL rejects negative width/height with GL_INVALID_VALUE (1281).
+        int clippedWidth = Math.max(0, Math.min(scaledX + scaledWidth, parentBounds[0] + parentBounds[2]) - clippedX);
+        int clippedHeight = Math.max(0, Math.min(scaledY + scaledHeight, parentBounds[1] + parentBounds[3]) - clippedY);
         int[] clippedBounds = new int[]{clippedX, clippedY, clippedWidth, clippedHeight};
         scissorStack.push(clippedBounds);
         RenderSystem.enableScissor(clippedBounds[0], clippedBounds[1], clippedBounds[2], clippedBounds[3]);

@@ -22,30 +22,65 @@ public class ConfigManager {
     public static final File SAVED_CONFIGS_DIR = new File(NiloreClient.configDir, "saved_configs");
     private final List<Config> configs;
 
+    // True while a stored profile is being applied. Restoring a profile calls
+    // setEnabled() on every module, and each of those fires a ModuleToggleEvent;
+    // without this flag a single "config load" produces a burst of notification
+    // cards and toggle sounds for changes the user never made. NotificationHud
+    // reads it and stays quiet until the apply has finished.
+    private static volatile boolean applyingConfig;
+
     public ConfigManager() {
         this.configs = new ArrayList<>();
         if (!CONFIG_DIR.exists() && CONFIG_DIR.mkdir()) {
             LOGGER.info("Created config directory");
         }
+        ensureSavedConfigsDir();
         this.configs.add(new ModulesConfig());
         this.configs.add(new ValuesConfig());
     }
 
+    /** Creates .nilore/saved_configs so "config folder" always has a target. */
+    public static void ensureSavedConfigsDir() {
+        if (!SAVED_CONFIGS_DIR.exists() && SAVED_CONFIGS_DIR.mkdirs()) {
+            LOGGER.info("Created saved configs directory");
+        }
+    }
+
+    public static boolean isApplyingConfig() {
+        return applyingConfig;
+    }
+
+    /** Enters silent-apply mode; returns the previous state so nesting is safe. */
+    public static boolean beginApplyingConfig() {
+        boolean previous = applyingConfig;
+        applyingConfig = true;
+        return previous;
+    }
+
+    public static void endApplyingConfig(boolean previous) {
+        applyingConfig = previous;
+    }
+
     public void loadAll() {
-        for (Config config : this.configs) {
-            File file = config.getFile();
-            if (!file.exists()) {
-                continue;
+        boolean previous = beginApplyingConfig();
+        try {
+            for (Config config : this.configs) {
+                File file = config.getFile();
+                if (!file.exists()) {
+                    continue;
+                }
+                // Per-file isolation: config.read() can throw runtime exceptions on malformed data
+                // (Integer.parseInt / ClassCastException / ArrayIndexOutOfBounds). Catching only
+                // IOException used to abort the whole loop, so one bad line in modules.cfg left
+                // values.cfg unread while moduleInit was already set and never retried.
+                try {
+                    readConfigFile(config, file);
+                } catch (Exception e) {
+                    LOGGER.error("Failed to load config " + config.getName(), e);
+                }
             }
-            // Per-file isolation: config.read() can throw runtime exceptions on malformed data
-            // (Integer.parseInt / ClassCastException / ArrayIndexOutOfBounds). Catching only
-            // IOException used to abort the whole loop, so one bad line in modules.cfg left
-            // values.cfg unread while moduleInit was already set and never retried.
-            try {
-                readConfigFile(config, file);
-            } catch (Exception e) {
-                LOGGER.error("Failed to load config " + config.getName(), e);
-            }
+        } finally {
+            endApplyingConfig(previous);
         }
     }
 

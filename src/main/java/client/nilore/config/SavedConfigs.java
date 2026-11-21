@@ -106,6 +106,18 @@ public final class SavedConfigs {
     }
 
     public static LoadResult load(String name) {
+        // Applying a profile flips modules through setEnabled(), which fires a
+        // ModuleToggleEvent per module. Suppress the resulting notification
+        // cards and sounds for the duration of the apply.
+        boolean previous = ConfigManager.beginApplyingConfig();
+        try {
+            return loadInternal(name);
+        } finally {
+            ConfigManager.endApplyingConfig(previous);
+        }
+    }
+
+    private static LoadResult loadInternal(String name) {
         File configFile = file(name);
         if (!configFile.exists()) {
             return LoadResult.NOT_FOUND;

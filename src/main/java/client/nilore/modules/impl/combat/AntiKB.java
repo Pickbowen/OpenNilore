@@ -19,6 +19,7 @@ import client.nilore.event.impl.UseItemRayTraceEvent;
 import client.nilore.modules.Category;
 import client.nilore.modules.Module;
 import client.nilore.modules.impl.combat.antikb.AntiKBMode;
+import client.nilore.modules.impl.combat.antikb.NoXZMode;
 import client.nilore.modules.impl.movement.FireballBlink;
 import client.nilore.modules.impl.movement.HighJump;
 import client.nilore.modules.impl.movement.Scaffold;
@@ -38,17 +39,14 @@ public class AntiKB
     public final BooleanSetting followDirection = new BooleanSetting("Follow Direction", true, () -> mode.is("Jump Reset"));
     public final BooleanSetting predict = new BooleanSetting("Predict", false, () -> mode.is("Jump Reset"));
     public final NumberSetting rotateTicks = new NumberSetting("Rotate Ticks", 12, 3, 20, 1, () -> mode.is("Jump Reset") && (this.rotate.getValue() != false || this.followDirection.getValue() != false));
-    public final BooleanSetting delayEnable = new BooleanSetting("Delay", true, () -> mode.is("NoXZ"));
-    public final NumberSetting maxDelayTicks = new NumberSetting("Max Delay Ticks", 40.0, 1.0, 120.0, 1.0, () -> mode.is("NoXZ") && this.delayEnable.getValue());
-    public final NumberSetting releaseDistance = new NumberSetting("Release Distance", 2.6, 2.0, 3.0, 0.1, () -> mode.is("NoXZ"));
-    public final BooleanSetting autoForwards = new BooleanSetting("Auto Forwards", false, () -> mode.is("NoXZ"));
-    public final BooleanSetting requireKillAura = new BooleanSetting("Require KillAura", true, () -> mode.is("NoXZ"));
-    public final BooleanSetting jumpReset = new BooleanSetting("Jump Reset", true, () -> mode.is("NoXZ"));
-    public final NumberSetting attackAmount = new NumberSetting("Attack Amount", 5, 0.0, 20.0, 1, () -> mode.is("NoXZ"));
+    public final BooleanSetting requireAura = new BooleanSetting("Require Aura", true, () -> mode.is("NoXZ"));
+    public final BooleanSetting delayTillGround = new BooleanSetting("Delay Till Ground", false, () -> mode.is("NoXZ"));
+    public final NumberSetting targetMotion = new NumberSetting("Target Motion", 0.15, 0.05, 0.5, 0.05, () -> mode.is("NoXZ"));
+    public final NumberSetting releaseDistance = new NumberSetting("Release Distance", 1.6, 0.1, 3.0, 0.1, () -> mode.is("NoXZ"));
     public final BooleanSetting renderBar = new BooleanSetting("Render Bar", true, () -> mode.is("NoXZ"));
-    public final BooleanSetting targetEsp = new BooleanSetting("Target ESP", true, () -> mode.is("NoXZ"));
-    public final BooleanSetting debugLog = new BooleanSetting("Debug Log", true);
+    public final BooleanSetting debugLog = new BooleanSetting("Debug Log", false);
     private final Timer grimSyncTimer = new Timer();
+    private AntiKBMode activeMode;
     public AntiKB() {
         super("AntiKB", Category.COMBAT);
         INSTANCE = this;
@@ -66,32 +64,57 @@ public class AntiKB
         if ((optional = AntiKBMode.findMode(mode.getValue())).isEmpty()) {
             return;
         }
-        optional.get().onEnable();
+        this.activeMode = optional.get();
+        this.activeMode.onEnable();
     }
 
     @Override
     public void onDisable() {
         rotation = null;
-        Optional<AntiKBMode> optional = AntiKBMode.findMode(mode.getValue());
-        if (optional.isEmpty()) {
-            return;
+        if (this.activeMode != null) {
+            this.activeMode.onDisable();
+            this.activeMode = null;
         }
-        optional.get().onDisable();
+    }
+
+    private Optional<AntiKBMode> currentMode() {
+        Optional<AntiKBMode> selected = AntiKBMode.findMode(mode.getValue());
+        AntiKBMode next = selected.orElse(null);
+        if (this.activeMode != next) {
+            if (this.activeMode != null) {
+                this.activeMode.onDisable();
+            }
+            rotation = null;
+            this.activeMode = next;
+            if (next != null) {
+                next.onEnable();
+            }
+        }
+        return selected;
+    }
+
+    private boolean shouldSuspend(Optional<AntiKBMode> selected) {
+        boolean suspended = FireballBlink.INSTANCE.isEnabled() || HighJump.INSTANCE.isEnabled()
+                || Scaffold.INSTANCE.isEnabled();
+        if (suspended && this.activeMode instanceof NoXZMode && this.activeMode.isActive()) {
+            this.activeMode.onDisable();
+        }
+        return suspended || selected.isEmpty();
     }
 
     @EventTarget
     public void onGameTick(GameTickEvent gameTickEvent) {
-        Optional<AntiKBMode> optional = AntiKBMode.findMode(mode.getValue());
-        if (FireballBlink.INSTANCE.isEnabled() || HighJump.INSTANCE.isEnabled() || Scaffold.INSTANCE.isEnabled() || optional.isEmpty()) {
+        Optional<AntiKBMode> optional = this.currentMode();
+        if (this.shouldSuspend(optional)) {
             return;
         }
         optional.get().onGameTick(gameTickEvent);
     }
 
-    @EventTarget
+    @EventTarget(value=0)
     public void onPreMotion(PreMotionEvent preMotionEvent) {
-        Optional<AntiKBMode> optional = AntiKBMode.findMode(mode.getValue());
-        if (FireballBlink.INSTANCE.isEnabled() || HighJump.INSTANCE.isEnabled() || Scaffold.INSTANCE.isEnabled() || optional.isEmpty()) {
+        Optional<AntiKBMode> optional = this.currentMode();
+        if (this.shouldSuspend(optional)) {
             return;
         }
         optional.get().onPreMotion(preMotionEvent);
@@ -109,8 +132,8 @@ public class AntiKB
      */
     @EventTarget(value = 3)
     public void onTick(TickEvent tickEvent) {
-        Optional<AntiKBMode> optional = AntiKBMode.findMode(mode.getValue());
-        if (FireballBlink.INSTANCE.isEnabled() || HighJump.INSTANCE.isEnabled() || Scaffold.INSTANCE.isEnabled() || optional.isEmpty()) {
+        Optional<AntiKBMode> optional = this.currentMode();
+        if (this.shouldSuspend(optional)) {
             return;
         }
         optional.get().onTick(tickEvent);
@@ -118,8 +141,8 @@ public class AntiKB
 
     @EventTarget
     public void onSprint(SprintEvent sprintEvent) {
-        Optional<AntiKBMode> optional = AntiKBMode.findMode(mode.getValue());
-        if (FireballBlink.INSTANCE.isEnabled() || HighJump.INSTANCE.isEnabled() || Scaffold.INSTANCE.isEnabled() || optional.isEmpty()) {
+        Optional<AntiKBMode> optional = this.currentMode();
+        if (this.shouldSuspend(optional)) {
             return;
         }
         optional.get().onSprint(sprintEvent);
@@ -127,8 +150,8 @@ public class AntiKB
 
     @EventTarget
     public void onRotation(RotationEvent rotationEvent) {
-        Optional<AntiKBMode> optional = AntiKBMode.findMode(mode.getValue());
-        if (FireballBlink.INSTANCE.isEnabled() || HighJump.INSTANCE.isEnabled() || Scaffold.INSTANCE.isEnabled() || optional.isEmpty()) {
+        Optional<AntiKBMode> optional = this.currentMode();
+        if (this.shouldSuspend(optional)) {
             return;
         }
         optional.get().onRotation(rotationEvent);
@@ -136,8 +159,8 @@ public class AntiKB
 
     @EventTarget
     public void onMotion(MotionEvent motionEvent) {
-        Optional<AntiKBMode> optional = AntiKBMode.findMode(mode.getValue());
-        if (FireballBlink.INSTANCE.isEnabled() || HighJump.INSTANCE.isEnabled() || Scaffold.INSTANCE.isEnabled() || optional.isEmpty()) {
+        Optional<AntiKBMode> optional = this.currentMode();
+        if (this.shouldSuspend(optional)) {
             return;
         }
         optional.get().onMotion(motionEvent);
@@ -145,8 +168,8 @@ public class AntiKB
 
     @EventTarget(value=1)
     public void onReceivePacket(ReceivePacketEvent receivePacketEvent) {
-        Optional<AntiKBMode> optional = AntiKBMode.findMode(mode.getValue());
-        if (FireballBlink.INSTANCE.isEnabled() || HighJump.INSTANCE.isEnabled() || Scaffold.INSTANCE.isEnabled() || optional.isEmpty()) {
+        Optional<AntiKBMode> optional = this.currentMode();
+        if (this.shouldSuspend(optional)) {
             return;
         }
         optional.get().onReceivePacket(receivePacketEvent);
@@ -154,8 +177,8 @@ public class AntiKB
 
     @EventTarget
     public void onItemUseRayTrace(UseItemRayTraceEvent event) {
-        Optional<AntiKBMode> optional = AntiKBMode.findMode(mode.getValue());
-        if (FireballBlink.INSTANCE.isEnabled() || HighJump.INSTANCE.isEnabled() || Scaffold.INSTANCE.isEnabled() || optional.isEmpty()) {
+        Optional<AntiKBMode> optional = this.currentMode();
+        if (this.shouldSuspend(optional)) {
             return;
         }
         optional.get().onItemUseRayTrace(event);
@@ -163,17 +186,15 @@ public class AntiKB
 
     @EventTarget
     public void onDisconnect(DisconnectEvent disconnectEvent) {
-        Optional<AntiKBMode> optional = AntiKBMode.findMode(mode.getValue());
-        if (optional.isEmpty()) {
-            return;
+        if (this.activeMode != null) {
+            this.activeMode.onDisconnect(disconnectEvent);
         }
-        optional.get().onDisconnect(disconnectEvent);
     }
 
     @EventTarget(value=3)
     public void onStrafe(StrafeEvent strafeEvent) {
-        Optional<AntiKBMode> optional = AntiKBMode.findMode(mode.getValue());
-        if (FireballBlink.INSTANCE.isEnabled() || HighJump.INSTANCE.isEnabled() || Scaffold.INSTANCE.isEnabled() || optional.isEmpty()) {
+        Optional<AntiKBMode> optional = this.currentMode();
+        if (this.shouldSuspend(optional)) {
             return;
         }
         optional.get().onStrafe(strafeEvent);
@@ -181,7 +202,7 @@ public class AntiKB
 
     @EventTarget
     public void onAttack(EntityRemoveEvent event) {
-        Optional<AntiKBMode> optional = AntiKBMode.findMode(mode.getValue());
+        Optional<AntiKBMode> optional = this.currentMode();
         if (optional.isEmpty()) {
             return;
         }
@@ -190,7 +211,7 @@ public class AntiKB
 
     @EventTarget
     public void onEntityHurt(EntityHurtEvent event) {
-        Optional<AntiKBMode> optional = AntiKBMode.findMode(mode.getValue());
+        Optional<AntiKBMode> optional = this.currentMode();
         if (optional.isEmpty()) {
             return;
         }
@@ -199,8 +220,8 @@ public class AntiKB
 
     @EventTarget
     public void onRender(RenderEvent renderEvent) {
-        Optional<AntiKBMode> optional = AntiKBMode.findMode(mode.getValue());
-        if (FireballBlink.INSTANCE.isEnabled() || HighJump.INSTANCE.isEnabled() || Scaffold.INSTANCE.isEnabled() || optional.isEmpty()) {
+        Optional<AntiKBMode> optional = this.currentMode();
+        if (this.shouldSuspend(optional)) {
             return;
         }
         optional.get().onRender(renderEvent);
@@ -208,8 +229,8 @@ public class AntiKB
 
     @EventTarget
     public void onRender2D(Render2DEvent render2DEvent) {
-        Optional<AntiKBMode> optional = AntiKBMode.findMode(mode.getValue());
-        if (FireballBlink.INSTANCE.isEnabled() || HighJump.INSTANCE.isEnabled() || Scaffold.INSTANCE.isEnabled() || optional.isEmpty()) {
+        Optional<AntiKBMode> optional = this.currentMode();
+        if (this.shouldSuspend(optional)) {
             return;
         }
         optional.get().onRender2D(render2DEvent);

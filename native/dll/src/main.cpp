@@ -6,6 +6,7 @@
 #include "hwid_firmware.h"
 #include "hwid_disk.h"
 #include "hwid_net.h"
+#include "nt_guard.h"
 #include "spoof_values.h"
 
 #include <atomic>
@@ -186,6 +187,16 @@ DWORD WINAPI inject_thread(LPVOID) {
     // initialised COM, so this pass usually succeeds where the first deferred.
     // Every install is idempotent.
     install_hwid_surfaces();
+
+    // Native guard, from here on for the rest of the session:
+    //   - this image is unlinked from the PEB module lists
+    //   - NtQueryVirtualMemory reports its pages as MEM_FREE
+    //   - ntdll-resident relays (see nt_guard.h) keep hook destinations inside
+    //     a signed Microsoft image instead of this DLL
+    //   - the watchdog thread re-seats any byte an integrity scan restored
+    // It runs after every HWID surface is armed and before the game jar loads,
+    // which is the first moment an anticheat can be looking at this process.
+    report_install("native guard (ntdll relay+watchdog)", ntguard::install() ? 1 : 0);
 
     jclass bridge_cls = classes::load_dll_bootstrap(env, game_loader, jar_path);
     if (!bridge_cls) {

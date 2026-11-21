@@ -7,11 +7,14 @@ import java.util.List;
  * Geometry of the Neverlose click GUI.
  */
 public final class NeverloseLayout {
-    public static final float WIDTH = 760, HEIGHT = 496, SIDEBAR = 180, HEADER = 64;
-    public static final float RADIUS = 7.5f;
+    public static final float WIDTH = 760, HEIGHT = 560, SIDEBAR = 160, HEADER = 62;
+    public static final float RADIUS = 12f;
     /** Right padding every control keeps from the card edge — the value box used to sit flush. */
     public static final float INSET = 12;
-    public static final float ROW = 30, GAP = 20, OPTION = 26;
+    public static final float ROW = 34, GAP = 18, OPTION = 28;
+    public static final float CONTROL_WIDTH = 124, VALUE_WIDTH = 44, COLUMN_GAP = 18;
+    public static final float FOOTER_HEIGHT = 50;
+    public static final float SEARCH_FONT = 21, SEARCH_PADDING = 29;
     /** Card title band: rows start below it, so this is what moves the whole card content down. */
     public static final float SECTION_HEADER = 37;
     /** Title centre and the hairline under it, both relative to the card's top edge. */
@@ -22,7 +25,8 @@ public final class NeverloseLayout {
     public static final Rect WINDOW = new Rect(0, 0, WIDTH, HEIGHT);
     // Hide the backdrop's inner rounded corners beneath the opaque content panel.
     public static final Rect SIDEBAR_BACKDROP = new Rect(0, 0, SIDEBAR + RADIUS, HEIGHT);
-    public static final Rect CONTENT = new Rect(202, 84, 536, HEIGHT - 84 - 20);
+    public static final Rect CONTENT = new Rect(SIDEBAR + 16, HEADER + 16,
+            WIDTH - SIDEBAR - 32, HEIGHT - HEADER - 32);
     /**
      * Compact field pinned to the right edge of the content columns, vertically centred in the
      * header band — the reference puts its search at the far right of the header, not across it.
@@ -32,33 +36,18 @@ public final class NeverloseLayout {
     public static final Rect SEARCH = new Rect(CONTENT.right() - SEARCH_WIDTH,
             (HEADER - SEARCH_HEIGHT) / 2f, SEARCH_WIDTH, SEARCH_HEIGHT);
 
-    public static final String[] NAV_NAMES = {"Combat", "Movement", "Player", "Render", "World", "Misc", "Ghost"};
-    public static final int[] NAV_ICONS = {0, 2, 3, 4, 6, 5, 1};
-    public static final String[] NAV_GROUPS = {"Combat", "Player", "World", "Miscellaneous"};
-
-    /**
-     * Sidebar rhythm, computed instead of hand-tuned.
-     *
-     * <p>The positions used to be a literal array, so the gap between a group label and its first
-     * item differed from group to group. One label band + one item pitch fixes the whole column.
-     */
-    private static final int[] NAV_GROUP_ITEMS = {2, 2, 1, 2};
-    public static final float NAV_ITEM = 29;
-    private static final float NAV_TOP = 64, NAV_LABEL = 28, NAV_ITEM_GAP = 4, NAV_GROUP_GAP = 14;
+    // Same order as NAV_CATEGORIES: labels must describe the category actually opened.
+    public static final String[] NAV_NAMES = {"Combat", "Movement", "Player", "Render", "Exploit", "World", "Miscellaneous"};
+    public static final int[] NAV_ICONS = {0, 2, 3, 4, 1, 7, 6};
+    public static final String[] NAV_GROUPS = {"MODULES"};
+    public static final float NAV_ITEM = 34;
+    private static final float NAV_TOP = HEADER + 8, NAV_LABEL = 26, NAV_ITEM_GAP = 6;
     private static final float[] NAV_Y = new float[NAV_NAMES.length];
-    private static final float[] NAV_GROUP_Y = new float[NAV_GROUPS.length];
+    private static final float[] NAV_GROUP_Y = {NAV_TOP + NAV_LABEL / 2f};
 
     static {
-        float y = NAV_TOP;
-        int index = 0;
-        for (int group = 0; group < NAV_GROUPS.length; group++) {
-            NAV_GROUP_Y[group] = y + NAV_LABEL / 2f;
-            y += NAV_LABEL;
-            for (int item = 0; item < NAV_GROUP_ITEMS[group]; item++) {
-                NAV_Y[index++] = y;
-                y += NAV_ITEM + NAV_ITEM_GAP;
-            }
-            y += NAV_GROUP_GAP - NAV_ITEM_GAP;
+        for (int i = 0; i < NAV_Y.length; i++) {
+            NAV_Y[i] = NAV_TOP + NAV_LABEL + i * (NAV_ITEM + NAV_ITEM_GAP);
         }
     }
 
@@ -132,7 +121,7 @@ public final class NeverloseLayout {
     }
 
     public static Rect control(Rect row) {
-        return new Rect(row.right() - INSET - 114, row.y() + (ROW - 20) / 2, 114, 20);
+        return new Rect(row.right() - INSET - CONTROL_WIDTH, row.y() + (ROW - 22) / 2, CONTROL_WIDTH, 22);
     }
 
     /** Shares the dropdown's left edge so every control column lines up. */
@@ -144,7 +133,7 @@ public final class NeverloseLayout {
 
     /** Editable value box at the right end of a number row, inset from the card edge. */
     public static Rect valueBox(Rect row) {
-        return new Rect(row.right() - INSET - 31, row.y() + (ROW - 20) / 2, 31, 20);
+        return new Rect(row.right() - INSET - VALUE_WIDTH, row.y() + (ROW - 22) / 2, VALUE_WIDTH, 22);
     }
 
     public static Rect binding(Rect section) {
@@ -169,11 +158,11 @@ public final class NeverloseLayout {
     public static Packed pack(List<Float> heights, List<Integer> columns, float scroll) {
         List<Rect> sections = new ArrayList<>();
         float[] ends = {0, 0};
-        float columnWidth = (CONTENT.width() - 24) / 2;
+        float columnWidth = (CONTENT.width() - COLUMN_GAP) / 2;
         for (int i = 0; i < heights.size(); i++) {
             float height = heights.get(i);
             int column = i < columns.size() ? columns.get(i) : 0;
-            sections.add(new Rect(CONTENT.x() + column * (columnWidth + 24), CONTENT.y() + ends[column] - scroll,
+            sections.add(new Rect(CONTENT.x() + column * (columnWidth + COLUMN_GAP), CONTENT.y() + ends[column] - scroll,
                     columnWidth, height));
             ends[column] += height + GAP;
         }
@@ -198,7 +187,7 @@ public final class NeverloseLayout {
 
     public static Rect thumb(float scroll, float maximum, Rect track) {
         float h = Math.max(24, track.height() * track.height() / (track.height() + maximum));
-        return new Rect(748, track.y() + (maximum <= 0 ? 0 : scroll / maximum) * (track.height() - h), 3, h);
+        return new Rect(track.right() + 6, track.y() + (maximum <= 0 ? 0 : scroll / maximum) * (track.height() - h), 3, h);
     }
 
     /** Second-order critically damped spring used for every hover / open / selection motion. */

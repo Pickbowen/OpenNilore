@@ -1,6 +1,7 @@
 package client.nilore.hud;
 
 import client.nilore.NiloreClient;
+import client.nilore.manager.ConfigManager;
 import client.nilore.settings.impl.BooleanSetting;
 import client.nilore.settings.impl.ModeSetting;
 import java.util.ArrayList;
@@ -102,6 +103,12 @@ public class NotificationHud extends HudElement {
     @EventTarget
     public void onModuleToggle(ModuleToggleEvent event) {
         if (event.module() == this) {
+            return;
+        }
+        // A config apply replays stored module states through setEnabled(); those
+        // are not user toggles, so they must not queue cards or fire toggle
+        // sounds. Stay silent until the apply has finished.
+        if (ConfigManager.isApplyingConfig()) {
             return;
         }
         loadTextures();
